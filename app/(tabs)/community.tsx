@@ -17,11 +17,11 @@ import {
   FlatList,
   Keyboard,
 } from "react-native";
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../../context/ThemeContext";
-import { useCommunity, DEFAULT_CHANNELS } from "../../context/CommunityContext";
+import { useCommunity } from "../../context/CommunityContext";
 import { useProfile } from "../../context/ProfileContext";
 import SwipeableTab from "../../components/SwipeableTab";
 import TipBanner, { TIP_KEYS } from "../../components/TipBanner";

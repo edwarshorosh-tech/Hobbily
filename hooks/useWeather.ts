@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchWeatherByCity, fetchWeatherByIP } from "../services/weatherService";
+import { fetchWeather } from "../services/weatherService";
 
 /**
  * Weather hook
@@ -9,11 +9,12 @@ export function useWeather() {
   const [weather, setWeather] = useState<any>(null);
 
   useEffect(() => {
-    fetchWeatherByIP().then(setWeather);
+    // Default to a sane city on first load; this avoids needing IP geolocation.
+    fetchWeather("Tel Aviv").then(setWeather);
   }, []);
 
   async function selectCity(city: string) {
-    const result = await fetchWeatherByCity(city);
+    const result = await fetchWeather(city);
     setWeather(result);
   }
 

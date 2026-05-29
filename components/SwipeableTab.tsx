@@ -21,7 +21,7 @@ import Animated, {
 import { router, useFocusEffect } from "expo-router";
 
 const TABS = [
-  "/(tabs)/",
+  "/(tabs)",
   "/(tabs)/time-manager",
   "/(tabs)/community",
   "/(tabs)/opportunities",

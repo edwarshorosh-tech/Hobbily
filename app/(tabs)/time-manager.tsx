@@ -8,7 +8,6 @@ import {
   Text,
   ScrollView,
   StyleSheet,
-  Pressable,
   TextInput,
   Modal,
   Switch,
@@ -16,6 +15,7 @@ import {
   Animated,
   PanResponder,
   TouchableWithoutFeedback,
+  Platform,
 } from "react-native";
 import { useState, useEffect, useRef } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -53,6 +53,12 @@ function formatTime(time: string): string {
   const ampm = h >= 12 ? "PM" : "AM";
   const hour = h % 12 || 12;
   return `${hour}:${m.toString().padStart(2, "0")} ${ampm}`;
+}
+
+function formatTimeInput(raw: string): string {
+  const digits = (raw ?? "").replace(/[^\d]/g, "").slice(0, 4);
+  if (digits.length <= 2) return digits;
+  return `${digits.slice(0, 2)}:${digits.slice(2)}`;
 }
 
 // ── Task Row ──────────────────────────────────────────────────────────────────
@@ -468,7 +474,7 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
   ).current;
 
   // Reset sheet position whenever the modal closes
-  useEffect(() => { if (!visible) panY.setValue(0); }, [visible]);
+  useEffect(() => { if (!visible) panY.setValue(0); }, [visible, panY]);
 
   // Reset fields when modal opens (handles switching between add and edit)
   function handleOpen() {
@@ -595,8 +601,10 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
                 placeholder="09:00"
                 placeholderTextColor={colors.secondaryText}
                 value={time}
-                onChangeText={setTime}
-                keyboardType="numbers-and-punctuation"
+                onChangeText={(txt) => setTime(formatTimeInput(txt))}
+                keyboardType={Platform.OS === "ios" ? "number-pad" : "numeric"}
+                inputMode="numeric"
+                maxLength={5}
               />
             </View>
             <View style={{ flex: 1 }}>
@@ -608,6 +616,7 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
                 value={duration}
                 onChangeText={setDuration}
                 keyboardType="number-pad"
+                inputMode="numeric"
               />
             </View>
           </View>
