@@ -1,14 +1,19 @@
 /**
  * firebase.ts
- * Initialises the Firebase app, Auth (with AsyncStorage persistence so the
- * auth token survives app restarts), and Firestore. Import `auth` and `db`
- * from here throughout the app — do not call initializeApp() elsewhere.
+ * Initializes Firebase, Authentication with cross-platform persistence,
+ * and Firestore.
+ *
+ * Import `auth` and `db` from this file throughout the application.
+ * Do not call initializeApp() elsewhere.
  */
 import { initializeApp } from "firebase/app";
-import { initializeAuth } from "firebase/auth";
-import { getReactNativePersistence } from "firebase/auth/react-native";
+
+// @ts-ignore
+import { initializeAuth, getReactNativePersistence, browserLocalPersistence } from "firebase/auth";
+
 import { getFirestore } from "firebase/firestore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Platform } from "react-native";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCYvDaQITNmA_-vHs-cjoethTGicmpoKjE",
@@ -21,9 +26,17 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 
-// Use AsyncStorage for auth token persistence across app restarts
-export const auth = initializeAuth(app, {
-  persistence: getReactNativePersistence(AsyncStorage),
-});
+// Safe cross-platform initialization for both Web (Laptop) and Mobile (Phone)
+export const auth = (() => {
+  if (Platform.OS === "web") {
+    return initializeAuth(app, {
+      persistence: browserLocalPersistence,
+    });
+  } else {
+    return initializeAuth(app, {
+      persistence: getReactNativePersistence(AsyncStorage),
+    });
+  }
+})();
 
 export const db = getFirestore(app);
