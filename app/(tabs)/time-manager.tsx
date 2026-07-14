@@ -10,18 +10,19 @@ import {
   StyleSheet,
   TextInput,
   Modal,
-  Switch,
   TouchableOpacity,
   Animated,
   PanResponder,
   TouchableWithoutFeedback,
   Platform,
+  KeyboardAvoidingView,
+  ActivityIndicator,
 } from "react-native";
 import { useState, useEffect, useRef } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../../context/ThemeContext";
-import { useTime } from "../../context/TimeContext";
+import { useTime, TaskSaveResult } from "../../context/TimeContext";
 import { useProfile } from "../../context/ProfileContext";
 import { useProgress } from "../../context/ProgressContext";
 import SwipeableTab from "../../components/SwipeableTab";
@@ -426,13 +427,79 @@ function DayStrip({ selected, onSelect, colors, taskCounts, weekOffset, onWeekCh
   );
 }
 
+// ── Week Overview (zoomed-out schedule) ──────────────────────────────────────
+
+type WeekOverviewProps = {
+  tasks: Task[];
+  weekOffset: number;
+  selected: string;
+  onSelect: (iso: string) => void;
+  colors: ReturnType<typeof useTheme>["colors"];
+};
+
+function WeekOverview({ tasks, weekOffset, selected, onSelect, colors }: WeekOverviewProps) {
+  const days = buildWeekDays(weekOffset);
+  const today = todayISO();
+
+  return (
+    <View style={[styles.weekOverviewCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+      <Text style={[styles.weekOverviewTitle, { color: colors.text }]}>Week at a Glance</Text>
+      {days.map((iso) => {
+        const dayTasks = tasks
+          .filter((t) => t.date === iso)
+          .sort((a, b) => a.time.localeCompare(b.time));
+        const d = new Date(iso + "T00:00:00");
+        const isSelected = iso === selected;
+        const isToday = iso === today;
+
+        return (
+          <TouchableOpacity
+            key={iso}
+            onPress={() => onSelect(iso)}
+            style={[
+              styles.weekOverviewRow,
+              isSelected && { backgroundColor: colors.primary + "14" },
+            ]}
+          >
+            <View style={styles.weekOverviewDate}>
+              <Text style={[styles.weekOverviewDay, { color: isToday ? colors.primary : colors.secondaryText }]}>
+                {d.toLocaleDateString(undefined, { weekday: "short" })}
+              </Text>
+              <Text style={[styles.weekOverviewNum, { color: isToday ? colors.primary : colors.text }]}>
+                {d.getDate()}
+              </Text>
+            </View>
+
+            <View style={{ flex: 1 }}>
+              {dayTasks.length === 0 ? (
+                <Text style={[styles.weekOverviewEmpty, { color: colors.secondaryText }]}>No activities</Text>
+              ) : (
+                <Text numberOfLines={1} style={[styles.weekOverviewSummary, { color: colors.text }]}>
+                  {dayTasks.slice(0, 3).map((t) => t.title).join(" · ")}
+                  {dayTasks.length > 3 ? ` +${dayTasks.length - 3} more` : ""}
+                </Text>
+              )}
+            </View>
+
+            {dayTasks.length > 0 && (
+              <View style={[styles.weekOverviewCount, { backgroundColor: colors.primary }]}>
+                <Text style={styles.weekOverviewCountText}>{dayTasks.length}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
+
 // ── Add / Edit Task Modal ─────────────────────────────────────────────────────
 
 type TaskModalProps = {
   visible: boolean;
   onClose: () => void;
-  /** Called with full field values; id is present when editing */
-  onSave: (fields: Omit<Task, "id" | "createdAt">, editId?: string) => void;
+  /** Called with full field values; id is present when editing. Resolves to a conflict if the slot overlaps an existing task. */
+  onSave: (fields: Omit<Task, "id" | "createdAt">, editId?: string) => Promise<TaskSaveResult>;
   defaultDate: string;
   colors: ReturnType<typeof useTheme>["colors"];
   hobbies: string[];
@@ -447,6 +514,8 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
   const [type, setType] = useState<"task" | "hobby">(editingTask?.type ?? "task");
   const [time, setTime] = useState(editingTask?.time ?? "09:00");
   const [duration, setDuration] = useState(String(editingTask?.duration ?? 30));
+  const [conflict, setConflict] = useState<Task | null>(null);
+  const [saving, setSaving] = useState(false);
 
   // Swipe-down-to-close: track sheet position with an Animated value
   const panY = useRef(new Animated.Value(0)).current;
@@ -482,11 +551,15 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
     setType(editingTask?.type ?? "task");
     setTime(editingTask?.time ?? "09:00");
     setDuration(String(editingTask?.duration ?? 30));
+    setConflict(null);
+    setSaving(false);
   }
 
-  function handleSave() {
-    if (!title.trim()) return;
-    onSave(
+  async function handleSave() {
+    if (!title.trim() || saving) return;
+    setSaving(true);
+    setConflict(null);
+    const result = await onSave(
       {
         title: title.trim(),
         type,
@@ -497,7 +570,12 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
       },
       editingTask?.id
     );
-    onClose();
+    setSaving(false);
+    if (result.ok) {
+      onClose();
+    } else {
+      setConflict(result.conflict);
+    }
   }
 
   return (
@@ -508,7 +586,10 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
       onRequestClose={onClose}
       onShow={handleOpen}
     >
-      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)" }}>
+      <KeyboardAvoidingView
+        style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)" }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
         {/* Transparent area above the sheet — tap to cancel */}
         <TouchableWithoutFeedback onPress={onClose}>
           <View style={{ flex: 1 }} />
@@ -597,11 +678,11 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
             <View style={{ flex: 1, marginRight: 8 }}>
               <Text style={[styles.fieldLabel, { color: colors.secondaryText }]}>Time (HH:MM)</Text>
               <TextInput
-                style={[styles.modalInput, { backgroundColor: colors.inputBackground, color: colors.text, borderColor: colors.border }]}
+                style={[styles.modalInput, { backgroundColor: colors.inputBackground, color: colors.text, borderColor: conflict ? colors.danger : colors.border }]}
                 placeholder="09:00"
                 placeholderTextColor={colors.secondaryText}
                 value={time}
-                onChangeText={(txt) => setTime(formatTimeInput(txt))}
+                onChangeText={(txt) => { setTime(formatTimeInput(txt)); setConflict(null); }}
                 keyboardType={Platform.OS === "ios" ? "number-pad" : "numeric"}
                 inputMode="numeric"
                 maxLength={5}
@@ -610,11 +691,11 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
             <View style={{ flex: 1 }}>
               <Text style={[styles.fieldLabel, { color: colors.secondaryText }]}>Duration (min)</Text>
               <TextInput
-                style={[styles.modalInput, { backgroundColor: colors.inputBackground, color: colors.text, borderColor: colors.border }]}
+                style={[styles.modalInput, { backgroundColor: colors.inputBackground, color: colors.text, borderColor: conflict ? colors.danger : colors.border }]}
                 placeholder="30"
                 placeholderTextColor={colors.secondaryText}
                 value={duration}
-                onChangeText={setDuration}
+                onChangeText={(txt) => { setDuration(txt); setConflict(null); }}
                 keyboardType="number-pad"
                 inputMode="numeric"
               />
@@ -626,7 +707,7 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
             {["15", "30", "45", "60", "90"].map((d) => (
               <TouchableOpacity
                 key={d}
-                onPress={() => setDuration(d)}
+                onPress={() => { setDuration(d); setConflict(null); }}
                 style={[
                   styles.durationPreset,
                   {
@@ -642,6 +723,16 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
             ))}
           </View>
 
+          {/* Conflict warning */}
+          {conflict && (
+            <View style={[styles.conflictWarning, { backgroundColor: colors.danger + "18", borderColor: colors.danger }]}>
+              <Ionicons name="warning-outline" size={16} color={colors.danger} />
+              <Text style={[styles.conflictWarningText, { color: colors.danger }]}>
+                Overlaps with "{conflict.title}" at {formatTime(conflict.time)} ({conflict.duration} min). Pick a different time.
+              </Text>
+            </View>
+          )}
+
           {/* Actions */}
           <View style={styles.modalActions}>
             <TouchableOpacity
@@ -652,15 +743,21 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
             </TouchableOpacity>
             <TouchableOpacity
               onPress={handleSave}
-              style={[styles.modalSaveBtn, { backgroundColor: colors.primary }, !title.trim() && { opacity: 0.4 }]}
-              disabled={!title.trim()}
+              style={[styles.modalSaveBtn, { backgroundColor: colors.primary }, (!title.trim() || saving) && { opacity: 0.4 }]}
+              disabled={!title.trim() || saving}
             >
-              <Ionicons name={isEdit ? "checkmark" : "add"} size={18} color="#fff" style={{ marginRight: 4 }} />
-              <Text style={{ color: "#fff", fontWeight: "700" }}>{isEdit ? "Save Changes" : "Add"}</Text>
+              {saving ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <>
+                  <Ionicons name={isEdit ? "checkmark" : "add"} size={18} color="#fff" style={{ marginRight: 4 }} />
+                  <Text style={{ color: "#fff", fontWeight: "700" }}>{isEdit ? "Save Changes" : "Add"}</Text>
+                </>
+              )}
             </TouchableOpacity>
           </View>
         </Animated.View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -671,7 +768,6 @@ export default function TimeManagerScreen() {
   const { colors } = useTheme();
   const {
     tasks, addTask, updateTask, deleteTask, toggleComplete,
-    dailyReminderEnabled, setDailyReminderEnabled,
     showDailyBanner, dismissDailyBanner,
   } = useTime();
   const { profile } = useProfile();
@@ -704,8 +800,8 @@ export default function TimeManagerScreen() {
     setModalVisible(true);
   }
 
-  function handleSave(fields: Omit<Task, "id" | "createdAt">, editId?: string) {
-    if (editId) { updateTask(editId, fields); } else { addTask(fields); }
+  async function handleSave(fields: Omit<Task, "id" | "createdAt">, editId?: string) {
+    return editId ? updateTask(editId, fields) : addTask(fields);
   }
 
   async function handleToggle(task: Task) {
@@ -751,25 +847,6 @@ export default function TimeManagerScreen() {
               </TouchableOpacity>
             </View>
           )}
-
-          {/* Reminder Toggle */}
-          <View style={[styles.reminderToggleRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <View style={styles.reminderToggleLeft}>
-              <Ionicons name="notifications-outline" size={20} color={colors.primary} style={{ marginRight: 10 }} />
-              <View>
-                <Text style={[styles.reminderToggleLabel, { color: colors.text }]}>Daily Hobby Reminder</Text>
-                <Text style={[styles.reminderToggleSub, { color: colors.secondaryText }]}>
-                  Get a nudge each day to practice
-                </Text>
-              </View>
-            </View>
-            <Switch
-              value={dailyReminderEnabled}
-              onValueChange={setDailyReminderEnabled}
-              trackColor={{ false: colors.border, true: colors.primary + "80" }}
-              thumbColor={dailyReminderEnabled ? colors.primary : colors.secondaryText}
-            />
-          </View>
 
           {/* Streak mini */}
           {currentStreak > 0 && (
@@ -846,36 +923,16 @@ export default function TimeManagerScreen() {
             )}
           </View>
 
-          {/* Quick-add from profile hobbies */}
-          {profile.hobbies.length > 0 && (
-            <View style={styles.sectionPad}>
-              <Text style={[styles.sectionTitle, { color: colors.text }]}>Your Hobbies</Text>
-              <Text style={[styles.sectionSub, { color: colors.secondaryText }]}>
-                Tap any hobby to quickly add a 30-min session.
-              </Text>
-              <View style={styles.hobbyChips}>
-                {profile.hobbies.map((h) => (
-                  <TouchableOpacity
-                    key={h}
-                    onPress={() =>
-                      addTask({
-                        title: h,
-                        type: "hobby",
-                        date: selectedDate,
-                        time: "16:00",
-                        duration: 30,
-                        completed: false,
-                      })
-                    }
-                    style={[styles.quickHobbyChip, { backgroundColor: colors.primary + "18", borderColor: colors.primary + "40" }]}
-                  >
-                    <Ionicons name="star-outline" size={14} color={colors.primary} style={{ marginRight: 4 }} />
-                    <Text style={{ color: colors.primary, fontWeight: "600", fontSize: 13 }}>{h}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-          )}
+          {/* Week overview */}
+          <View style={styles.sectionPad}>
+            <WeekOverview
+              tasks={tasks}
+              weekOffset={weekOffset}
+              selected={selectedDate}
+              onSelect={setSelectedDate}
+              colors={colors}
+            />
+          </View>
         </ScrollView>
 
         {/* Floating Practice Now button */}
@@ -946,23 +1003,7 @@ const styles = StyleSheet.create({
   },
   bannerTitle: { fontWeight: "700", fontSize: 14, marginBottom: 2 },
   bannerBody: { fontSize: 13, lineHeight: 18 },
-  reminderToggleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginHorizontal: 16,
-    marginTop: 16,
-    marginBottom: 4,
-    padding: 14,
-    borderRadius: 14,
-    borderWidth: 1,
-  },
-  reminderToggleLeft: { flexDirection: "row", alignItems: "center", flex: 1 },
-  reminderToggleLabel: { fontWeight: "600", fontSize: 14 },
-  reminderToggleSub: { fontSize: 12, marginTop: 1 },
   sectionPad: { paddingHorizontal: 16, marginTop: 16 },
-  sectionTitle: { fontSize: 17, fontWeight: "700", marginBottom: 4 },
-  sectionSub: { fontSize: 13, marginBottom: 10 },
   dayStrip: { paddingBottom: 4 },
   dayStripGrid: { flexDirection: "row", gap: 4, marginTop: 8 },
   weekNav: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 4 },
@@ -1032,15 +1073,35 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 10,
   },
-  hobbyChips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  quickHobbyChip: {
+  // Week overview
+  weekOverviewCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 6,
+  },
+  weekOverviewTitle: { fontSize: 15, fontWeight: "700", marginHorizontal: 10, marginTop: 8, marginBottom: 6 },
+  weekOverviewRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 10,
-    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    borderRadius: 12,
+    gap: 10,
   },
+  weekOverviewDate: { width: 34, alignItems: "center" },
+  weekOverviewDay: { fontSize: 10, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.3 },
+  weekOverviewNum: { fontSize: 16, fontWeight: "800" },
+  weekOverviewEmpty: { fontSize: 12, fontStyle: "italic" },
+  weekOverviewSummary: { fontSize: 13, fontWeight: "600" },
+  weekOverviewCount: {
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 5,
+  },
+  weekOverviewCountText: { color: "#fff", fontSize: 11, fontWeight: "700" },
   // Modal
   modalOverlay: {
     flex: 1,
@@ -1108,6 +1169,17 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     borderWidth: 1,
   },
+  conflictWarning: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  conflictWarningText: { flex: 1, fontSize: 13, fontWeight: "600", lineHeight: 18 },
   modalActions: { flexDirection: "row", gap: 12, marginTop: 16 },
   modalCancelBtn: {
     flex: 1,
