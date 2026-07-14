@@ -14,6 +14,7 @@ import { useState } from "react";
 import { useLocalSearchParams, router } from "expo-router";
 import { useTheme } from "../../context/ThemeContext";
 import { usePosts } from "../../context/PostsContext";
+import { useProfile } from "../../context/ProfileContext";
 import PrimaryButton from "../../components/PrimaryButton";
 import TagChip from "../../components/TagChip";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -22,9 +23,12 @@ export default function EditPost() {
   const { colors } = useTheme();
   const { id } = useLocalSearchParams<{ id: string }>();
   const { posts, editPost } = usePosts();
+  const { profile } = useProfile();
 
   // Look up the post to pre-fill the form
-  const existing = posts.find((p) => p.id === id);
+  const found = posts.find((p) => p.id === id);
+  // Only the post's own author may edit it — treat someone else's post as not found
+  const existing = found?.username === profile.username ? found : undefined;
 
   // State initialised from the existing post (or empty fallbacks for safety)
   const [title, setTitle] = useState(existing?.title ?? "");

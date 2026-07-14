@@ -41,6 +41,9 @@ export default function PostCard({ post, colors, onEdit, onDelete }: Props) {
 
   const likes = post.likes ?? [];
   const isLiked = likes.includes(profile.username);
+  const isOwn = post.username === profile.username;
+  // Only count non-deleted comments — matches the heading on the post detail screen
+  const commentCount = post.comments.filter((c) => !c.deletedAt).length;
 
   /** Toggles the current user's like on the post */
   async function handleLike(e: any) {
@@ -66,15 +69,18 @@ export default function PostCard({ post, colors, onEdit, onDelete }: Props) {
           {/* ── Header: author on left, edit/delete icons on right ── */}
           <View style={styles.header}>
             <Text style={[styles.username, { color: colors.text }]}>@{post.username}</Text>
-            <View style={styles.actions}>
-              {/* stopPropagation prevents the card's onPress from also firing */}
-              <Pressable onPress={(e) => { e.stopPropagation?.(); onEdit(); }} style={styles.actionBtn} hitSlop={8}>
-                <Ionicons name="pencil-outline" size={16} color={colors.primary} />
-              </Pressable>
-              <Pressable onPress={(e) => { e.stopPropagation?.(); setDeleteVisible(true); }} style={styles.actionBtn} hitSlop={8}>
-                <Ionicons name="trash-outline" size={16} color={colors.danger} />
-              </Pressable>
-            </View>
+            {/* Edit/delete are only ever available to the post's own author */}
+            {isOwn && (
+              <View style={styles.actions}>
+                {/* stopPropagation prevents the card's onPress from also firing */}
+                <Pressable onPress={(e) => { e.stopPropagation?.(); onEdit(); }} style={styles.actionBtn} hitSlop={8}>
+                  <Ionicons name="pencil-outline" size={16} color={colors.primary} />
+                </Pressable>
+                <Pressable onPress={(e) => { e.stopPropagation?.(); setDeleteVisible(true); }} style={styles.actionBtn} hitSlop={8}>
+                  <Ionicons name="trash-outline" size={16} color={colors.danger} />
+                </Pressable>
+              </View>
+            )}
           </View>
 
           {/* ── Post title ── */}
@@ -97,7 +103,7 @@ export default function PostCard({ post, colors, onEdit, onDelete }: Props) {
             ))}
           </View>
 
-          {/* ── Footer: like + share ── */}
+          {/* ── Footer: like + comments + share ── */}
           <View style={[styles.footer, { borderTopColor: colors.border }]}>
             {/* Like button — filled heart when liked, outline when not */}
             <Pressable onPress={handleLike} style={styles.footerAction} hitSlop={8}>
@@ -108,6 +114,18 @@ export default function PostCard({ post, colors, onEdit, onDelete }: Props) {
               />
               <Text style={[styles.footerCount, { color: colors.secondaryText }]}>
                 {likes.length}
+              </Text>
+            </Pressable>
+
+            {/* Comments — tapping opens the post detail screen where comments live */}
+            <Pressable
+              onPress={(e) => { e.stopPropagation?.(); router.push(`/post/${post.id}`); }}
+              style={styles.footerAction}
+              hitSlop={8}
+            >
+              <Ionicons name="chatbubble-outline" size={16} color={colors.secondaryText} />
+              <Text style={[styles.footerCount, { color: colors.secondaryText }]}>
+                {commentCount}
               </Text>
             </Pressable>
 

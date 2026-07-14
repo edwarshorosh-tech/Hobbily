@@ -71,6 +71,10 @@ export default function PostDetail() {
     );
   }
 
+  // Narrowed alias for use inside the handlers below — `post` is guaranteed non-null past
+  // the guard above, but TS doesn't carry that narrowing into nested function declarations.
+  const p = post;
+
   // Derived values
   const likes = post.likes ?? [];
   const isLiked = likes.includes(profile.username);
@@ -88,7 +92,7 @@ export default function PostDetail() {
   /** Saves a new comment and clears the input field */
   async function handleAddComment() {
     if (!newComment.trim()) return;
-    await addComment(post.id, newComment.trim());
+    await addComment(p.id, newComment.trim());
     setNewComment("");
   }
 
@@ -101,7 +105,7 @@ export default function PostDetail() {
   /** Saves the edited comment and exits edit mode */
   async function handleSaveEdit(commentId: string) {
     if (!editDraft.trim()) return;
-    await editComment(post.id, commentId, editDraft.trim());
+    await editComment(p.id, commentId, editDraft.trim());
     setEditingCommentId(null);
     setEditDraft("");
   }
@@ -120,20 +124,20 @@ export default function PostDetail() {
   /** Confirmed — soft-deletes the target comment */
   async function handleConfirmDelete() {
     if (!deleteTarget) return;
-    await deleteComment(post.id, deleteTarget);
+    await deleteComment(p.id, deleteTarget);
     setDeleteTarget(null);
   }
 
   /** Toggles the current user's like */
   async function handleLike() {
-    await likePost(post.id);
+    await likePost(p.id);
   }
 
   /** Opens the native share sheet with post content */
   async function handleShare() {
     await Share.share({
-      message: `Check out "${post.title}" by @${post.username} on Hobbily!\n\n${post.body}`,
-      title: post.title,
+      message: `Check out "${p.title}" by @${p.username} on Hobbily!\n\n${p.body}`,
+      title: p.title,
     });
   }
 

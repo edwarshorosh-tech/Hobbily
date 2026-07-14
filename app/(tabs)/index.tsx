@@ -145,11 +145,13 @@ function AIAssistantCard({ colors, addTask }: { colors: any; addTask: (task: any
       if (result.ok) {
         setFeedback({ ok: true, message: `Scheduled "${parsed.title}" — ${parsed.date} at ${parsed.time}` });
         setInput("");
-      } else {
+      } else if (result.reason === "conflict") {
         setFeedback({
           ok: false,
           message: `That overlaps with "${result.conflict.title}" at ${result.conflict.time} — try a different time.`,
         });
+      } else {
+        setFeedback({ ok: false, message: "That's in the past — try a current or future date/time." });
       }
     } else {
       setFeedback({ ok: false, message: 'Couldn’t find a date/time — try "Soccer practice on July 17th at 19:00"' });
@@ -362,9 +364,7 @@ export default function HomeScreen() {
             <Text style={[styles.sectionTitle, { color: colors.text }]}>Quick Actions</Text>
             <View style={styles.quickActions}>
               {[
-                { icon: "add-circle-outline" as const, label: "Add Task", action: () => router.push("/(tabs)/time-manager"), color: colors.primary },
-                { icon: "compass-outline" as const, label: "Explore", action: () => router.push("/(tabs)/opportunities"), color: "#8B5CF6" },
-                { icon: "chatbubbles-outline" as const, label: "Community", action: () => router.push("/(tabs)/community"), color: "#10B981" },
+                { icon: "add-circle-outline" as const, label: "Post", action: () => router.push("/create-post" as any), color: colors.primary },
                 { icon: "newspaper-outline" as const, label: "Feed", action: () => router.push("/feed" as any), color: "#F59E0B" },
               ].map((a) => (
                 <TouchableOpacity key={a.label} onPress={a.action} style={[styles.quickAction, { backgroundColor: colors.card, borderColor: colors.border }]}>

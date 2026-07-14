@@ -3,12 +3,13 @@ import { ThemeProvider, useTheme } from "../context/ThemeContext";
 import { AuthProvider, useAuth } from "../context/AuthContext";
 import { ProfileProvider, useProfile } from "../context/ProfileContext";
 import { PostsProvider, usePosts } from "../context/PostsContext";
-import { TimeProvider } from "../context/TimeContext";
+import { TimeProvider, useTime } from "../context/TimeContext";
 import { CommunityProvider } from "../context/CommunityContext";
-import { ProgressProvider } from "../context/ProgressContext";
+import { ProgressProvider, useProgress } from "../context/ProgressContext";
 import { Image, Animated, StyleSheet } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { TipsResetProvider } from "../components/TipBanner";
+import PracticeTimerModal from "../components/PracticeTimerModal";
 import { useEffect, useRef, useState } from "react";
 
 function AppShell() {
@@ -16,6 +17,8 @@ function AppShell() {
   const { profile, isLoaded } = useProfile();
   const { isAuthLoaded, user } = useAuth();
   const { colors } = useTheme();
+  const { dueTask, dismissDueTask, deleteTask } = useTime();
+  const { recordSession } = useProgress();
   const opacity = useRef(new Animated.Value(1)).current;
   const [showSplash, setShowSplash] = useState(true);
   const redirected = useRef(false);
@@ -63,6 +66,26 @@ function AppShell() {
         >
           <Image source={require("../assets/images/Hobbily_Logo.png")} style={styles.splashLogo} />
         </Animated.View>
+      )}
+      {/* Pops up automatically whenever a scheduled task's time arrives, wherever the user is in the app */}
+      {!showSplash && dueTask && (
+        <PracticeTimerModal
+          visible
+          onClose={async () => {
+            // Whether the session was finished or skipped/discarded, its slot has passed —
+            // clear it from the schedule instead of leaving a stale entry behind.
+            await deleteTask(dueTask.id);
+            dismissDueTask();
+          }}
+          onComplete={async (minutes) => {
+            await recordSession(minutes);
+          }}
+          defaultTitle={dueTask.title}
+          defaultMinutes={dueTask.duration}
+          colors={colors}
+          autoStart
+          banner="It's time!"
+        />
       )}
     </>
   );
