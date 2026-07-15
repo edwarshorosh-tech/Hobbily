@@ -40,6 +40,14 @@ const OPPORTUNITIES: Opportunity[] = [
 const CATEGORIES = ["All", "Saved", "Photography", "Coding", "Sports", "Music", "Drawing & Art", "Film & Video", "Dance", "Cooking", "Gaming", "Reading"];
 const COST_COLORS: Record<string, string> = { Free: "#10B981", Subsidised: "#2563EB", Paid: "#8B5CF6" };
 
+/** True if the opportunity's location text mentions the user's city (either direction, case-insensitive). */
+function isNearCity(location: string, city: string): boolean {
+  if (!city.trim()) return false;
+  const loc = location.toLowerCase();
+  const c = city.trim().toLowerCase();
+  return loc.includes(c) || c.includes(loc);
+}
+
 // ── Registration Modal ────────────────────────────────────────────────────────
 
 function RegistrationModal({ opp, onClose, colors }: { opp: Opportunity; onClose: () => void; colors: any }) {
@@ -96,7 +104,7 @@ function RegistrationModal({ opp, onClose, colors }: { opp: Opportunity; onClose
 
 // ── Opportunity Card ──────────────────────────────────────────────────────────
 
-function OpportunityCard({ opp, saved, colors, onPress, onToggleSave }: { opp: Opportunity; saved: boolean; colors: any; onPress: () => void; onToggleSave: () => void }) {
+function OpportunityCard({ opp, saved, near, colors, onPress, onToggleSave }: { opp: Opportunity; saved: boolean; near: boolean; colors: any; onPress: () => void; onToggleSave: () => void }) {
   return (
     <TouchableOpacity onPress={onPress} style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]} activeOpacity={0.82}>
       <View style={styles.cardTop}>
@@ -113,6 +121,12 @@ function OpportunityCard({ opp, saved, colors, onPress, onToggleSave }: { opp: O
           </TouchableOpacity>
         </View>
       </View>
+      {near && (
+        <View style={[styles.nearBadge, { backgroundColor: colors.primary + "18" }]}>
+          <Ionicons name="location" size={11} color={colors.primary} style={{ marginRight: 3 }} />
+          <Text style={[styles.nearBadgeText, { color: colors.primary }]}>Near you</Text>
+        </View>
+      )}
       <Text style={[styles.cardDesc, { color: colors.secondaryText }]} numberOfLines={2}>{opp.description}</Text>
       <View style={styles.cardMeta}>
         {[{ icon: "location-outline", text: opp.location }, { icon: "people-outline", text: `Ages ${opp.ageRange}` }, { icon: "pricetag-outline", text: opp.category }].map((m) => (
@@ -227,17 +241,30 @@ export default function OpportunitiesScreen() {
   const [registering, setRegistering] = useState(false);
 
   const saved = profile.savedOpportunities ?? [];
+  const city = profile.city ?? "";
 
   function toggleSave(id: string) {
     const updated = saved.includes(id) ? saved.filter((s) => s !== id) : [...saved, id];
     saveProfile({ ...profile, savedOpportunities: updated });
   }
 
+  // Only offer the "Near You" filter once the user has a city set on their profile
+  const categories = city.trim() ? ["All", "Near You", "Saved", ...CATEGORIES.slice(2)] : CATEGORIES;
+  // Fall back to "All" if the category the user had selected disappears (e.g. city was cleared)
+  const effectiveCategory = categories.includes(activeCategory) ? activeCategory : "All";
+
   const filtered = OPPORTUNITIES.filter((o) => {
-    if (activeCategory === "Saved") return saved.includes(o.id);
-    const matchCat = activeCategory === "All" || o.category === activeCategory;
+    if (effectiveCategory === "Saved") return saved.includes(o.id);
+    if (effectiveCategory === "Near You") return isNearCity(o.location, city);
+    const matchCat = effectiveCategory === "All" || o.category === effectiveCategory;
     const matchSearch = !search || o.name.toLowerCase().includes(search.toLowerCase()) || o.category.toLowerCase().includes(search.toLowerCase()) || o.location.toLowerCase().includes(search.toLowerCase()) || o.organisation.toLowerCase().includes(search.toLowerCase());
     return matchCat && matchSearch;
+  }).sort((a, b) => {
+    // Surface nearby opportunities first without hiding the rest
+    if (effectiveCategory === "Saved" || effectiveCategory === "Near You") return 0;
+    const aNear = isNearCity(a.location, city);
+    const bNear = isNearCity(b.location, city);
+    return aNear === bNear ? 0 : aNear ? -1 : 1;
   });
 
   return (
@@ -263,11 +290,12 @@ export default function OpportunitiesScreen() {
           </View>
 
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryStrip}>
-            {CATEGORIES.map((cat) => {
-              const isActive = cat === activeCategory;
+            {categories.map((cat) => {
+              const isActive = cat === effectiveCategory;
               return (
                 <TouchableOpacity key={cat} onPress={() => setActiveCategory(cat)} style={[styles.categoryChip, { borderColor: isActive ? colors.primary : colors.border, backgroundColor: isActive ? colors.primary : colors.card }]}>
                   {cat === "Saved" && <Ionicons name="heart" size={12} color={isActive ? "#fff" : "#EF4444"} style={{ marginRight: 4 }} />}
+                  {cat === "Near You" && <Ionicons name="location" size={12} color={isActive ? "#fff" : colors.primary} style={{ marginRight: 4 }} />}
                   <Text style={[styles.categoryChipText, { color: isActive ? "#fff" : colors.text }]}>{cat}</Text>
                 </TouchableOpacity>
               );
@@ -277,10 +305,10 @@ export default function OpportunitiesScreen() {
           <View style={styles.resultsList}>
             {filtered.length === 0 ? (
               <View style={[styles.emptyCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-                <Ionicons name={activeCategory === "Saved" ? "heart-outline" : "search-outline"} size={40} color={colors.secondaryText} />
-                <Text style={[styles.emptyTitle, { color: colors.text }]}>{activeCategory === "Saved" ? "No saved items yet" : "No results found"}</Text>
-                <Text style={[styles.emptyBody, { color: colors.secondaryText }]}>{activeCategory === "Saved" ? "Tap ♡ on any card to save it here." : "Try a different search or category."}</Text>
-                {activeCategory !== "Saved" && (
+                <Ionicons name={effectiveCategory === "Saved" ? "heart-outline" : "search-outline"} size={40} color={colors.secondaryText} />
+                <Text style={[styles.emptyTitle, { color: colors.text }]}>{effectiveCategory === "Saved" ? "No saved items yet" : effectiveCategory === "Near You" ? "Nothing near you yet" : "No results found"}</Text>
+                <Text style={[styles.emptyBody, { color: colors.secondaryText }]}>{effectiveCategory === "Saved" ? "Tap ♡ on any card to save it here." : effectiveCategory === "Near You" ? "No programs currently match your city." : "Try a different search or category."}</Text>
+                {effectiveCategory !== "Saved" && (
                   <TouchableOpacity onPress={() => { setSearch(""); setActiveCategory("All"); }} style={[styles.emptyBtn, { backgroundColor: colors.primary }]}>
                     <Text style={{ color: "#fff", fontWeight: "600" }}>Clear Filters</Text>
                   </TouchableOpacity>
@@ -288,7 +316,7 @@ export default function OpportunitiesScreen() {
               </View>
             ) : (
               filtered.map((opp) => (
-                <OpportunityCard key={opp.id} opp={opp} saved={saved.includes(opp.id)} colors={colors} onPress={() => setSelected(opp)} onToggleSave={() => toggleSave(opp.id)} />
+                <OpportunityCard key={opp.id} opp={opp} saved={saved.includes(opp.id)} near={isNearCity(opp.location, city)} colors={colors} onPress={() => setSelected(opp)} onToggleSave={() => toggleSave(opp.id)} />
               ))
             )}
           </View>
@@ -327,6 +355,8 @@ const styles = StyleSheet.create({
   cardOrg: { fontSize: 13 },
   costBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, alignSelf: "flex-start" },
   costText: { fontSize: 11, fontWeight: "700" },
+  nearBadge: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, marginBottom: 8 },
+  nearBadgeText: { fontSize: 11, fontWeight: "700" },
   cardDesc: { fontSize: 13, lineHeight: 19, marginBottom: 10 },
   cardMeta: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginBottom: 8 },
   metaItem: { flexDirection: "row", alignItems: "center", gap: 3 },

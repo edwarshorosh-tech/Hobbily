@@ -32,20 +32,6 @@ function formatTime(time: string): string {
   return `${h % 12 || 12}:${m.toString().padStart(2, "0")} ${ampm}`;
 }
 
-// Opportunities that match user hobbies (subset of OPPORTUNITIES from explore tab)
-const QUICK_OPPS = [
-  { id: "2", name: "Maktoob Youth Coding Bootcamp", category: "Coding", cost: "Free", location: "Ramallah / Online" },
-  { id: "4", name: "Al-Kamandjati Music School", category: "Music", cost: "Free", location: "Ramallah" },
-  { id: "1", name: "Youth Photography Workshop", category: "Photography", cost: "Subsidised", location: "Tel Aviv" },
-  { id: "3", name: "Football for Peace Academy", category: "Sports", cost: "Free", location: "Various" },
-  { id: "5", name: "Young Creators Art Studio", category: "Drawing & Art", cost: "Subsidised", location: "Jerusalem" },
-  { id: "10", name: "e-Sports & Game Design Camp", category: "Gaming", cost: "Paid", location: "Haifa" },
-  { id: "8", name: "Dance Fusion Workshop", category: "Dance", cost: "Subsidised", location: "Kibbutz Netiv HaL." },
-  { id: "9", name: "Kitchen Explorers Cooking Club", category: "Cooking", cost: "Free", location: "Jaffa" },
-];
-
-const COST_COLORS: Record<string, string> = { Free: "#10B981", Subsidised: "#2563EB", Paid: "#8B5CF6" };
-
 // ── AI Assistant ──────────────────────────────────────────────────────────────
 
 const MONTHS = [
@@ -272,11 +258,6 @@ export default function HomeScreen() {
 
   const completedToday = todayTasks.filter((t) => t.completed).length;
 
-  // Suggested opportunities matched to hobbies
-  const suggested = profile.hobbies.length > 0
-    ? QUICK_OPPS.filter((o) => profile.hobbies.some((h) => o.category.toLowerCase().includes(h.toLowerCase()) || h.toLowerCase().includes(o.category.toLowerCase()))).slice(0, 2)
-    : QUICK_OPPS.slice(0, 2);
-
   return (
     <SwipeableTab tabIndex={0} backgroundColor={colors.background}>
       <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
@@ -377,48 +358,6 @@ export default function HomeScreen() {
             </View>
           </View>
 
-          {/* Suggested opportunities */}
-          <View style={styles.section}>
-            <View style={styles.sectionRow}>
-              <Text style={[styles.sectionTitle, { color: colors.text }]}>Suggested for You</Text>
-              <TouchableOpacity onPress={() => router.push("/(tabs)/opportunities")}>
-                <Text style={[styles.sectionLink, { color: colors.primary }]}>See all</Text>
-              </TouchableOpacity>
-            </View>
-            {suggested.map((opp) => (
-              <TouchableOpacity
-                key={opp.id}
-                onPress={() => router.push("/(tabs)/opportunities")}
-                style={[styles.oppCard, { backgroundColor: colors.card, borderColor: colors.border }]}
-              >
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.oppName, { color: colors.text }]} numberOfLines={1}>{opp.name}</Text>
-                  <View style={styles.oppMeta}>
-                    <Ionicons name="location-outline" size={12} color={colors.secondaryText} />
-                    <Text style={[styles.oppLocation, { color: colors.secondaryText }]}>{opp.location}</Text>
-                  </View>
-                </View>
-                <View style={[styles.costChip, { backgroundColor: COST_COLORS[opp.cost] + "18" }]}>
-                  <Text style={[styles.costText, { color: COST_COLORS[opp.cost] }]}>{opp.cost}</Text>
-                </View>
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          {/* Your hobbies */}
-          {profile.hobbies.length > 0 && (
-            <View style={styles.section}>
-              <Text style={[styles.sectionTitle, { color: colors.text }]}>Your Hobbies</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
-                {profile.hobbies.map((h) => (
-                  <View key={h} style={[styles.hobbyChip, { backgroundColor: colors.card, borderColor: colors.border }]}>
-                    <Ionicons name="star-outline" size={13} color={colors.primary} style={{ marginRight: 4 }} />
-                    <Text style={[styles.hobbyChipText, { color: colors.text }]}>{h}</Text>
-                  </View>
-                ))}
-              </ScrollView>
-            </View>
-          )}
         </ScrollView>
 
         {/* Notification modal (placeholder) */}
@@ -488,16 +427,6 @@ const styles = StyleSheet.create({
   quickAction: { flex: 1, alignItems: "center", padding: 12, borderRadius: 14, borderWidth: 1, gap: 6 },
   quickActionIcon: { width: 44, height: 44, borderRadius: 12, alignItems: "center", justifyContent: "center" },
   quickActionLabel: { fontSize: 11, fontWeight: "600", textAlign: "center" },
-  // Opportunities
-  oppCard: { flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 12, borderWidth: 1, marginBottom: 8, gap: 10 },
-  oppName: { fontSize: 14, fontWeight: "700", marginBottom: 3 },
-  oppMeta: { flexDirection: "row", alignItems: "center", gap: 3 },
-  oppLocation: { fontSize: 12 },
-  costChip: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
-  costText: { fontSize: 11, fontWeight: "700" },
-  // Hobbies
-  hobbyChip: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20, borderWidth: 1 },
-  hobbyChipText: { fontSize: 13, fontWeight: "600" },
   // AI Assistant
   aiCard: {
     marginHorizontal: 16,
