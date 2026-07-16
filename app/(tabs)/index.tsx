@@ -1,9 +1,9 @@
 /**
  * Home / Dashboard (tab 0)
- * Greeting, streak card, today's tasks, suggested opportunities, quick actions.
+ * Greeting, streak indicator, today's tasks, suggested opportunities, quick actions.
  */
 import {
-  View, Text, ScrollView, StyleSheet, TouchableOpacity, Image, Modal, ActivityIndicator, TextInput,
+  View, Text, ScrollView, StyleSheet, TouchableOpacity, Modal, ActivityIndicator, TextInput,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -191,41 +191,6 @@ function AIAssistantCard({ colors, addTask }: { colors: any; addTask: (task: any
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function StreakCard({ streak, sessions, minutes, freeze, onFreeze, colors }: {
-  streak: number; sessions: number; minutes: number;
-  freeze: boolean; onFreeze: () => void; colors: any;
-}) {
-  const hours = Math.floor(minutes / 60);
-  const mins = minutes % 60;
-  return (
-    <View style={[styles.streakCard, { backgroundColor: colors.primary }]}>
-      <View style={styles.streakLeft}>
-        <View style={styles.streakFlameRow}>
-          <Ionicons name="flame" size={28} color="#FCD34D" />
-          <Text style={styles.streakNum}>{streak}</Text>
-        </View>
-        <Text style={styles.streakLabel}>day streak</Text>
-      </View>
-      <View style={styles.streakDivider} />
-      <View style={styles.streakStats}>
-        <View style={styles.streakStat}>
-          <Text style={styles.streakStatNum}>{sessions}</Text>
-          <Text style={styles.streakStatLabel}>sessions</Text>
-        </View>
-        <View style={styles.streakStat}>
-          <Text style={styles.streakStatNum}>{hours > 0 ? `${hours}h ${mins}m` : `${mins}m`}</Text>
-          <Text style={styles.streakStatLabel}>practiced</Text>
-        </View>
-      </View>
-      {freeze && (
-        <TouchableOpacity onPress={onFreeze} style={styles.freezeBtn}>
-          <Ionicons name="snow-outline" size={16} color="#93C5FD" />
-        </TouchableOpacity>
-      )}
-    </View>
-  );
-}
-
 function TodayTaskRow({ title, time, completed, type, colors }: { title: string; time: string; completed: boolean; type: string; colors: any }) {
   return (
     <View style={[styles.todayTask, { backgroundColor: colors.card, borderColor: colors.border, opacity: completed ? 0.55 : 1 }]}>
@@ -247,7 +212,7 @@ export default function HomeScreen() {
   const { colors } = useTheme();
   const { profile } = useProfile();
   const { tasks, addTask } = useTime();
-  const { currentStreak, totalSessions, totalMinutes, streakFreezeAvailable, useStreakFreeze } = useProgress();
+  const { currentStreak } = useProgress();
   const [notifVisible, setNotifVisible] = useState(false);
 
   const today = todayISO();
@@ -275,7 +240,14 @@ export default function HomeScreen() {
           <TouchableOpacity onPress={() => setNotifVisible(true)} style={[styles.notifBtn, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <Ionicons name="notifications-outline" size={20} color={colors.text} />
           </TouchableOpacity>
-          <Image source={require("../../assets/images/Hobbily_Logo.png")} style={styles.headerLogo} />
+          <View
+            style={[styles.streakBadge, { backgroundColor: colors.card, borderColor: colors.border }]}
+            accessible
+            accessibilityLabel={`Current streak: ${currentStreak} days`}
+          >
+            <Ionicons name="flame" size={16} color="#F59E0B" />
+            <Text style={[styles.streakBadgeText, { color: colors.text }]}>{currentStreak ?? 0}</Text>
+          </View>
         </View>
 
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }}>
@@ -287,74 +259,66 @@ export default function HomeScreen() {
             colors={colors}
           />
 
-          {/* AI Assistant */}
-          <AIAssistantCard colors={colors} addTask={addTask} />
+          <View style={styles.content}>
+            {/* AI Assistant */}
+            <AIAssistantCard colors={colors} addTask={addTask} />
 
-          {/* Streak card */}
-          <View style={{ paddingHorizontal: 16, marginTop: 16 }}>
-            <StreakCard
-              streak={currentStreak}
-              sessions={totalSessions}
-              minutes={totalMinutes}
-              freeze={streakFreezeAvailable}
-              onFreeze={useStreakFreeze}
-              colors={colors}
-            />
-          </View>
-
-          {/* Today's schedule */}
-          <View style={styles.section}>
-            <View style={styles.sectionRow}>
-              <Text style={[styles.sectionTitle, { color: colors.text }]}>Today's Schedule</Text>
-              <TouchableOpacity onPress={() => router.push("/(tabs)/time-manager")}>
-                <Text style={[styles.sectionLink, { color: colors.primary }]}>View all</Text>
-              </TouchableOpacity>
-            </View>
-
-            {todayTasks.length === 0 ? (
-              <View style={[styles.emptyToday, { backgroundColor: colors.card, borderColor: colors.border }]}>
-                <Ionicons name="checkmark-done-circle-outline" size={32} color={colors.success} />
-                <Text style={[styles.emptyTodayText, { color: colors.secondaryText }]}>
-                  Nothing scheduled today — {"\n"}
-                  <Text style={{ color: colors.primary, fontWeight: "700" }} onPress={() => router.push("/(tabs)/time-manager")}>
-                    Add an activity
-                  </Text>
-                </Text>
+            {/* Today's schedule */}
+            <View style={styles.section}>
+              <View style={styles.sectionRow}>
+                <Text style={[styles.sectionTitle, { color: colors.text }]}>Today's Schedule</Text>
+                <TouchableOpacity onPress={() => router.push("/(tabs)/time-manager")}>
+                  <Text style={[styles.sectionLink, { color: colors.primary }]}>View all</Text>
+                </TouchableOpacity>
               </View>
-            ) : (
-              <>
-                {todayTasks.map((t) => (
-                  <TodayTaskRow key={t.id} title={t.title} time={t.time} completed={t.completed} type={t.type} colors={colors} />
-                ))}
-                {completedToday > 0 && (
-                  <View style={[styles.progressMini, { backgroundColor: colors.card, borderColor: colors.border }]}>
-                    <View style={[styles.progressMiniBar, { backgroundColor: colors.border }]}>
-                      <View style={[styles.progressMiniFill, { backgroundColor: colors.success, width: `${(completedToday / todayTasks.length) * 100}%` as any }]} />
-                    </View>
-                    <Text style={[styles.progressMiniText, { color: colors.secondaryText }]}>
-                      {completedToday}/{todayTasks.length} done today
+
+              <View>
+                {todayTasks.length === 0 ? (
+                  <View style={[styles.emptyToday, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                    <Ionicons name="checkmark-done-circle-outline" size={32} color={colors.success} />
+                    <Text style={[styles.emptyTodayText, { color: colors.secondaryText }]}>
+                      Nothing scheduled today — {"\n"}
+                      <Text style={{ color: colors.primary, fontWeight: "700" }} onPress={() => router.push("/(tabs)/time-manager")}>
+                        Add an activity
+                      </Text>
                     </Text>
                   </View>
+                ) : (
+                  <>
+                    {todayTasks.map((t) => (
+                      <TodayTaskRow key={t.id} title={t.title} time={t.time} completed={t.completed} type={t.type} colors={colors} />
+                    ))}
+                    {completedToday > 0 && (
+                      <View style={[styles.progressMini, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                        <View style={[styles.progressMiniBar, { backgroundColor: colors.border }]}>
+                          <View style={[styles.progressMiniFill, { backgroundColor: colors.success, width: `${(completedToday / todayTasks.length) * 100}%` as any }]} />
+                        </View>
+                        <Text style={[styles.progressMiniText, { color: colors.secondaryText }]}>
+                          {completedToday}/{todayTasks.length} done today
+                        </Text>
+                      </View>
+                    )}
+                  </>
                 )}
-              </>
-            )}
-          </View>
+              </View>
+            </View>
 
-          {/* Quick actions */}
-          <View style={styles.section}>
-            <Text style={[styles.sectionTitle, { color: colors.text }]}>Quick Actions</Text>
-            <View style={styles.quickActions}>
-              {[
-                { icon: "add-circle-outline" as const, label: "Post", action: () => router.push("/create-post" as any), color: colors.primary },
-                { icon: "newspaper-outline" as const, label: "Feed", action: () => router.push("/feed" as any), color: "#F59E0B" },
-              ].map((a) => (
-                <TouchableOpacity key={a.label} onPress={a.action} style={[styles.quickAction, { backgroundColor: colors.card, borderColor: colors.border }]}>
-                  <View style={[styles.quickActionIcon, { backgroundColor: a.color + "18" }]}>
-                    <Ionicons name={a.icon} size={22} color={a.color} />
-                  </View>
-                  <Text style={[styles.quickActionLabel, { color: colors.text }]}>{a.label}</Text>
-                </TouchableOpacity>
-              ))}
+            {/* Quick actions */}
+            <View style={styles.section}>
+              <Text style={[styles.sectionTitle, { color: colors.text }]}>Quick Actions</Text>
+              <View style={styles.quickActions}>
+                {[
+                  { icon: "add-circle-outline" as const, label: "Post", action: () => router.push("/create-post" as any), color: colors.primary },
+                  { icon: "newspaper-outline" as const, label: "Feed", action: () => router.push("/feed" as any), color: "#F59E0B" },
+                ].map((a) => (
+                  <TouchableOpacity key={a.label} onPress={a.action} style={[styles.quickAction, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                    <View style={[styles.quickActionIcon, { backgroundColor: a.color + "18" }]}>
+                      <Ionicons name={a.icon} size={22} color={a.color} />
+                    </View>
+                    <Text style={[styles.quickActionLabel, { color: colors.text }]}>{a.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
             </View>
           </View>
 
@@ -394,23 +358,23 @@ const styles = StyleSheet.create({
   locationRow: { flexDirection: "row", alignItems: "center", gap: 3, marginTop: 2 },
   locationText: { fontSize: 12 },
   notifBtn: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", borderWidth: 1 },
-  headerLogo: { width: 36, height: 36, resizeMode: "contain" },
-  section: { paddingHorizontal: 16, marginTop: 20 },
-  sectionRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
+  streakBadge: {
+    minWidth: 44,
+    height: 44,
+    paddingHorizontal: 10,
+    borderRadius: 22,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+    borderWidth: 1,
+  },
+  streakBadgeText: { fontSize: 15, fontWeight: "800" },
+  content: { paddingHorizontal: 16, marginTop: 16, gap: 24 },
+  section: { gap: 12 },
+  sectionRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   sectionTitle: { fontSize: 17, fontWeight: "700" },
   sectionLink: { fontSize: 13, fontWeight: "600" },
-  // Streak
-  streakCard: { borderRadius: 18, padding: 18, flexDirection: "row", alignItems: "center" },
-  streakLeft: { alignItems: "center", minWidth: 70 },
-  streakFlameRow: { flexDirection: "row", alignItems: "center", gap: 4 },
-  streakNum: { color: "#fff", fontSize: 36, fontWeight: "900" },
-  streakLabel: { color: "rgba(255,255,255,0.8)", fontSize: 13, marginTop: 2 },
-  streakDivider: { width: 1, height: 50, backgroundColor: "rgba(255,255,255,0.3)", marginHorizontal: 16 },
-  streakStats: { flex: 1, flexDirection: "row", gap: 16 },
-  streakStat: { alignItems: "center" },
-  streakStatNum: { color: "#fff", fontSize: 18, fontWeight: "800" },
-  streakStatLabel: { color: "rgba(255,255,255,0.7)", fontSize: 11 },
-  freezeBtn: { padding: 6 },
   // Today tasks
   todayTask: { flexDirection: "row", alignItems: "center", padding: 12, borderRadius: 12, borderWidth: 1, marginBottom: 8, gap: 10 },
   todayTaskDot: { width: 8, height: 8, borderRadius: 4 },
@@ -429,8 +393,6 @@ const styles = StyleSheet.create({
   quickActionLabel: { fontSize: 11, fontWeight: "600", textAlign: "center" },
   // AI Assistant
   aiCard: {
-    marginHorizontal: 16,
-    marginTop: 16,
     borderRadius: 16,
     borderWidth: 1,
     padding: 14,
