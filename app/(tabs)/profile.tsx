@@ -251,24 +251,55 @@ function DeleteAccountModal({
   );
 }
 
+// ── InfoRow ───────────────────────────────────────────────────────────────────
+/** A single icon + label + value row, used inside a bordered info card. */
+function InfoRow({
+  icon,
+  label,
+  value,
+  colors,
+  divider = true,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  value: string;
+  colors: any;
+  divider?: boolean;
+}) {
+  return (
+    <>
+      <View style={styles.infoRow}>
+        <Ionicons name={icon} size={18} color={colors.secondaryText} />
+        <Text style={[styles.infoLabel, { color: colors.secondaryText }]}>{label}</Text>
+        <Text style={[styles.infoValue, { color: colors.text }]} numberOfLines={1}>
+          {value}
+        </Text>
+      </View>
+      {divider && <View style={[styles.infoDivider, { backgroundColor: colors.border }]} />}
+    </>
+  );
+}
+
 // ── Main screen ───────────────────────────────────────────────────────────────
-type TabId = "edit" | "posts" | "badges" | "settings";
+type TabId = "overview" | "posts" | "badges" | "settings";
 
 export default function ProfileScreen() {
   const { colors, isDark, toggleTheme } = useTheme();
   const { profile, saveProfile } = useProfile();
-  const { currentStreak, longestStreak, totalSessions, totalMinutes, achievements } = useProgress();
+  const { achievements } = useProgress();
   const { dailyReminderEnabled, setDailyReminderEnabled, resetDailyBanner } = useTime();
   const { signOut, deleteAccount } = useAuth();
   const { posts, deletePost } = usePosts();
   const { bump: bumpTips } = useTipsReset();
 
-  const [activeTab, setActiveTab] = useState<TabId>("edit");
+  const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [draft, setDraft] = useState({ ...profile });
   const [newTag, setNewTag] = useState("");
   const [pendingTag, setPendingTag] = useState<string | null>(null);
   const [saveModalVisible, setSaveModalVisible] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
   const [logoutModalVisible, setLogoutModalVisible] = useState(false);
   const [tipsResetDone, setTipsResetDone] = useState(false);
@@ -315,8 +346,15 @@ export default function ProfileScreen() {
 
   async function handleConfirmSave() {
     setSaveModalVisible(false);
-    if (saveError) return;
-    await saveProfile(draft);
+    if (saveError || saving) return;
+    setSaving(true);
+    try {
+      await saveProfile(draft);
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 2000);
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function handleResetTips() {
@@ -330,19 +368,10 @@ export default function ProfileScreen() {
     setTimeout(() => setTipsResetDone(false), 2000);
   }
 
-  const practiceHours = Math.floor(totalMinutes / 60);
-  const practiceMin = totalMinutes % 60;
-  const practiceLabel =
-    totalMinutes === 0
-      ? "0 min"
-      : practiceHours > 0
-      ? `${practiceHours}h ${practiceMin}m`
-      : `${practiceMin}m`;
-
   const myPosts = posts.filter((p) => p.username === profile.username);
 
   const TABS: { id: TabId; label: string }[] = [
-    { id: "edit", label: "Edit" },
+    { id: "overview", label: "Overview" },
     { id: "posts", label: "Posts" },
     { id: "badges", label: "Badges" },
     { id: "settings", label: "Settings" },
@@ -364,36 +393,35 @@ export default function ProfileScreen() {
           contentContainerStyle={{ paddingBottom: 80 }}
           showsVerticalScrollIndicator={false}
         >
-          {/* Avatar hero card */}
-          <View style={[styles.heroCard, { backgroundColor: colors.primary }]}>
-            <View style={styles.avatarCircle}>
-              <Text style={styles.avatarInitial}>{initials}</Text>
+          {/* Compact identity card */}
+          <View style={[styles.identityCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <View style={styles.identityTop}>
+              <View style={[styles.avatarCircle, { backgroundColor: colors.primary }]}>
+                <Text style={styles.avatarInitial}>{initials}</Text>
+              </View>
+              <View style={styles.identityInfo}>
+                <Text style={[styles.identityName, { color: colors.text }]} numberOfLines={1}>
+                  {draft.username || "Your Name"}
+                </Text>
+                <View style={styles.identityMetaRow}>
+                  {draft.city ? (
+                    <View style={styles.metaItem}>
+                      <Ionicons name="location-outline" size={13} color={colors.secondaryText} />
+                      <Text style={[styles.metaText, { color: colors.secondaryText }]}>{draft.city}</Text>
+                    </View>
+                  ) : null}
+                  {draft.age ? (
+                    <View style={styles.metaItem}>
+                      <Ionicons name="calendar-outline" size={13} color={colors.secondaryText} />
+                      <Text style={[styles.metaText, { color: colors.secondaryText }]}>{draft.age} yrs</Text>
+                    </View>
+                  ) : null}
+                </View>
+              </View>
             </View>
-            <Text style={styles.heroName}>{draft.username || "Your Name"}</Text>
-            {draft.city ? (
-              <View style={styles.heroLocationRow}>
-                <Ionicons name="location-outline" size={13} color="rgba(255,255,255,0.8)" />
-                <Text style={styles.heroLocation}>{draft.city}</Text>
-              </View>
-            ) : null}
-            {draft.bio ? (
-              <Text style={styles.heroBio} numberOfLines={2}>{draft.bio}</Text>
-            ) : null}
-          </View>
-
-          {/* Stats row */}
-          <View style={[styles.statsRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            {[
-              { label: "Streak", value: `${currentStreak}🔥` },
-              { label: "Best", value: `${longestStreak}d` },
-              { label: "Sessions", value: `${totalSessions}` },
-              { label: "Practice", value: practiceLabel },
-            ].map((s) => (
-              <View key={s.label} style={styles.statItem}>
-                <Text style={[styles.statValue, { color: colors.primary }]}>{s.value}</Text>
-                <Text style={[styles.statLabel, { color: colors.secondaryText }]}>{s.label}</Text>
-              </View>
-            ))}
+            <Text style={[styles.identityBio, { color: colors.secondaryText }]} numberOfLines={2}>
+              {draft.bio ? draft.bio : "No bio added yet."}
+            </Text>
           </View>
 
           {/* Tab selector */}
@@ -412,6 +440,9 @@ export default function ProfileScreen() {
                     styles.tabPillText,
                     { color: activeTab === t.id ? "#fff" : colors.secondaryText },
                   ]}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.85}
                 >
                   {t.label}
                 </Text>
@@ -419,67 +450,37 @@ export default function ProfileScreen() {
             ))}
           </View>
 
-          {/* ── Edit tab ─────────────────────────────────────────────────── */}
-          {activeTab === "edit" && (
-            <Pressable onPress={() => setPendingTag(null)} style={{ padding: 16, paddingTop: 8 }}>
-              <InputField
-                label="Username"
-                value={draft.username}
-                onChangeText={(username) => setDraft({ ...draft, username })}
-                containerStyle={{ backgroundColor: "transparent" }}
-                labelStyle={{ color: colors.text }}
-                inputStyle={{ color: colors.text, borderColor: colors.border, backgroundColor: colors.inputBackground }}
-              />
-              <InputField
-                label="Age"
-                value={draft.age}
-                onChangeText={(age) => setDraft({ ...draft, age })}
-                containerStyle={{ backgroundColor: "transparent" }}
-                labelStyle={{ color: colors.text }}
-                inputStyle={{ color: colors.text, borderColor: colors.border, backgroundColor: colors.inputBackground }}
-                keyboardType="number-pad"
-              />
-              <InputField
-                label="City"
-                value={draft.city}
-                onChangeText={(city) => setDraft({ ...draft, city })}
-                containerStyle={{ backgroundColor: "transparent" }}
-                labelStyle={{ color: colors.text }}
-                inputStyle={{ color: colors.text, borderColor: colors.border, backgroundColor: colors.inputBackground }}
-              />
-              <InputField
-                label="About Me"
-                value={draft.bio}
-                onChangeText={(bio) => setDraft({ ...draft, bio })}
-                containerStyle={{ backgroundColor: "transparent" }}
-                labelStyle={{ color: colors.text }}
-                inputStyle={{ color: colors.text, borderColor: colors.border, backgroundColor: colors.inputBackground }}
-                multiline
-              />
-
-              <Text style={[styles.label, { color: colors.text, marginTop: 4 }]}>My Hobbies</Text>
-              <View style={[styles.hobbyInputRow, { backgroundColor: colors.inputBackground, borderColor: colors.border }]}>
-                <TextInput
-                  style={[styles.hobbyInput, { color: colors.text }]}
-                  placeholder="Add a hobby..."
-                  placeholderTextColor={colors.secondaryText}
-                  value={newTag}
-                  onChangeText={setNewTag}
-                  onSubmitEditing={addHobby}
-                />
-                <TouchableOpacity
-                  onPress={addHobby}
-                  style={[styles.addHobbyBtn, { backgroundColor: colors.primary }]}
-                >
-                  <Ionicons name="add" size={20} color="#fff" />
-                </TouchableOpacity>
+          {/* ── Overview tab ─────────────────────────────────────────────── */}
+          {activeTab === "overview" && (
+            <View style={styles.overviewContent}>
+              {/* About Me */}
+              <View style={styles.overviewSection}>
+                <Text style={[styles.overviewSectionTitle, { color: colors.text }]}>About Me</Text>
+                <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                  <Text
+                    style={[
+                      styles.aboutText,
+                      { color: draft.bio ? colors.text : colors.secondaryText },
+                    ]}
+                  >
+                    {draft.bio ? draft.bio : "No bio added yet."}
+                  </Text>
+                </View>
               </View>
 
-              {draft.hobbies.length > 0 ? (
-                <>
-                  <Text style={[styles.hint, { color: colors.secondaryText }]}>
-                    Tap once to select for removal, tap again to delete.
-                  </Text>
+              {/* Basic information */}
+              <View style={styles.overviewSection}>
+                <Text style={[styles.overviewSectionTitle, { color: colors.text }]}>Basic Information</Text>
+                <View style={[styles.sectionCard, styles.infoCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                  <InfoRow icon="calendar-outline" label="Age" value={draft.age || "Not set"} colors={colors} />
+                  <InfoRow icon="location-outline" label="City" value={draft.city || "Not set"} colors={colors} divider={false} />
+                </View>
+              </View>
+
+              {/* My Hobbies */}
+              <View style={styles.overviewSection}>
+                <Text style={[styles.overviewSectionTitle, { color: colors.text }]}>My Hobbies</Text>
+                {draft.hobbies.length > 0 ? (
                   <View style={styles.tagWrap}>
                     {draft.hobbies.map((tag) => (
                       <TagChip
@@ -487,26 +488,18 @@ export default function ProfileScreen() {
                         label={tag}
                         textColor="#fff"
                         backgroundColor={colors.primary}
-                        isPendingDelete={pendingTag === tag}
-                        onPress={() => handleTagPress(tag)}
                       />
                     ))}
                   </View>
-                </>
-              ) : (
-                <Text style={[styles.hint, { color: colors.secondaryText }]}>
-                  No hobbies added yet — add some above!
-                </Text>
-              )}
-
-              <TouchableOpacity
-                onPress={requestSave}
-                style={[styles.saveBtn, { backgroundColor: colors.primary }]}
-              >
-                <Ionicons name="checkmark" size={18} color="#fff" style={{ marginRight: 6 }} />
-                <Text style={styles.saveBtnText}>Save Changes</Text>
-              </TouchableOpacity>
-            </Pressable>
+                ) : (
+                  <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                    <Text style={[styles.aboutText, { color: colors.secondaryText }]}>
+                      No hobbies added yet.
+                    </Text>
+                  </View>
+                )}
+              </View>
+            </View>
           )}
 
           {/* ── Posts tab ────────────────────────────────────────────────── */}
@@ -565,8 +558,106 @@ export default function ProfileScreen() {
 
           {/* ── Settings tab ─────────────────────────────────────────────── */}
           {activeTab === "settings" && (
-            <View style={{ padding: 16, paddingTop: 8 }}>
-              <Text style={[styles.sectionTitle, { color: colors.text }]}>Appearance</Text>
+            <Pressable onPress={() => setPendingTag(null)} style={{ padding: 16, paddingTop: 8 }}>
+              {/* Edit profile form */}
+              <Text style={[styles.sectionTitle, { color: colors.text }]}>Edit Profile</Text>
+              <InputField
+                label="Username"
+                value={draft.username}
+                onChangeText={(username) => setDraft({ ...draft, username })}
+                containerStyle={{ backgroundColor: "transparent" }}
+                labelStyle={{ color: colors.text }}
+                inputStyle={{ color: colors.text, borderColor: colors.border, backgroundColor: colors.inputBackground }}
+              />
+              <InputField
+                label="Age"
+                value={draft.age}
+                onChangeText={(age) => setDraft({ ...draft, age })}
+                containerStyle={{ backgroundColor: "transparent" }}
+                labelStyle={{ color: colors.text }}
+                inputStyle={{ color: colors.text, borderColor: colors.border, backgroundColor: colors.inputBackground }}
+                keyboardType="number-pad"
+              />
+              <InputField
+                label="City"
+                value={draft.city}
+                onChangeText={(city) => setDraft({ ...draft, city })}
+                containerStyle={{ backgroundColor: "transparent" }}
+                labelStyle={{ color: colors.text }}
+                inputStyle={{ color: colors.text, borderColor: colors.border, backgroundColor: colors.inputBackground }}
+              />
+              <InputField
+                label="About Me"
+                value={draft.bio}
+                onChangeText={(bio) => setDraft({ ...draft, bio })}
+                containerStyle={{ backgroundColor: "transparent" }}
+                labelStyle={{ color: colors.text }}
+                inputStyle={{ color: colors.text, borderColor: colors.border, backgroundColor: colors.inputBackground }}
+                multiline
+              />
+
+              <Text style={[styles.label, { color: colors.text, marginTop: 4 }]}>My Hobbies</Text>
+              <View style={[styles.hobbyInputRow, { backgroundColor: colors.inputBackground, borderColor: colors.border }]}>
+                <TextInput
+                  style={[styles.hobbyInput, { color: colors.text }]}
+                  placeholder="Add a hobby..."
+                  placeholderTextColor={colors.secondaryText}
+                  value={newTag}
+                  onChangeText={setNewTag}
+                  onSubmitEditing={addHobby}
+                />
+                <TouchableOpacity
+                  onPress={addHobby}
+                  style={[styles.addHobbyBtn, { backgroundColor: colors.primary }]}
+                >
+                  <Ionicons name="add" size={20} color="#fff" />
+                </TouchableOpacity>
+              </View>
+
+              {draft.hobbies.length > 0 ? (
+                <>
+                  <Text style={[styles.hint, { color: colors.secondaryText }]}>
+                    Tap a hobby to select it, tap again to remove it.
+                  </Text>
+                  <View style={styles.tagWrap}>
+                    {draft.hobbies.map((tag) => (
+                      <TagChip
+                        key={tag}
+                        label={tag}
+                        textColor="#fff"
+                        backgroundColor={colors.primary}
+                        isPendingDelete={pendingTag === tag}
+                        onPress={() => handleTagPress(tag)}
+                      />
+                    ))}
+                  </View>
+                </>
+              ) : (
+                <Text style={[styles.hint, { color: colors.secondaryText }]}>
+                  No hobbies added yet — add some above!
+                </Text>
+              )}
+
+              <TouchableOpacity
+                onPress={requestSave}
+                disabled={saving}
+                style={[styles.saveBtn, { backgroundColor: colors.primary, opacity: saving ? 0.7 : 1 }]}
+              >
+                {saving ? (
+                  <ActivityIndicator color="#fff" size="small" style={{ marginRight: 6 }} />
+                ) : (
+                  <Ionicons name="checkmark" size={18} color="#fff" style={{ marginRight: 6 }} />
+                )}
+                <Text style={styles.saveBtnText}>{saving ? "Saving..." : "Save Changes"}</Text>
+              </TouchableOpacity>
+              {saveSuccess && (
+                <View style={styles.saveSuccessRow}>
+                  <Ionicons name="checkmark-circle" size={16} color={colors.success} />
+                  <Text style={[styles.saveSuccessText, { color: colors.success }]}>Saved</Text>
+                </View>
+              )}
+
+              <Text style={[styles.sectionTitle, { color: colors.text, marginTop: 24 }]}>Appearance</Text>
               <ToggleRow
                 label="Dark Mode"
                 sublabel={isDark ? "Currently dark" : "Currently light"}
@@ -606,39 +697,14 @@ export default function ProfileScreen() {
 
               <Text style={[styles.sectionTitle, { color: colors.text, marginTop: 20 }]}>Account</Text>
               <View style={[styles.infoCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-                <View style={styles.infoRow}>
-                  <Ionicons name="mail-outline" size={18} color={colors.secondaryText} />
-                  <Text style={[styles.infoLabel, { color: colors.secondaryText }]}>Email</Text>
-                  <Text style={[styles.infoValue, { color: colors.text }]} numberOfLines={1}>
-                    {profile.email || "Not set"}
-                  </Text>
-                </View>
-                <View style={[styles.infoDivider, { backgroundColor: colors.border }]} />
-                <View style={styles.infoRow}>
-                  <Ionicons name="person-outline" size={18} color={colors.secondaryText} />
-                  <Text style={[styles.infoLabel, { color: colors.secondaryText }]}>Username</Text>
-                  <Text style={[styles.infoValue, { color: colors.text }]}>{profile.username || "Not set"}</Text>
-                </View>
-                <View style={[styles.infoDivider, { backgroundColor: colors.border }]} />
-                <View style={styles.infoRow}>
-                  <Ionicons name="location-outline" size={18} color={colors.secondaryText} />
-                  <Text style={[styles.infoLabel, { color: colors.secondaryText }]}>City</Text>
-                  <Text style={[styles.infoValue, { color: colors.text }]}>{profile.city || "Not set"}</Text>
-                </View>
+                <InfoRow icon="mail-outline" label="Email" value={profile.email || "Not set"} colors={colors} />
+                <InfoRow icon="person-outline" label="Username" value={profile.username || "Not set"} colors={colors} />
+                <InfoRow icon="location-outline" label="City" value={profile.city || "Not set"} colors={colors} divider={false} />
               </View>
 
               <View style={[styles.infoCard, { backgroundColor: colors.card, borderColor: colors.border, marginTop: 12 }]}>
-                <View style={styles.infoRow}>
-                  <Ionicons name="cloud-outline" size={18} color={colors.secondaryText} />
-                  <Text style={[styles.infoLabel, { color: colors.secondaryText }]}>Storage</Text>
-                  <Text style={[styles.infoValue, { color: colors.text }]}>Firebase Cloud</Text>
-                </View>
-                <View style={[styles.infoDivider, { backgroundColor: colors.border }]} />
-                <View style={styles.infoRow}>
-                  <Ionicons name="information-circle-outline" size={18} color={colors.secondaryText} />
-                  <Text style={[styles.infoLabel, { color: colors.secondaryText }]}>Version</Text>
-                  <Text style={[styles.infoValue, { color: colors.text }]}>1.1.0</Text>
-                </View>
+                <InfoRow icon="cloud-outline" label="Storage" value="Firebase Cloud" colors={colors} />
+                <InfoRow icon="information-circle-outline" label="Version" value="1.1.0" colors={colors} divider={false} />
               </View>
 
               {/* Log out */}
@@ -660,7 +726,7 @@ export default function ProfileScreen() {
                 <Ionicons name="trash-outline" size={18} color="#ef4444" />
                 <Text style={styles.deleteBtnText}>Delete Account</Text>
               </TouchableOpacity>
-            </View>
+            </Pressable>
           )}
         </ScrollView>
       </SafeAreaView>
@@ -716,54 +782,36 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 26, fontWeight: "800", letterSpacing: -0.5 },
   headerLogo: { width: 36, height: 36, resizeMode: "contain" },
 
-  // Hero
-  heroCard: {
-    alignItems: "center",
-    paddingVertical: 28,
-    paddingHorizontal: 20,
+  // Compact identity card
+  identityCard: {
     marginHorizontal: 16,
     marginTop: 16,
-    borderRadius: 20,
+    borderRadius: 18,
+    borderWidth: 1,
+    padding: 16,
+    gap: 10,
   },
+  identityTop: { flexDirection: "row", alignItems: "center", gap: 14 },
   avatarCircle: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: "rgba(255,255,255,0.25)",
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 10,
   },
-  avatarInitial: { color: "#fff", fontSize: 28, fontWeight: "800" },
-  heroName: { color: "#fff", fontSize: 20, fontWeight: "800", marginBottom: 4 },
-  heroLocationRow: { flexDirection: "row", alignItems: "center", gap: 3, marginBottom: 4 },
-  heroLocation: { color: "rgba(255,255,255,0.8)", fontSize: 13 },
-  heroBio: { color: "rgba(255,255,255,0.75)", fontSize: 13, textAlign: "center", marginTop: 4 },
-
-  // Stats
-  statsRow: {
-    flexDirection: "row",
-    marginHorizontal: 16,
-    marginTop: 12,
-    borderRadius: 16,
-    borderWidth: 1,
-    overflow: "hidden",
-  },
-  statItem: {
-    flex: 1,
-    alignItems: "center",
-    paddingVertical: 14,
-    borderRightWidth: 1,
-    borderRightColor: "transparent",
-  },
-  statValue: { fontSize: 18, fontWeight: "800" },
-  statLabel: { fontSize: 11, marginTop: 2 },
+  avatarInitial: { color: "#fff", fontSize: 22, fontWeight: "800" },
+  identityInfo: { flex: 1, gap: 4 },
+  identityName: { fontSize: 19, fontWeight: "800" },
+  identityMetaRow: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
+  metaItem: { flexDirection: "row", alignItems: "center", gap: 3 },
+  metaText: { fontSize: 13 },
+  identityBio: { fontSize: 13, lineHeight: 18 },
 
   // Tab selector
   tabSelector: {
     flexDirection: "row",
     marginHorizontal: 16,
-    marginTop: 12,
+    marginTop: 16,
     borderRadius: 14,
     borderWidth: 1,
     padding: 4,
@@ -771,13 +819,23 @@ const styles = StyleSheet.create({
   },
   tabPill: {
     flex: 1,
+    minHeight: 40,
     paddingVertical: 9,
+    paddingHorizontal: 4,
     borderRadius: 10,
     alignItems: "center",
+    justifyContent: "center",
   },
   tabPillText: { fontSize: 14, fontWeight: "700" },
 
-  // Edit tab
+  // Overview tab
+  overviewContent: { padding: 16, paddingTop: 8, gap: 24 },
+  overviewSection: { gap: 12 },
+  overviewSectionTitle: { fontSize: 17, fontWeight: "800" },
+  sectionCard: { borderRadius: 14, borderWidth: 1, padding: 16 },
+  aboutText: { fontSize: 14, lineHeight: 20 },
+
+  // Shared edit form
   label: { fontWeight: "700", fontSize: 15, marginBottom: 8 },
   hobbyInputRow: {
     flexDirection: "row",
@@ -796,9 +854,10 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
+    marginLeft: 4,
   },
   hint: { fontSize: 12, marginBottom: 8, fontStyle: "italic" },
-  tagWrap: { flexDirection: "row", flexWrap: "wrap", marginBottom: 16 },
+  tagWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   saveBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -808,6 +867,8 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   saveBtnText: { color: "#fff", fontWeight: "700", fontSize: 16 },
+  saveSuccessRow: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 10 },
+  saveSuccessText: { fontSize: 13, fontWeight: "600" },
 
   // Posts tab
   postsSectionRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
