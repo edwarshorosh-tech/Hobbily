@@ -3,10 +3,18 @@
  * Firestore CRUD for user profile documents stored at users/{uid}.
  * loadProfile merges fetched data over DEFAULT_PROFILE so all fields are
  * always present even for older accounts that predate new fields.
+ *
+ * Also keeps publicProfiles/{uid} — the safe-to-read-by-other-users subset
+ * of the profile (username/usernameNormalized/city/avatarUrl) — in sync.
+ * saveProfile updates both documents in one atomic batch; ensurePublicProfileFresh
+ * lazily backfills/repairs the public copy for accounts that predate this field
+ * (e.g. missing usernameNormalized) the next time their profile loads.
  */
 import { db } from "../lib/firebase";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { doc, getDoc, serverTimestamp, setDoc, writeBatch } from "firebase/firestore";
 import { Profile } from "../types/Profile";
+import { PublicProfile } from "../types/PublicProfile";
+import { normalizeUsername } from "./friendsService";
 
 const DEFAULT_PROFILE: Profile = {
   username: "explorer",
@@ -14,6 +22,7 @@ const DEFAULT_PROFILE: Profile = {
   age: "",
   bio: "",
   hobbies: [],
+  avatarUrl: null,
   preferredCity: "",
   city: "",
   freeTimePerDay: "30-60",
@@ -28,5 +37,66 @@ export async function loadProfile(uid: string): Promise<Profile> {
 }
 
 export async function saveProfile(uid: string, profile: Profile): Promise<void> {
-  await setDoc(doc(db, "users", uid), profile, { merge: true });
+  const batch = writeBatch(db);
+  batch.set(doc(db, "users", uid), profile, { merge: true });
+  batch.set(
+    doc(db, "publicProfiles", uid),
+    {
+      uid,
+      username: profile.username,
+      usernameNormalized: normalizeUsername(profile.username),
+      city: profile.city,
+      avatarUrl: profile.avatarUrl ?? null,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+  await batch.commit();
+}
+
+/**
+ * Updates only the avatar URL, in both users/{uid} and publicProfiles/{uid},
+ * in a single atomic batch. Applied immediately on upload/removal — separate
+ * from the Settings "Save Changes" draft flow, since a photo change isn't a
+ * pending edit the user needs to confirm.
+ */
+export async function updateAvatarUrl(uid: string, avatarUrl: string | null): Promise<void> {
+  const batch = writeBatch(db);
+  batch.set(doc(db, "users", uid), { avatarUrl }, { merge: true });
+  batch.set(doc(db, "publicProfiles", uid), { avatarUrl, updatedAt: serverTimestamp() }, { merge: true });
+  await batch.commit();
+}
+
+/**
+ * Lazily backfills/repairs publicProfiles/{uid} for accounts whose public copy
+ * is missing or out of date (e.g. created before this field existed, or the
+ * username/city changed elsewhere). Self-write, always permitted by rules —
+ * this is the migration strategy: every existing user gets backfilled the
+ * next time they open the app, with no admin script required.
+ */
+export async function ensurePublicProfileFresh(uid: string, profile: Profile): Promise<void> {
+  const usernameNormalized = normalizeUsername(profile.username);
+  const snap = await getDoc(doc(db, "publicProfiles", uid));
+  const existing = snap.exists() ? (snap.data() as Partial<PublicProfile>) : null;
+
+  const isStale =
+    !existing ||
+    existing.username !== profile.username ||
+    existing.usernameNormalized !== usernameNormalized ||
+    existing.city !== profile.city;
+
+  if (!isStale) return;
+
+  await setDoc(
+    doc(db, "publicProfiles", uid),
+    {
+      uid,
+      username: profile.username,
+      usernameNormalized,
+      city: profile.city,
+      avatarUrl: existing?.avatarUrl ?? null,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
 }

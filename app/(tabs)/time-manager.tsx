@@ -18,7 +18,7 @@ import {
   KeyboardAvoidingView,
   ActivityIndicator,
 } from "react-native";
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../../context/ThemeContext";
@@ -28,17 +28,20 @@ import { useProgress } from "../../context/ProgressContext";
 import SwipeableTab from "../../components/SwipeableTab";
 import PracticeTimerModal from "../../components/PracticeTimerModal";
 import { Task } from "../../types/Task";
+import { addDaysISO, localDateISO, parseLocalISO, startOfWeekISO } from "../../utils/dateUtils";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+// All date math below is local-calendar-day based (utils/dateUtils.ts) and
+// keyed off one shared `selectedDate` — the single source of truth for the
+// visible month, the visible week, the day strip's highlighted tile, the
+// header subtitle, the empty-state copy, and the date passed to Add Activity.
 
 function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+  return localDateISO();
 }
 
 function tomorrowISO() {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  return d.toISOString().slice(0, 10);
+  return addDaysISO(todayISO(), 1);
 }
 
 function formatDate(iso: string): string {
@@ -46,8 +49,14 @@ function formatDate(iso: string): string {
   const tomorrow = tomorrowISO();
   if (iso === today) return "Today";
   if (iso === tomorrow) return "Tomorrow";
-  const d = new Date(iso + "T00:00:00");
+  const d = parseLocalISO(iso);
   return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
+
+/** Full "Thursday, August 13" form — used for the empty-state copy, which should always be unambiguous. */
+function formatLongDate(iso: string): string {
+  const d = parseLocalISO(iso);
+  return d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
 }
 
 function formatTime(time: string): string {
@@ -158,82 +167,114 @@ function TaskRow({ task, colors, onToggle, onEdit, onDelete }: TaskRowProps) {
 
 // ── Day selector strip ────────────────────────────────────────────────────────
 
-/** Returns the 7 days of the week (Mon–Sun) containing today + weekOffset weeks */
-function buildWeekDays(weekOffset = 0): string[] {
-  const today = new Date();
-  const day = today.getDay();
-  const monday = new Date(today);
-  monday.setDate(today.getDate() - (day === 0 ? 6 : day - 1) + weekOffset * 7);
-  return Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(monday);
-    d.setDate(monday.getDate() + i);
-    return d.toISOString().slice(0, 10);
-  });
+/** The 7 local days (Mon–Sun) of the week containing `anchorISO` — the week always follows whichever date is selected. */
+function buildWeekDays(anchorISO: string): string[] {
+  const monday = startOfWeekISO(anchorISO);
+  return Array.from({ length: 7 }, (_, i) => addDaysISO(monday, i));
+}
+
+type DayTileProps = {
+  iso: string;
+  isSelected: boolean;
+  isToday: boolean;
+  hasTasks: boolean;
+  colors: ReturnType<typeof useTheme>["colors"];
+  onPress: () => void;
+};
+
+function DayTile({ iso, isSelected, isToday, hasTasks, colors, onPress }: DayTileProps) {
+  const d = parseLocalISO(iso);
+  // Short, no-bounce selection pulse — purely decorative, never blocks interaction.
+  const scale = useRef(new Animated.Value(1)).current;
+  const wasSelected = useRef(isSelected);
+
+  useEffect(() => {
+    if (isSelected && !wasSelected.current) {
+      scale.setValue(0.94);
+      Animated.timing(scale, { toValue: 1, duration: 140, useNativeDriver: true }).start();
+    }
+    wasSelected.current = isSelected;
+  }, [isSelected, scale]);
+
+  return (
+    <Animated.View style={[styles.dayItemWrap, { transform: [{ scale }] }]}>
+      <TouchableOpacity
+        onPress={onPress}
+        activeOpacity={0.75}
+        style={[
+          styles.dayItem,
+          isSelected
+            ? { backgroundColor: colors.primary }
+            : { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 },
+          isToday && !isSelected && { borderColor: colors.primary, borderWidth: 2 },
+        ]}
+        accessibilityRole="button"
+        accessibilityState={{ selected: isSelected }}
+        accessibilityLabel={d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}
+      >
+        <Text style={[styles.dayName, { color: isSelected ? "#fff" : colors.secondaryText }]} numberOfLines={1}>
+          {d.toLocaleDateString(undefined, { weekday: "short" })}
+        </Text>
+        <Text style={[styles.dayNum, { color: isSelected ? "#fff" : colors.text }]}>{d.getDate()}</Text>
+        <View style={styles.dayDotRow}>
+          {hasTasks ? (
+            <View style={[styles.dayDot, { backgroundColor: isSelected ? "#fff" : colors.primary }]} />
+          ) : (
+            <View style={styles.dayDotEmpty} />
+          )}
+        </View>
+      </TouchableOpacity>
+    </Animated.View>
+  );
 }
 
 type DayStripProps = {
   selected: string;
   onSelect: (iso: string) => void;
+  onShiftWeek: (deltaDays: number) => void;
   colors: ReturnType<typeof useTheme>["colors"];
   taskCounts: Record<string, number>;
-  weekOffset: number;
-  onWeekChange: (delta: number) => void;
 };
 
-function DayStrip({ selected, onSelect, colors, taskCounts, weekOffset, onWeekChange }: DayStripProps) {
-  const days = buildWeekDays(weekOffset);
-  const monthLabel = new Date(days[0] + "T00:00:00").toLocaleDateString(undefined, { month: "long", year: "numeric" });
+function DayStrip({ selected, onSelect, onShiftWeek, colors, taskCounts }: DayStripProps) {
+  const days = buildWeekDays(selected);
+  const today = todayISO();
+  const monthLabel = parseLocalISO(days[0]).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+
+  const selectedMonday = startOfWeekISO(selected);
+  const currentMonday = startOfWeekISO(today);
+  const weekDelta = Math.round(
+    (parseLocalISO(selectedMonday).getTime() - parseLocalISO(currentMonday).getTime()) / (24 * 60 * 60 * 1000 * 7)
+  );
+  const weekLabel = weekDelta === 0 ? "This Week" : weekDelta === 1 ? "Next Week" : weekDelta === -1 ? "Last Week" : monthLabel;
 
   return (
     <View>
-      {/* Week navigation */}
+      {/* Week navigation — shifts the selected date itself by 7 days, so the
+          day strip, header subtitle, and Week at a Glance all stay in sync. */}
       <View style={styles.weekNav}>
-        <TouchableOpacity onPress={() => onWeekChange(-1)} style={styles.weekNavBtn}>
+        <TouchableOpacity onPress={() => onShiftWeek(-7)} style={styles.weekNavBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
           <Ionicons name="chevron-back" size={18} color={colors.secondaryText} />
         </TouchableOpacity>
-        <Text style={[styles.weekLabel, { color: colors.text }]}>
-          {weekOffset === 0 ? "This Week" : weekOffset === 1 ? "Next Week" : weekOffset === -1 ? "Last Week" : monthLabel}
-        </Text>
-        <TouchableOpacity onPress={() => onWeekChange(1)} style={styles.weekNavBtn}>
+        <Text style={[styles.weekLabel, { color: colors.text }]}>{weekLabel}</Text>
+        <TouchableOpacity onPress={() => onShiftWeek(7)} style={styles.weekNavBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
           <Ionicons name="chevron-forward" size={18} color={colors.secondaryText} />
         </TouchableOpacity>
       </View>
 
-      {/* Day tiles — non-scrolling 7-column grid */}
+      {/* Day tiles — non-scrolling 7-column grid, equal width */}
       <View style={styles.dayStripGrid}>
-        {days.map((iso) => {
-          const d = new Date(iso + "T00:00:00");
-          const isSelected = iso === selected;
-          const isToday = iso === new Date().toISOString().slice(0, 10);
-          const count = taskCounts[iso] ?? 0;
-          return (
-            <TouchableOpacity
-              key={iso}
-              onPress={() => onSelect(iso)}
-              style={[
-                styles.dayItem,
-                isSelected
-                  ? { backgroundColor: colors.primary }
-                  : { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 },
-                isToday && !isSelected && { borderColor: colors.primary, borderWidth: 2 },
-              ]}
-            >
-              <Text style={[styles.dayName, { color: isSelected ? "#fff" : colors.secondaryText }]}>
-                {d.toLocaleDateString(undefined, { weekday: "short" })}
-              </Text>
-              <Text style={[styles.dayNum, { color: isSelected ? "#fff" : colors.text }]}>
-                {d.getDate()}
-              </Text>
-              <View style={styles.dayDotRow}>
-                {count > 0 ? (
-                  <View style={[styles.dayDot, { backgroundColor: isSelected ? "#fff" : colors.primary }]} />
-                ) : (
-                  <View style={styles.dayDotEmpty} />
-                )}
-              </View>
-            </TouchableOpacity>
-          );
-        })}
+        {days.map((iso) => (
+          <DayTile
+            key={iso}
+            iso={iso}
+            isSelected={iso === selected}
+            isToday={iso === today}
+            hasTasks={(taskCounts[iso] ?? 0) > 0}
+            colors={colors}
+            onPress={() => onSelect(iso)}
+          />
+        ))}
       </View>
     </View>
   );
@@ -243,24 +284,23 @@ function DayStrip({ selected, onSelect, colors, taskCounts, weekOffset, onWeekCh
 
 type WeekOverviewProps = {
   tasks: Task[];
-  weekOffset: number;
   selected: string;
   onSelect: (iso: string) => void;
   colors: ReturnType<typeof useTheme>["colors"];
 };
 
-function WeekOverview({ tasks, weekOffset, selected, onSelect, colors }: WeekOverviewProps) {
-  const days = buildWeekDays(weekOffset);
+function WeekOverview({ tasks, selected, onSelect, colors }: WeekOverviewProps) {
+  const days = buildWeekDays(selected);
   const today = todayISO();
 
   return (
     <View style={[styles.weekOverviewCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
       <Text style={[styles.weekOverviewTitle, { color: colors.text }]}>Week at a Glance</Text>
-      {days.map((iso) => {
+      {days.map((iso, i) => {
         const dayTasks = tasks
           .filter((t) => t.date === iso)
           .sort((a, b) => a.time.localeCompare(b.time));
-        const d = new Date(iso + "T00:00:00");
+        const d = parseLocalISO(iso);
         const isSelected = iso === selected;
         const isToday = iso === today;
 
@@ -270,8 +310,11 @@ function WeekOverview({ tasks, weekOffset, selected, onSelect, colors }: WeekOve
             onPress={() => onSelect(iso)}
             style={[
               styles.weekOverviewRow,
+              i > 0 && { borderTopWidth: 1, borderTopColor: colors.border },
               isSelected && { backgroundColor: colors.primary + "14" },
             ]}
+            accessibilityRole="button"
+            accessibilityLabel={`Select ${d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}`}
           >
             <View style={styles.weekOverviewDate}>
               <Text style={[styles.weekOverviewDay, { color: isToday ? colors.primary : colors.secondaryText }]}>
@@ -282,13 +325,13 @@ function WeekOverview({ tasks, weekOffset, selected, onSelect, colors }: WeekOve
               </Text>
             </View>
 
-            <View style={{ flex: 1 }}>
+            <View style={{ flex: 1, minWidth: 0 }}>
               {dayTasks.length === 0 ? (
                 <Text style={[styles.weekOverviewEmpty, { color: colors.secondaryText }]}>No activities</Text>
               ) : (
                 <Text numberOfLines={1} style={[styles.weekOverviewSummary, { color: colors.text }]}>
-                  {dayTasks.slice(0, 3).map((t) => t.title).join(" · ")}
-                  {dayTasks.length > 3 ? ` +${dayTasks.length - 3} more` : ""}
+                  {dayTasks.slice(0, 2).map((t) => t.title).join(" · ")}
+                  {dayTasks.length > 2 ? ` +${dayTasks.length - 2} more` : ""}
                 </Text>
               )}
             </View>
@@ -614,7 +657,6 @@ export default function TimeManagerScreen() {
   const { currentStreak, totalSessions, recordSession } = useProgress();
 
   const [selectedDate, setSelectedDate] = useState(todayISO());
-  const [weekOffset, setWeekOffset] = useState(0);
   const [modalVisible, setModalVisible] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [timerVisible, setTimerVisible] = useState(false);
@@ -633,6 +675,11 @@ export default function TimeManagerScreen() {
   function openAdd() {
     setEditingTask(null);
     setModalVisible(true);
+  }
+
+  /** Shifts the selected date itself by a full week — keeps the day strip, header, and Week at a Glance in sync (see buildWeekDays). */
+  function handleShiftWeek(deltaDays: number) {
+    setSelectedDate((d) => addDaysISO(d, deltaDays));
   }
 
   function openEdit(task: Task) {
@@ -655,20 +702,14 @@ export default function TimeManagerScreen() {
   return (
     <SwipeableTab tabIndex={1} backgroundColor={colors.background}>
       <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
-        {/* Header */}
+        {/* Header — compact, left-aligned. The subtitle always derives from
+            selectedDate, so it can never contradict the visible month/week
+            below (e.g. "Today · July 2026" while August is on screen). */}
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
-          <View>
-            <Text style={[styles.headerTitle, { color: colors.text }]}>My Schedule</Text>
-            <Text style={[styles.headerSub, { color: colors.secondaryText }]}>
-              {formatDate(todayISO())} · {new Date().toLocaleDateString(undefined, { month: "long", year: "numeric" })}
-            </Text>
-          </View>
-          <TouchableOpacity
-            onPress={openAdd}
-            style={[styles.addBtn, { backgroundColor: colors.primary }]}
-          >
-            <Ionicons name="add" size={24} color="#fff" />
-          </TouchableOpacity>
+          <Text style={[styles.headerTitle, { color: colors.text }]}>My Schedule</Text>
+          <Text style={[styles.headerSub, { color: colors.secondaryText }]}>
+            {formatDate(selectedDate)} · {parseLocalISO(selectedDate).toLocaleDateString(undefined, { month: "long", year: "numeric" })}
+          </Text>
         </View>
 
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }}>
@@ -703,10 +744,9 @@ export default function TimeManagerScreen() {
             <DayStrip
               selected={selectedDate}
               onSelect={setSelectedDate}
+              onShiftWeek={handleShiftWeek}
               colors={colors}
               taskCounts={taskCounts}
-              weekOffset={weekOffset}
-              onWeekChange={(d) => setWeekOffset((w) => w + d)}
             />
           </View>
 
@@ -736,14 +776,16 @@ export default function TimeManagerScreen() {
           <View style={styles.sectionPad}>
             {dayTasks.length === 0 ? (
               <View style={[styles.emptyCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-                <Ionicons name="calendar-outline" size={40} color={colors.secondaryText} />
+                <Ionicons name="calendar-outline" size={30} color={colors.secondaryText} />
                 <Text style={[styles.emptyTitle, { color: colors.text }]}>Nothing scheduled</Text>
                 <Text style={[styles.emptyBody, { color: colors.secondaryText }]}>
-                  Tap + to add a task or hobby session for {formatDate(selectedDate).toLowerCase()}.
+                  Add an activity for {formatLongDate(selectedDate)}.
                 </Text>
                 <TouchableOpacity
                   onPress={openAdd}
                   style={[styles.emptyAddBtn, { backgroundColor: colors.primary }]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Add activity for ${formatLongDate(selectedDate)}`}
                 >
                   <Ionicons name="add" size={16} color="#fff" style={{ marginRight: 4 }} />
                   <Text style={{ color: "#fff", fontWeight: "600" }}>Add Activity</Text>
@@ -767,7 +809,6 @@ export default function TimeManagerScreen() {
           <View style={styles.sectionPad}>
             <WeekOverview
               tasks={tasks}
-              weekOffset={weekOffset}
               selected={selectedDate}
               onSelect={setSelectedDate}
               colors={colors}
@@ -816,22 +857,12 @@ export default function TimeManagerScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   header: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
     paddingHorizontal: 20,
-    paddingVertical: 16,
+    paddingVertical: 14,
     borderBottomWidth: 1,
   },
   headerTitle: { fontSize: 26, fontWeight: "800", letterSpacing: -0.5 },
   headerSub: { fontSize: 13, marginTop: 2 },
-  addBtn: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    justifyContent: "center",
-    alignItems: "center",
-  },
   reminderBanner: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -852,14 +883,15 @@ const styles = StyleSheet.create({
   streakMini: { flexDirection: "row", alignItems: "center", gap: 6, marginHorizontal: 16, marginTop: 12, padding: 10, borderRadius: 10, borderWidth: 1 },
   streakMiniText: { fontSize: 13, fontWeight: "600" },
   practiceFloatBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", margin: 16, marginTop: 8, padding: 14, borderRadius: 14 },
+  dayItemWrap: { flex: 1 },
   dayItem: {
-    flex: 1,
-    height: 76,
+    width: "100%",
+    height: 66,
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
   },
-  dayName: { fontSize: 11, fontWeight: "600", marginBottom: 2, textTransform: "uppercase", letterSpacing: 0.5 },
+  dayName: { fontSize: 10, fontWeight: "600", marginBottom: 2, textTransform: "uppercase", letterSpacing: 0.3 },
   dayNum: { fontSize: 22, fontWeight: "800" },
   dayDotRow: { height: 8, justifyContent: "center", alignItems: "center", marginTop: 2 },
   dayDot: { width: 5, height: 5, borderRadius: 3 },
@@ -899,13 +931,13 @@ const styles = StyleSheet.create({
   actionBtn: { padding: 8 },
   emptyCard: {
     alignItems: "center",
-    padding: 32,
+    paddingVertical: 22,
+    paddingHorizontal: 24,
     borderRadius: 16,
     borderWidth: 1,
-    borderStyle: "dashed",
   },
-  emptyTitle: { fontSize: 17, fontWeight: "700", marginTop: 12, marginBottom: 6 },
-  emptyBody: { textAlign: "center", fontSize: 14, lineHeight: 20, marginBottom: 20 },
+  emptyTitle: { fontSize: 16, fontWeight: "700", marginTop: 8, marginBottom: 4 },
+  emptyBody: { textAlign: "center", fontSize: 13, lineHeight: 18, marginBottom: 14 },
   emptyAddBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -923,9 +955,10 @@ const styles = StyleSheet.create({
   weekOverviewRow: {
     flexDirection: "row",
     alignItems: "center",
+    minHeight: 48,
     paddingHorizontal: 10,
-    paddingVertical: 10,
-    borderRadius: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
     gap: 10,
   },
   weekOverviewDate: { width: 34, alignItems: "center" },

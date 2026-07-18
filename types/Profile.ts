@@ -8,6 +8,8 @@ export type Profile = {
   bio: string;
   /** List of hobby tags displayed on the profile and used to tag posts */
   hobbies: string[];
+  /** Firebase Storage download URL for the user's profile picture, or null for the initials fallback */
+  avatarUrl: string | null;
   /** Last city the user selected in the WeatherBox */
   preferredCity: string;
   city: string;

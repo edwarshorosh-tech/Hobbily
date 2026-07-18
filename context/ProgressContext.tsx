@@ -3,11 +3,13 @@
  * Tracks streaks, total sessions, total practice minutes, and achievements.
  * All data persisted to Firestore at progress/{uid}.
  */
-import { createContext, useContext, useState, useEffect, useCallback } from "react";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { createContext, useContext, useState, useEffect, useCallback, useMemo } from "react";
+import { doc, getDoc, serverTimestamp, setDoc, writeBatch } from "firebase/firestore";
 import { Achievement, ProgressState } from "../types/Progress";
 import { useAuth } from "./AuthContext";
 import { db } from "../lib/firebase";
+import { buildNotificationPayload, notificationsCollection } from "../services/notificationsService";
+import { addDaysISO, localDateISO, startOfWeekISO } from "../utils/dateUtils";
 
 // ── Achievement definitions ───────────────────────────────────────────────────
 
@@ -26,13 +28,12 @@ const ACHIEVEMENT_DEFS: AchievementDef[] = [
 ];
 
 // ── Streak computation ────────────────────────────────────────────────────────
+// Local-calendar-day based (see utils/dateUtils.ts) — never UTC-shifted, so an
+// activity logged late in the evening is never silently attributed to the
+// wrong day for the user's actual timezone.
 
-function todayISO() { return new Date().toISOString().slice(0, 10); }
-function offsetISO(days: number) {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
-}
+function todayISO() { return localDateISO(); }
+function offsetISO(days: number) { return addDaysISO(todayISO(), days); }
 
 function computeCurrentStreak(streakDays: string[], freezeUsed?: string | null): number {
   if (streakDays.length === 0) return 0;
@@ -51,18 +52,13 @@ function computeCurrentStreak(streakDays: string[], freezeUsed?: string | null):
     } else {
       break;
     }
-    const d = new Date(check + "T00:00:00");
-    d.setDate(d.getDate() - 1);
-    check = d.toISOString().slice(0, 10);
+    check = addDaysISO(check, -1);
   }
   return count;
 }
 
 function getThisMonday(): string {
-  const d = new Date();
-  const day = d.getDay();
-  d.setDate(d.getDate() - (day === 0 ? 6 : day - 1));
-  return d.toISOString().slice(0, 10);
+  return startOfWeekISO(todayISO());
 }
 
 // ── Context type ──────────────────────────────────────────────────────────────
@@ -74,6 +70,12 @@ type ProgressContextType = {
   totalMinutes: number;
   achievements: Achievement[];
   streakFreezeAvailable: boolean;
+  /** Oldest → newest, 7 entries, whether each of the last 7 calendar days had a completed session. */
+  recentActivity: { date: string; active: boolean }[];
+  /** True once the initial progress/{uid} load has settled (success or failure). */
+  isLoaded: boolean;
+  /** Set when the initial load failed (e.g. offline) — cleared on the next successful load. */
+  loadError: string | null;
   recordSession: (minutes: number) => Promise<void>;
   useStreakFreeze: () => Promise<void>;
 };
@@ -96,35 +98,104 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
   const { user, isAuthLoaded } = useAuth();
   const [state, setState] = useState<ProgressState>(DEFAULT_STATE);
   const [freezeUsedDate, setFreezeUsedDate] = useState<string | null>(null);
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isAuthLoaded || !user) {
       setState(DEFAULT_STATE);
       setFreezeUsedDate(null);
+      setIsLoaded(!!isAuthLoaded);
+      setLoadError(null);
       return;
     }
-    getDoc(doc(db, "progress", user.uid)).then((snap) => {
-      if (snap.exists()) {
-        const parsed = snap.data();
-        setState({ ...DEFAULT_STATE, ...parsed.state });
-        setFreezeUsedDate(parsed.freezeUsedDate ?? null);
+    let cancelled = false;
+    setIsLoaded(false);
+    setLoadError(null);
+    (async () => {
+      try {
+        const snap = await getDoc(doc(db, "progress", user.uid));
+        if (cancelled) return;
+        if (snap.exists()) {
+          const parsed = snap.data();
+          setState({ ...DEFAULT_STATE, ...parsed.state });
+          setFreezeUsedDate(parsed.freezeUsedDate ?? null);
+        }
+      } catch (e) {
+        // Most commonly a temporary offline/connectivity failure (see lib/firebase.ts).
+        // Keep DEFAULT_STATE — the next recordSession()/useStreakFreeze() call
+        // reconciles with Firestore once connectivity returns.
+        if (__DEV__) console.warn("[ProgressContext] failed to load progress", e);
+        if (!cancelled) setLoadError("Network error — please try again.");
+      } finally {
+        if (!cancelled) setIsLoaded(true);
       }
-    });
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [user, isAuthLoaded]);
 
-  async function persist(newState: ProgressState, newFreeze: string | null) {
+  /**
+   * Persists the progress doc and, when achievements were just earned, writes
+   * one notification per achievement in the same batch — one Firestore round
+   * trip, and the notification can never exist without the progress update
+   * that earned it actually having been saved.
+   */
+  async function persist(newState: ProgressState, newFreeze: string | null, newlyEarned: Achievement[] = []) {
     setState(newState);
     setFreezeUsedDate(newFreeze);
-    if (user) {
-      await setDoc(
-        doc(db, "progress", user.uid),
-        { state: newState, freezeUsedDate: newFreeze },
-        { merge: true }
+    if (!user) return;
+
+    const batch = writeBatch(db);
+    batch.set(
+      doc(db, "progress", user.uid),
+      { state: newState, freezeUsedDate: newFreeze },
+      { merge: true }
+    );
+    newlyEarned.forEach((achievement) => {
+      batch.set(
+        doc(notificationsCollection(user.uid)),
+        buildNotificationPayload({
+          recipientId: user.uid,
+          type: "achievement_unlocked",
+          title: "Achievement unlocked",
+          body: `${achievement.title} — ${achievement.description}`,
+          actorId: user.uid,
+          entityId: achievement.id,
+          route: { screen: "profile_badges" },
+        })
       );
-    }
+    });
+    await batch.commit();
   }
 
   const currentStreak = computeCurrentStreak(state.streakDays, freezeUsedDate);
+
+  const recentActivity = useMemo(() => {
+    const set = new Set(state.streakDays);
+    const days: { date: string; active: boolean }[] = [];
+    for (let i = 6; i >= 0; i--) {
+      const iso = offsetISO(-i);
+      days.push({ date: iso, active: set.has(iso) });
+    }
+    return days;
+  }, [state.streakDays]);
+
+  // Mirror the computed streak into publicProfiles/{uid} so friends can read it
+  // without accessing this user's private progress document. This is the same
+  // client-trusted write path progress data already uses — see the security
+  // note in firestore.rules for the limitation this implies.
+  useEffect(() => {
+    if (!user) return;
+    setDoc(
+      doc(db, "publicProfiles", user.uid),
+      { currentStreak, updatedAt: serverTimestamp() },
+      { merge: true }
+    ).catch((e) => {
+      if (__DEV__) console.warn("[ProgressContext] streak mirror failed", e);
+    });
+  }, [user, currentStreak]);
 
   function checkAchievements(s: ProgressState, streak: number): Achievement[] {
     const combined = { ...s, currentStreak: streak };
@@ -168,7 +239,7 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
       streakFreezeLastGranted: freezeAvailable && state.streakFreezeLastGranted !== monday ? monday : state.streakFreezeLastGranted,
     };
 
-    await persist(updated, freezeUsedDate);
+    await persist(updated, freezeUsedDate, newAchievements);
   }, [state, freezeUsedDate]);
 
   const useStreakFreeze = useCallback(async () => {
@@ -186,6 +257,9 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
         totalMinutes: state.totalMinutes,
         achievements: state.achievements,
         streakFreezeAvailable: state.streakFreezeAvailable,
+        recentActivity,
+        isLoaded,
+        loadError,
         recordSession,
         useStreakFreeze,
       }}
