@@ -14,6 +14,7 @@ import { useTime, TaskSaveResult } from "../../context/TimeContext";
 import { useProgress } from "../../context/ProgressContext";
 import SwipeableTab from "../../components/SwipeableTab";
 import TipBanner, { TIP_KEYS } from "../../components/TipBanner";
+import { interpretMessage, formatShortDate } from "../../services/aiService";
 import { useState } from "react";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -34,78 +35,7 @@ function formatTime(time: string): string {
 
 // ── AI Assistant ──────────────────────────────────────────────────────────────
 
-const MONTHS = [
-  "january", "february", "march", "april", "may", "june",
-  "july", "august", "september", "october", "november", "december",
-];
-
-function extractTime(text: string): { time: string; match: string } | null {
-  let m = text.match(/\d{1,2}:\d{2}\s*(?:am|pm)?/i);
-  if (m) {
-    const parts = m[0].match(/(\d{1,2}):(\d{2})\s*(am|pm)?/i)!;
-    let h = parseInt(parts[1], 10);
-    const ampm = parts[3]?.toLowerCase();
-    if (ampm === "pm" && h < 12) h += 12;
-    if (ampm === "am" && h === 12) h = 0;
-    return { time: `${h.toString().padStart(2, "0")}:${parts[2]}`, match: m[0] };
-  }
-  m = text.match(/\d{1,2}\s*(?:am|pm)\b/i);
-  if (m) {
-    const parts = m[0].match(/(\d{1,2})\s*(am|pm)/i)!;
-    let h = parseInt(parts[1], 10);
-    const ampm = parts[2].toLowerCase();
-    if (ampm === "pm" && h < 12) h += 12;
-    if (ampm === "am" && h === 12) h = 0;
-    return { time: `${h.toString().padStart(2, "0")}:00`, match: m[0] };
-  }
-  return null;
-}
-
-function extractDate(text: string): { date: string; match: string } | null {
-  const re = new RegExp(`(${MONTHS.join("|")})\\.?\\s+(\\d{1,2})(st|nd|rd|th)?(,?\\s*(\\d{4}))?`, "i");
-  const m = text.match(re);
-  if (!m) return null;
-  const monthIdx = MONTHS.findIndex((mo) => mo === m[1].toLowerCase());
-  const day = parseInt(m[2], 10);
-  const now = new Date();
-  let year = m[5] ? parseInt(m[5], 10) : now.getFullYear();
-  if (!m[5]) {
-    const candidate = new Date(year, monthIdx, day);
-    const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    if (candidate < todayMidnight) year += 1;
-  }
-  const date = `${year}-${(monthIdx + 1).toString().padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
-  return { date, match: m[0] };
-}
-
-function extractTitle(text: string, dateMatch: string, timeMatch: string): string {
-  let title = text;
-  if (dateMatch) title = title.replace(dateMatch, "");
-  if (timeMatch) title = title.replace(timeMatch, "");
-  title = title
-    .replace(/^\s*(i\s*(have|'ve got|need|want to)|remind me to|schedule|please\s*(add|schedule)?|add)\s*/i, "")
-    .replace(/\bon\b/gi, "")
-    .replace(/\bat\b/gi, "")
-    .replace(/[,.]+/g, " ")
-    .replace(/\s{2,}/g, " ")
-    .trim();
-  if (!title) title = "New Task";
-  return title.charAt(0).toUpperCase() + title.slice(1);
-}
-
-/** Mock AI parser: pulls a title, date and time out of a free-text scheduling request. */
-function parseScheduleRequest(text: string): { title: string; date: string; time: string } | null {
-  const dateResult = extractDate(text);
-  const timeResult = extractTime(text);
-  if (!dateResult || !timeResult) return null;
-  return {
-    title: extractTitle(text, dateResult.match, timeResult.match),
-    date: dateResult.date,
-    time: timeResult.time,
-  };
-}
-
-function AIAssistantCard({ colors, addTask }: { colors: any; addTask: (task: any) => Promise<TaskSaveResult> }) {
+function AIAssistantCard({ colors, addTask, tasks }: { colors: any; addTask: (task: any) => Promise<TaskSaveResult>; tasks: import("../../types/Task").Task[] }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; message: string } | null>(null);
@@ -118,30 +48,84 @@ function AIAssistantCard({ colors, addTask }: { colors: any; addTask: (task: any
 
     await new Promise((resolve) => setTimeout(resolve, 600)); // mock AI processing delay
 
-    const parsed = parseScheduleRequest(text);
-    if (parsed) {
+    const action = interpretMessage(text, tasks, todayISO());
+
+    if (action.kind === "free_info") {
+      setFeedback({ ok: true, message: action.message });
+      setInput("");
+      setLoading(false);
+      return;
+    }
+
+    if (action.kind === "schedule") {
       const result = await addTask({
-        title: parsed.title,
+        title: action.title,
         type: "task",
-        date: parsed.date,
-        time: parsed.time,
+        date: action.date,
+        time: action.time,
         duration: 60,
         completed: false,
       });
       if (result.ok) {
-        setFeedback({ ok: true, message: `Scheduled "${parsed.title}" — ${parsed.date} at ${parsed.time}` });
+        setFeedback({ ok: true, message: `Scheduled "${action.title}" — ${formatShortDate(action.date)} at ${action.time}` });
         setInput("");
       } else if (result.reason === "conflict") {
-        setFeedback({
-          ok: false,
-          message: `That overlaps with "${result.conflict.title}" at ${result.conflict.time} — try a different time.`,
-        });
+        setFeedback({ ok: false, message: `That overlaps with "${result.conflict.title}" at ${result.conflict.time} — try a different time.` });
       } else {
         setFeedback({ ok: false, message: "That's in the past — try a current or future date/time." });
       }
-    } else {
-      setFeedback({ ok: false, message: 'Couldn’t find a date/time — try "Soccer practice on July 17th at 19:00"' });
+      setLoading(false);
+      return;
     }
+
+    if (action.kind === "exam") {
+      const examResult = await addTask({
+        title: action.label,
+        type: "task",
+        date: action.date,
+        time: action.time,
+        duration: 60,
+        completed: false,
+      });
+      if (!examResult.ok) {
+        setFeedback({
+          ok: false,
+          message:
+            examResult.reason === "conflict"
+              ? `That overlaps with "${examResult.conflict.title}" at ${examResult.conflict.time} — try a different time for your ${action.label.toLowerCase()}.`
+              : "That date/time is in the past — double-check it.",
+        });
+        setLoading(false);
+        return;
+      }
+
+      let studyAdded = 0;
+      const studyDates: string[] = [];
+      for (const session of action.studySessions) {
+        const r = await addTask({ title: session.title, type: "task", date: session.date, time: session.time, duration: session.duration, completed: false });
+        if (r.ok) {
+          studyAdded++;
+          studyDates.push(formatShortDate(session.date));
+        }
+      }
+
+      const guessNote = action.timeWasGuessed ? " (I guessed 9:00 AM — adjust it in your planner if needed)" : "";
+      const studyNote =
+        studyAdded > 0
+          ? ` I also blocked ${studyAdded} study session${studyAdded > 1 ? "s" : ""} on ${studyDates.join(", ")} so you're not cramming.`
+          : action.studySessions.length === 0
+          ? " I couldn't find open time beforehand to schedule prep sessions — good luck!"
+          : "";
+      setFeedback({ ok: true, message: `Added "${action.label}" on ${formatShortDate(action.date)}${guessNote}.${studyNote}` });
+      setInput("");
+      setLoading(false);
+      return;
+    }
+
+    setFeedback({
+      ok: false,
+      message: 'Couldn’t quite parse that — try "Soccer practice next Tuesday at 7pm", "when am I free tomorrow?", or "I have a biology exam on July 20th".',
+    });
     setLoading(false);
   }
 
@@ -152,13 +136,13 @@ function AIAssistantCard({ colors, addTask }: { colors: any; addTask: (task: any
         <Text style={[styles.aiTitle, { color: colors.text }]}>AI Assistant</Text>
       </View>
       <Text style={[styles.aiSubtitle, { color: colors.secondaryText }]}>
-        Tell me about an activity and I'll add it to your schedule.
+        Schedule activities, ask "when am I free?", or mention an exam and I'll plan study time for it.
       </Text>
       <View style={styles.aiInputRow}>
         <TextInput
           value={input}
           onChangeText={setInput}
-          placeholder='e.g. "Soccer practice on July 17th at 19:00"'
+          placeholder='e.g. "Soccer practice next Tuesday at 7pm"'
           placeholderTextColor={colors.secondaryText}
           style={[styles.aiInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }]}
           editable={!loading}
@@ -261,7 +245,7 @@ export default function HomeScreen() {
 
           <View style={styles.content}>
             {/* AI Assistant */}
-            <AIAssistantCard colors={colors} addTask={addTask} />
+            <AIAssistantCard colors={colors} addTask={addTask} tasks={tasks} />
 
             {/* Today's schedule */}
             <View style={styles.section}>
@@ -310,6 +294,7 @@ export default function HomeScreen() {
                 {[
                   { icon: "add-circle-outline" as const, label: "Post", action: () => router.push("/create-post" as any), color: colors.primary },
                   { icon: "newspaper-outline" as const, label: "Feed", action: () => router.push("/feed" as any), color: "#F59E0B" },
+                  { icon: "help-circle-outline" as const, label: "Quiz", action: () => router.push("/quiz" as any), color: "#8B5CF6" },
                 ].map((a) => (
                   <TouchableOpacity key={a.label} onPress={a.action} style={[styles.quickAction, { backgroundColor: colors.card, borderColor: colors.border }]}>
                     <View style={[styles.quickActionIcon, { backgroundColor: a.color + "18" }]}>

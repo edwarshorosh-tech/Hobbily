@@ -335,8 +335,8 @@ export default function ProfileScreen() {
 
   function requestSave() {
     const ageNum = parseInt(draft.age, 10);
-    if (draft.age && (isNaN(ageNum) || ageNum < 13 || ageNum > 150)) {
-      setSaveError("Age must be between 13 and 150.");
+    if (draft.age && (isNaN(ageNum) || ageNum < 13 || ageNum > 18)) {
+      setSaveError("Age must be between 13 and 18.");
       setSaveModalVisible(true);
       return;
     }

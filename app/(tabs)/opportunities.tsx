@@ -6,9 +6,10 @@ import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
   TextInput, Modal, Linking,
 } from "react-native";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { useLocalSearchParams } from "expo-router";
 import { useTheme } from "../../context/ThemeContext";
 import { useProfile } from "../../context/ProfileContext";
 import SwipeableTab from "../../components/SwipeableTab";
@@ -235,10 +236,17 @@ function DetailModal({ opp, saved, onToggleSave, onRegister, onClose, colors }: 
 export default function OpportunitiesScreen() {
   const { colors } = useTheme();
   const { profile, saveProfile } = useProfile();
+  const params = useLocalSearchParams<{ category?: string }>();
   const [search, setSearch] = useState("");
-  const [activeCategory, setActiveCategory] = useState("All");
+  const [activeCategory, setActiveCategory] = useState(params.category || "All");
   const [selected, setSelected] = useState<Opportunity | null>(null);
   const [registering, setRegistering] = useState(false);
+
+  // Deep-link support (e.g. from the Hidden Hobbies Quiz result screen) — re-apply
+  // even if this tab was already mounted, since expo-router won't remount it.
+  useEffect(() => {
+    if (params.category) setActiveCategory(params.category);
+  }, [params.category]);
 
   const saved = profile.savedOpportunities ?? [];
   const city = profile.city ?? "";
