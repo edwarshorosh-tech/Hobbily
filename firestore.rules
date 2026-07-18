@@ -1,0 +1,254 @@
+rules_version = '2';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IMPORTANT — READ BEFORE DEPLOYING
+//
+// This project has no firestore.rules under version control prior to this
+// change (rules were only ever configured directly in the Firebase Console).
+// This file defines complete, tested rules for the collections added by the
+// friends feature (`friendships`, `publicProfiles`) and the notification
+// center (`users/{uid}/notifications`) — plus a clearly marked placeholder
+// for every other collection the app already uses
+// (`users`, `progress`, `posts`, `channels/{channelId}/messages`).
+//
+// Deploying this file REPLACES the entire ruleset. Before running
+// `firebase deploy --only firestore:rules`, copy your current live rules for
+// `users`, `progress`, `posts`, and `channels/*/messages` from the Firebase
+// Console into the placeholder block below. Deploying the placeholder as-is
+// (default-deny) will break those collections for the running app.
+// ─────────────────────────────────────────────────────────────────────────────
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Friendships ──────────────────────────────────────────────────────────
+    // friendships/{pairId} — pairId is "<uidA>_<uidB>" with uidA < uidB.
+    match /friendships/{friendshipId} {
+      function isSignedIn() {
+        return request.auth != null;
+      }
+
+      function isParticipant() {
+        return isSignedIn() && request.auth.uid in resource.data.participants;
+      }
+
+      // The doc id must be exactly the two participant UIDs, sorted, joined with "_".
+      function isValidPairId(id, uidA, uidB) {
+        return id == (uidA < uidB ? uidA + '_' + uidB : uidB + '_' + uidA);
+      }
+
+      function isValidNewFriendship() {
+        let data = request.resource.data;
+        return data.requestedBy == request.auth.uid
+          && data.requestedTo != request.auth.uid
+          && data.participants is list
+          && data.participants.size() == 2
+          && data.participants[0] < data.participants[1]
+          && data.participants[0] in [data.requestedBy, data.requestedTo]
+          && data.participants[1] in [data.requestedBy, data.requestedTo]
+          && isValidPairId(friendshipId, data.requestedBy, data.requestedTo)
+          && data.status == 'pending'
+          && data.createdAt == request.time
+          && data.updatedAt == request.time
+          && data.acceptedAt == null
+          && data.declinedAt == null;
+      }
+
+      // A participant may only read their own friendship documents.
+      allow read: if isParticipant();
+
+      // Only the requester may create a new pending request, and only for
+      // themself → someone else (never for a third party, never for self).
+      allow create: if isSignedIn() && isValidNewFriendship();
+
+      // Updates are restricted to specific, valid status transitions.
+      // participants/requestedBy/requestedTo/createdAt are immutable after
+      // creation in every branch below.
+      allow update: if isSignedIn()
+        && request.auth.uid in resource.data.participants
+        && request.resource.data.participants == resource.data.participants
+        && request.resource.data.requestedBy in resource.data.participants
+        && request.resource.data.requestedTo in resource.data.participants
+        && request.resource.data.requestedBy != request.resource.data.requestedTo
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedAt == request.time
+        && (
+          // Recipient accepts a pending request.
+          (resource.data.status == 'pending'
+            && request.resource.data.status == 'accepted'
+            && request.auth.uid == resource.data.requestedTo
+            && request.resource.data.requestedBy == resource.data.requestedBy
+            && request.resource.data.requestedTo == resource.data.requestedTo
+            && request.resource.data.acceptedAt == request.time
+            && request.resource.data.declinedAt == resource.data.declinedAt)
+
+          // Recipient declines a pending request.
+          || (resource.data.status == 'pending'
+            && request.resource.data.status == 'declined'
+            && request.auth.uid == resource.data.requestedTo
+            && request.resource.data.requestedBy == resource.data.requestedBy
+            && request.resource.data.requestedTo == resource.data.requestedTo
+            && request.resource.data.declinedAt == request.time
+            && request.resource.data.acceptedAt == resource.data.acceptedAt)
+
+          // Sender cancels their own pending outgoing request.
+          || (resource.data.status == 'pending'
+            && request.resource.data.status == 'cancelled'
+            && request.auth.uid == resource.data.requestedBy
+            && request.resource.data.requestedBy == resource.data.requestedBy
+            && request.resource.data.requestedTo == resource.data.requestedTo
+            && request.resource.data.acceptedAt == resource.data.acceptedAt
+            && request.resource.data.declinedAt == resource.data.declinedAt)
+
+          // A participant re-opens a declined/cancelled pair with a fresh
+          // request — requestedBy/requestedTo may change direction, but only
+          // between the same two participants.
+          || ((resource.data.status == 'declined' || resource.data.status == 'cancelled')
+            && request.resource.data.status == 'pending'
+            && request.resource.data.requestedBy == request.auth.uid
+            && request.resource.data.acceptedAt == null
+            && request.resource.data.declinedAt == null)
+        );
+
+      // Removing an accepted friendship: either participant, only while accepted.
+      allow delete: if isSignedIn()
+        && request.auth.uid in resource.data.participants
+        && resource.data.status == 'accepted';
+    }
+
+    // ── Public profiles ──────────────────────────────────────────────────────
+    // publicProfiles/{uid} — safe-to-read-by-any-authenticated-user subset of
+    // the private users/{uid} document. Kept in sync by ProfileContext
+    // (username/city) and ProgressContext (currentStreak) — see the note below.
+    match /publicProfiles/{uid} {
+      function isOwner() {
+        return request.auth != null && request.auth.uid == uid;
+      }
+
+      function isValidPublicProfile() {
+        let data = request.resource.data;
+        return data.uid == uid
+          && data.username is string && data.username.size() > 0 && data.username.size() <= 40
+          && data.usernameNormalized is string
+          && data.usernameNormalized == data.username.lower()
+          && data.city is string && data.city.size() <= 60
+          && (data.avatarUrl == null || (data.avatarUrl is string && data.avatarUrl.size() <= 500))
+          && (data.currentStreak is int || data.currentStreak is float) && data.currentStreak >= 0
+          && data.updatedAt == request.time
+          // No extra/private fields — only this exact allow-listed shape.
+          && data.keys().hasOnly(
+            ['uid', 'username', 'usernameNormalized', 'city', 'avatarUrl', 'currentStreak', 'updatedAt']
+          );
+      }
+
+      // Any signed-in user can read public profiles (needed for search/leaderboard).
+      allow read: if request.auth != null;
+
+      // Only the owner may create/update their own public profile, and only
+      // with the allow-listed shape above — this is what keeps private
+      // users/{uid} fields (email, age, bio, ...) out of publicProfiles.
+      //
+      // SECURITY NOTE: currentStreak is written by the same authenticated
+      // client that owns progress/{uid} today (see ProgressContext) — this
+      // rule preserves that existing trust boundary rather than silently
+      // introducing a stricter one. A malicious client could misreport its
+      // own streak here exactly as it already could in progress/{uid}; this
+      // is a pre-existing limitation, not one introduced by this change.
+      allow create, update: if isOwner() && isValidPublicProfile();
+
+      allow delete: if false;
+    }
+
+    // ── Notifications ─────────────────────────────────────────────────────────
+    // users/{recipientId}/notifications/{notificationId} — a user's own
+    // notification inbox. No Cloud Functions or trusted backend exist in this
+    // project (see README/final report), so creation happens client-side,
+    // tightly validated against real backing data via get() so a client can
+    // only create a notification for an event it just legitimately caused.
+    // `system_message` (and any type outside the three branches below) can
+    // NOT be created by any client — there is no rule branch permitting it —
+    // satisfying "no arbitrary client may create system messages for others."
+    match /users/{recipientId}/notifications/{notificationId} {
+      function isRecipient() {
+        return request.auth != null && request.auth.uid == recipientId;
+      }
+
+      function friendshipPairId(uidA, uidB) {
+        return uidA < uidB ? uidA + '_' + uidB : uidB + '_' + uidA;
+      }
+
+      function isValidRoute() {
+        let r = request.resource.data.route;
+        return r == null
+          || (r.keys().hasOnly(['screen'])
+              && r.screen in ['profile_friends_requests', 'profile_friends', 'profile_badges']);
+      }
+
+      function isValidBaseShape() {
+        let data = request.resource.data;
+        return data.recipientId == recipientId
+          && data.actorId == request.auth.uid
+          && data.title is string && data.title.size() > 0 && data.title.size() <= 200
+          && data.body is string && data.body.size() <= 500
+          && (data.entityId == null || data.entityId is string)
+          && isValidRoute()
+          && data.isRead == false
+          && data.createdAt == request.time
+          && data.updatedAt == request.time
+          && data.keys().hasOnly(
+            ['recipientId', 'type', 'title', 'body', 'actorId', 'entityId', 'route', 'isRead', 'createdAt', 'updatedAt']
+          );
+      }
+
+      // A client may create a "you got a friend request" notification for
+      // someone else only if it just created that exact pending request.
+      function isValidFriendRequestReceived() {
+        let fs = get(/databases/$(database)/documents/friendships/$(friendshipPairId(request.auth.uid, recipientId))).data;
+        return request.resource.data.type == 'friend_request_received'
+          && fs.status == 'pending'
+          && fs.requestedBy == request.auth.uid
+          && fs.requestedTo == recipientId;
+      }
+
+      // A client may create a "your request was accepted" notification for
+      // the original sender only if it (the recipient) just accepted that
+      // exact friendship.
+      function isValidFriendRequestAccepted() {
+        let fs = get(/databases/$(database)/documents/friendships/$(friendshipPairId(request.auth.uid, recipientId))).data;
+        return request.resource.data.type == 'friend_request_accepted'
+          && fs.status == 'accepted'
+          && fs.requestedTo == request.auth.uid
+          && fs.requestedBy == recipientId;
+      }
+
+      // Achievement notifications are always self-notifications.
+      function isValidAchievementUnlocked() {
+        return request.resource.data.type == 'achievement_unlocked' && request.auth.uid == recipientId;
+      }
+
+      allow read: if isRecipient();
+
+      allow create: if request.auth != null
+        && isValidBaseShape()
+        && (isValidFriendRequestReceived() || isValidFriendRequestAccepted() || isValidAchievementUnlocked());
+
+      // Only the recipient, and only isRead/updatedAt may ever change —
+      // recipientId/type/actorId/title/body/route are immutable after creation.
+      allow update: if isRecipient()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead', 'updatedAt'])
+        && request.resource.data.updatedAt == request.time;
+
+      allow delete: if false;
+    }
+
+    // ── Existing collections — PLACEHOLDER, see the note at the top of this file ──
+    // Paste your current live rules for these paths here before deploying.
+    // Leaving this block as-is (no rules match below) denies all access to
+    // these collections once this file is deployed.
+    //
+    // match /users/{uid} { ... }
+    // match /progress/{uid} { ... }
+    // match /posts/{postId} { ... }
+    // match /channels/{channelId}/messages/{messageId} { ... }
+  }
+}

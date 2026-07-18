@@ -6,6 +6,7 @@
 import { createContext, useContext, useState, useEffect, useRef } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Task } from "../types/Task";
+import { localDateISO, parseLocalISO } from "../utils/dateUtils";
 
 const TASKS_KEY = "@hobbily_tasks";
 const REMINDER_KEY = "@hobbily_daily_reminder";
@@ -30,7 +31,7 @@ function timeToMinutes(time: string): number {
 /** True if the given date+time is earlier than the current moment. */
 export function isPastDateTime(date: string, time: string): boolean {
   const [h, m] = time.split(":").map(Number);
-  const dt = new Date(date + "T00:00:00");
+  const dt = parseLocalISO(date);
   dt.setHours(h || 0, m || 0, 0, 0);
   return dt.getTime() < Date.now();
 }
@@ -94,7 +95,7 @@ export function TimeProvider({ children }: { children: React.ReactNode }) {
         if (rawNotified) notifiedIdsRef.current = new Set(JSON.parse(rawNotified));
 
         // Show banner if reminder is enabled and hasn't been shown today
-        const today = new Date().toISOString().slice(0, 10);
+        const today = localDateISO();
         if (enabled && rawShownDate !== today) {
           setShowDailyBanner(true);
         }
@@ -113,7 +114,7 @@ export function TimeProvider({ children }: { children: React.ReactNode }) {
         for (const t of tasks) {
           if (t.completed || notifiedIdsRef.current.has(t.id)) continue;
           const [h, m] = t.time.split(":").map(Number);
-          const dt = new Date(t.date + "T00:00:00");
+          const dt = parseLocalISO(t.date);
           dt.setHours(h || 0, m || 0, 0, 0);
           const diff = now - dt.getTime();
           if (diff >= 0 && diff <= DUE_WINDOW_MS) {
@@ -196,8 +197,7 @@ export function TimeProvider({ children }: { children: React.ReactNode }) {
 
   function dismissDailyBanner() {
     setShowDailyBanner(false);
-    const today = new Date().toISOString().slice(0, 10);
-    AsyncStorage.setItem(REMINDER_SHOWN_KEY, today);
+    AsyncStorage.setItem(REMINDER_SHOWN_KEY, localDateISO());
   }
 
   function resetDailyBanner() {

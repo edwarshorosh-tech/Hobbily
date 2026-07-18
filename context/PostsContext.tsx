@@ -47,11 +47,20 @@ export function PostsProvider({ children }: { children: React.ReactNode }) {
     }
     setIsLoading(true);
     const q = query(collection(db, "posts"), orderBy("createdAt", "desc"), limit(50));
-    const unsub = onSnapshot(q, (snap) => {
-      const loaded = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as Post[];
-      setPosts(loaded);
-      setIsLoading(false);
-    });
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const loaded = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as Post[];
+        setPosts(loaded);
+        setIsLoading(false);
+      },
+      (error) => {
+        // Without this, a connectivity failure would leave isLoading stuck
+        // true forever (the success callback would simply never fire).
+        if (__DEV__) console.warn("[PostsContext] posts listener error", error);
+        setIsLoading(false);
+      }
+    );
     return () => unsub();
   }, [user]);
 

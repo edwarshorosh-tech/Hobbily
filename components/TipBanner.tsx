@@ -81,7 +81,7 @@ const styles = StyleSheet.create({
 
 /** Keys used across the app — exported so Settings can reset them all. */
 export const TIP_KEYS = {
-  feedFirstPost: "@hobbily_tip_feed_first_post",
+  homeGettingStarted: "@hobbily_tip_home_getting_started",
   communityChannels: "@hobbily_tip_community_channels",
   timeSession: "@hobbily_tip_time_session",
 };

@@ -36,6 +36,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     fontSize: 16,
+    lineHeight: 21,
     color: "#000", // overridden by inputStyle
   },
 });

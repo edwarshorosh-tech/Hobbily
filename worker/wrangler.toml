@@ -1,0 +1,22 @@
+name = "hobbily-ai-worker"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+# ── Non-secret configuration ──────────────────────────────────────────────
+# FIREBASE_WEB_API_KEY is the SAME public `apiKey` already committed in
+# lib/firebase.ts on the Expo side — Firebase web API keys identify a
+# project, they are not credentials, so this is safe to keep in plain vars.
+# ALLOWED_ORIGIN restricts which origin may call this Worker from a browser
+# context; native Expo requests aren't browser-origin-restricted, but this
+# still narrows accidental cross-site use. Set it to your actual app origin
+# in production if you also run the web build.
+[vars]
+FIREBASE_WEB_API_KEY = "AIzaSyCYvDaQITNmA_-vHs-cjoethTGicmpoKjE"
+ALLOWED_ORIGIN = "*"
+
+# ── Secret configuration — DO NOT put these here ────────────────────────────
+# HF_TOKEN must never appear in this file, in git, or anywhere in this repo.
+# Set it once per environment with:
+#   wrangler secret put HF_TOKEN
+# You will be prompted to paste the token interactively — it is stored
+# encrypted by Cloudflare and is never written to disk or logged.

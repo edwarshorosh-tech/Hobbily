@@ -271,13 +271,17 @@ export default function OpportunitiesScreen() {
     <SwipeableTab tabIndex={3} backgroundColor={colors.background}>
       <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
-          <View>
+          <View style={styles.headerTopRow}>
             <Text style={[styles.headerTitle, { color: colors.text }]}>Explore</Text>
-            <Text style={[styles.headerSub, { color: colors.secondaryText }]}>Programs, clubs & workshops</Text>
+            <View style={[styles.countBadge, { backgroundColor: colors.primary + "18" }]}>
+              <Text style={[styles.countText, { color: colors.primary }]} numberOfLines={1}>
+                {filtered.length} {filtered.length === 1 ? "result" : "results"}
+              </Text>
+            </View>
           </View>
-          <View style={[styles.countBadge, { backgroundColor: colors.primary + "18" }]}>
-            <Text style={[styles.countText, { color: colors.primary }]}>{filtered.length}</Text>
-          </View>
+          <Text style={[styles.headerSub, { color: colors.secondaryText }]} numberOfLines={2}>
+            Programs, clubs & communities near you
+          </Text>
         </View>
 
         <ScrollView showsVerticalScrollIndicator={false}>
@@ -337,11 +341,12 @@ export default function OpportunitiesScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingVertical: 16, borderBottomWidth: 1 },
+  header: { paddingHorizontal: 20, paddingTop: 14, paddingBottom: 12, borderBottomWidth: 1, gap: 4 },
+  headerTopRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
   headerTitle: { fontSize: 26, fontWeight: "800", letterSpacing: -0.5 },
-  headerSub: { fontSize: 13, marginTop: 2 },
-  countBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
-  countText: { fontWeight: "700", fontSize: 15 },
+  headerSub: { fontSize: 13, lineHeight: 18 },
+  countBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, flexShrink: 0 },
+  countText: { fontWeight: "700", fontSize: 13 },
   searchWrap: { paddingHorizontal: 16, paddingTop: 14 },
   searchBar: { flexDirection: "row", alignItems: "center", borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10 },
   searchInput: { flex: 1, fontSize: 15 },

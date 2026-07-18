@@ -3,7 +3,7 @@
  * Greeting, streak indicator, today's tasks, suggested opportunities, quick actions.
  */
 import {
-  View, Text, ScrollView, StyleSheet, TouchableOpacity, Modal, ActivityIndicator, TextInput,
+  View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator, TextInput,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -14,11 +14,18 @@ import { useTime, TaskSaveResult } from "../../context/TimeContext";
 import { useProgress } from "../../context/ProgressContext";
 import SwipeableTab from "../../components/SwipeableTab";
 import TipBanner, { TIP_KEYS } from "../../components/TipBanner";
+import FriendsLeaderboard from "../../components/home/FriendsLeaderboard";
+import NotificationBell from "../../components/notifications/NotificationBell";
+import StreakInfoModal from "../../components/home/StreakInfoModal";
+import StreakButton from "../../components/home/StreakButton";
 import { useState } from "react";
+import { localDateISO } from "../../utils/dateUtils";
+import { Task } from "../../types/Task";
+import { AiAssistantServiceError, friendlyAiAssistantMessage, parseActivityRequest } from "../../services/aiAssistantService";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function todayISO() { return new Date().toISOString().slice(0, 10); }
+function todayISO() { return localDateISO(); }
 
 function greeting(name: string): string {
   const h = new Date().getHours();
@@ -32,80 +39,20 @@ function formatTime(time: string): string {
   return `${h % 12 || 12}:${m.toString().padStart(2, "0")} ${ampm}`;
 }
 
-// ── AI Assistant ──────────────────────────────────────────────────────────────
+// ── AI Assistant ─────────────────────────────────────────────────────────────
+// Natural-language requests are parsed server-side (worker/ -> Hugging Face
+// Inference Providers -> validated JSON) — see services/aiAssistantService.ts.
+// The parsed activity is then created through the exact same addTask() used
+// by the manual Add Activity flow; no second activity model, no direct
+// Firestore write here.
 
-const MONTHS = [
-  "january", "february", "march", "april", "may", "june",
-  "july", "august", "september", "october", "november", "december",
-];
-
-function extractTime(text: string): { time: string; match: string } | null {
-  let m = text.match(/\d{1,2}:\d{2}\s*(?:am|pm)?/i);
-  if (m) {
-    const parts = m[0].match(/(\d{1,2}):(\d{2})\s*(am|pm)?/i)!;
-    let h = parseInt(parts[1], 10);
-    const ampm = parts[3]?.toLowerCase();
-    if (ampm === "pm" && h < 12) h += 12;
-    if (ampm === "am" && h === 12) h = 0;
-    return { time: `${h.toString().padStart(2, "0")}:${parts[2]}`, match: m[0] };
-  }
-  m = text.match(/\d{1,2}\s*(?:am|pm)\b/i);
-  if (m) {
-    const parts = m[0].match(/(\d{1,2})\s*(am|pm)/i)!;
-    let h = parseInt(parts[1], 10);
-    const ampm = parts[2].toLowerCase();
-    if (ampm === "pm" && h < 12) h += 12;
-    if (ampm === "am" && h === 12) h = 0;
-    return { time: `${h.toString().padStart(2, "0")}:00`, match: m[0] };
-  }
-  return null;
-}
-
-function extractDate(text: string): { date: string; match: string } | null {
-  const re = new RegExp(`(${MONTHS.join("|")})\\.?\\s+(\\d{1,2})(st|nd|rd|th)?(,?\\s*(\\d{4}))?`, "i");
-  const m = text.match(re);
-  if (!m) return null;
-  const monthIdx = MONTHS.findIndex((mo) => mo === m[1].toLowerCase());
-  const day = parseInt(m[2], 10);
-  const now = new Date();
-  let year = m[5] ? parseInt(m[5], 10) : now.getFullYear();
-  if (!m[5]) {
-    const candidate = new Date(year, monthIdx, day);
-    const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    if (candidate < todayMidnight) year += 1;
-  }
-  const date = `${year}-${(monthIdx + 1).toString().padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
-  return { date, match: m[0] };
-}
-
-function extractTitle(text: string, dateMatch: string, timeMatch: string): string {
-  let title = text;
-  if (dateMatch) title = title.replace(dateMatch, "");
-  if (timeMatch) title = title.replace(timeMatch, "");
-  title = title
-    .replace(/^\s*(i\s*(have|'ve got|need|want to)|remind me to|schedule|please\s*(add|schedule)?|add)\s*/i, "")
-    .replace(/\bon\b/gi, "")
-    .replace(/\bat\b/gi, "")
-    .replace(/[,.]+/g, " ")
-    .replace(/\s{2,}/g, " ")
-    .trim();
-  if (!title) title = "New Task";
-  return title.charAt(0).toUpperCase() + title.slice(1);
-}
-
-/** Mock AI parser: pulls a title, date and time out of a free-text scheduling request. */
-function parseScheduleRequest(text: string): { title: string; date: string; time: string } | null {
-  const dateResult = extractDate(text);
-  const timeResult = extractTime(text);
-  if (!dateResult || !timeResult) return null;
-  return {
-    title: extractTitle(text, dateResult.match, timeResult.match),
-    date: dateResult.date,
-    time: timeResult.time,
-  };
-}
-
-function AIAssistantCard({ colors, addTask }: { colors: any; addTask: (task: any) => Promise<TaskSaveResult> }) {
+function AIAssistantCard({
+  colors,
+  addTask,
+}: {
+  colors: any;
+  addTask: (task: Omit<Task, "id" | "createdAt">) => Promise<TaskSaveResult>;
+}) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; message: string } | null>(null);
@@ -116,16 +63,14 @@ function AIAssistantCard({ colors, addTask }: { colors: any; addTask: (task: any
     setLoading(true);
     setFeedback(null);
 
-    await new Promise((resolve) => setTimeout(resolve, 600)); // mock AI processing delay
-
-    const parsed = parseScheduleRequest(text);
-    if (parsed) {
+    try {
+      const parsed = await parseActivityRequest(text);
       const result = await addTask({
         title: parsed.title,
-        type: "task",
+        type: parsed.type,
         date: parsed.date,
         time: parsed.time,
-        duration: 60,
+        duration: parsed.duration,
         completed: false,
       });
       if (result.ok) {
@@ -139,10 +84,19 @@ function AIAssistantCard({ colors, addTask }: { colors: any; addTask: (task: any
       } else {
         setFeedback({ ok: false, message: "That's in the past — try a current or future date/time." });
       }
-    } else {
-      setFeedback({ ok: false, message: 'Couldn’t find a date/time — try "Soccer practice on July 17th at 19:00"' });
+    } catch (e) {
+      if (__DEV__) console.warn("[AIAssistantCard] parseActivityRequest failed", e);
+      const code = e instanceof AiAssistantServiceError ? e.code : "unknown";
+      setFeedback({
+        ok: false,
+        message:
+          code === "no-activity-found"
+            ? 'Couldn’t find a date/time — try "Soccer practice tomorrow at 19:00"'
+            : friendlyAiAssistantMessage(e),
+      });
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }
 
   return (
@@ -213,7 +167,7 @@ export default function HomeScreen() {
   const { profile } = useProfile();
   const { tasks, addTask } = useTime();
   const { currentStreak } = useProgress();
-  const [notifVisible, setNotifVisible] = useState(false);
+  const [streakModalVisible, setStreakModalVisible] = useState(false);
 
   const today = todayISO();
   const todayTasks = tasks
@@ -226,36 +180,24 @@ export default function HomeScreen() {
   return (
     <SwipeableTab tabIndex={0} backgroundColor={colors.background}>
       <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
-        {/* Header */}
+        {/* Header — greeting only; city intentionally removed from this row
+            (still shown on Profile/Settings/Explore/friend previews). */}
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
-          <View style={{ flex: 1 }}>
-            <Text style={[styles.greeting, { color: colors.text }]}>{greeting(profile.username)}</Text>
-            {profile.city ? (
-              <View style={styles.locationRow}>
-                <Ionicons name="location-outline" size={13} color={colors.secondaryText} />
-                <Text style={[styles.locationText, { color: colors.secondaryText }]}>{profile.city}</Text>
-              </View>
-            ) : null}
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={[styles.greeting, { color: colors.text }]} numberOfLines={1}>
+              {greeting(profile.username)}
+            </Text>
           </View>
-          <TouchableOpacity onPress={() => setNotifVisible(true)} style={[styles.notifBtn, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <Ionicons name="notifications-outline" size={20} color={colors.text} />
-          </TouchableOpacity>
-          <View
-            style={[styles.streakBadge, { backgroundColor: colors.card, borderColor: colors.border }]}
-            accessible
-            accessibilityLabel={`Current streak: ${currentStreak} days`}
-          >
-            <Ionicons name="flame" size={16} color="#F59E0B" />
-            <Text style={[styles.streakBadgeText, { color: colors.text }]}>{currentStreak ?? 0}</Text>
-          </View>
+          <NotificationBell colors={colors} />
+          <StreakButton streak={currentStreak ?? 0} colors={colors} onPress={() => setStreakModalVisible(true)} />
         </View>
 
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }}>
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 56 }}>
 
           <TipBanner
-            storageKey={TIP_KEYS.feedFirstPost}
-            text="Share what you've been practicing! Tap the pencil button to create your first post."
-            icon="create-outline"
+            storageKey={TIP_KEYS.homeGettingStarted}
+            text="Add your first activity with AI, or explore communities near you."
+            icon="sparkles-outline"
             colors={colors}
           />
 
@@ -320,25 +262,18 @@ export default function HomeScreen() {
                 ))}
               </View>
             </View>
+
+            {/* Friends streak leaderboard */}
+            <FriendsLeaderboard colors={colors} />
           </View>
 
         </ScrollView>
 
-        {/* Notification modal (placeholder) */}
-        <Modal visible={notifVisible} transparent animationType="fade" onRequestClose={() => setNotifVisible(false)}>
-          <TouchableOpacity style={styles.modalOverlay} onPress={() => setNotifVisible(false)}>
-            <View style={[styles.notifModal, { backgroundColor: colors.card, borderColor: colors.border }]}>
-              <Ionicons name="notifications-outline" size={32} color={colors.secondaryText} style={{ marginBottom: 8 }} />
-              <Text style={[{ color: colors.text, fontWeight: "700", fontSize: 16, marginBottom: 6 }]}>Push Notifications</Text>
-              <Text style={[{ color: colors.secondaryText, textAlign: "center", fontSize: 14 }]}>
-                Push notifications are coming in Phase 2!{"\n"}Stay tuned.
-              </Text>
-              <TouchableOpacity onPress={() => setNotifVisible(false)} style={[styles.notifClose, { backgroundColor: colors.primary }]}>
-                <Text style={{ color: "#fff", fontWeight: "700" }}>Got it</Text>
-              </TouchableOpacity>
-            </View>
-          </TouchableOpacity>
-        </Modal>
+        <StreakInfoModal
+          visible={streakModalVisible}
+          onClose={() => setStreakModalVisible(false)}
+          colors={colors}
+        />
       </SafeAreaView>
     </SwipeableTab>
   );
@@ -350,26 +285,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 20,
-    paddingVertical: 14,
+    paddingVertical: 12,
     borderBottomWidth: 1,
     gap: 10,
   },
   greeting: { fontSize: 22, fontWeight: "800", letterSpacing: -0.3 },
-  locationRow: { flexDirection: "row", alignItems: "center", gap: 3, marginTop: 2 },
-  locationText: { fontSize: 12 },
-  notifBtn: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", borderWidth: 1 },
-  streakBadge: {
-    minWidth: 44,
-    height: 44,
-    paddingHorizontal: 10,
-    borderRadius: 22,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 4,
-    borderWidth: 1,
-  },
-  streakBadgeText: { fontSize: 15, fontWeight: "800" },
   content: { paddingHorizontal: 16, marginTop: 16, gap: 24 },
   section: { gap: 12 },
   sectionRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
@@ -419,8 +339,4 @@ const styles = StyleSheet.create({
   },
   aiFeedbackRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 10 },
   aiFeedbackText: { fontSize: 12, flex: 1 },
-  // Notification modal
-  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center", alignItems: "center" },
-  notifModal: { width: 280, padding: 24, borderRadius: 20, borderWidth: 1, alignItems: "center" },
-  notifClose: { marginTop: 16, paddingHorizontal: 24, paddingVertical: 10, borderRadius: 10 },
 });
