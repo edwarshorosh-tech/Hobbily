@@ -9,18 +9,47 @@ import {
   View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet,
   Dimensions, Animated, Image, KeyboardAvoidingView, Platform, ActivityIndicator,
 } from "react-native";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import { useProfile } from "../context/ProfileContext";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { FreeTimePerDay } from "../types/Profile";
+import { takePendingQuizHobby } from "../services/quizBridge";
 import { HOBBY_OPTIONS } from "../constants/hobbies";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const TOTAL_STEPS = 6;
+
+// ── Sign-up / onboarding flow palette (independent of the app-wide theme) ─────
+
+const onboardingLight = {
+  background: "#CACEF2",
+  card: "#FFFFFF",
+  text: "#000000",
+  secondaryText: "#4A4E6D",
+  border: "#B7BCEA",
+  primary: "#032068",
+  secondary: "#E4E6FB",
+  danger: "#FC7273",
+  dangerBg: "#FDE2E2",
+  dangerBorder: "#FBB5B5",
+};
+
+const onboardingDark = {
+  background: "#05081E",
+  card: "#101A4A",
+  text: "#EDEFFB",
+  secondaryText: "#9BA1D4",
+  border: "#26316E",
+  primary: "#4C5FD1",
+  secondary: "#1B2456",
+  danger: "#FF8A8A",
+  dangerBg: "#3A1620",
+  dangerBorder: "#5C2430",
+};
 
 const FREE_TIME_OPTIONS: { label: string; sub: string; value: FreeTimePerDay }[] = [
   { label: "< 30 min", sub: "Just a little", value: "<30" },
@@ -53,7 +82,8 @@ function friendlyAuthError(code: string): string {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function OnboardingScreen() {
-  const { colors } = useTheme();
+  const { isDark } = useTheme();
+  const colors = isDark ? onboardingDark : onboardingLight;
   const { saveProfile, profile } = useProfile();
   const { signUp, signIn, user } = useAuth();
 
@@ -80,6 +110,19 @@ export default function OnboardingScreen() {
       setStep(2);
     }
   }, []); // intentionally runs once on mount only
+
+  // Returning from the Hidden Hobbies Quiz (launched from the Interests step) via
+  // router.back() — pick up the suggested hobby, if any, and add it to the
+  // selection. Runs on focus rather than on a param change so this screen's
+  // existing instance (and its in-progress `step`/form state) is never disturbed.
+  useFocusEffect(
+    useCallback(() => {
+      const hobby = takePendingQuizHobby();
+      if (hobby) {
+        setSelectedHobbies((prev) => (prev.includes(hobby) ? prev : [...prev, hobby]));
+      }
+    }, [])
+  );
 
   function animateTo(nextStep: number) {
     const direction = nextStep > step ? -1 : 1;
@@ -140,8 +183,8 @@ export default function OnboardingScreen() {
   const emailValid = email.trim().includes("@") && email.trim().includes(".");
   const passwordValid = password.length >= 6;
   const ageNum = parseInt(age, 10);
-  const ageValid = age === "" || (!isNaN(ageNum) && ageNum >= 13 && ageNum <= 150);
-  const ageError = age !== "" && !ageValid ? "Age must be between 13 and 150." : "";
+  const ageValid = age === "" || (!isNaN(ageNum) && ageNum >= 13 && ageNum <= 18);
+  const ageError = age !== "" && !ageValid ? "Age must be between 13 and 18." : "";
 
   const canContinue: boolean[] = [
     true,                                        // 0: welcome
@@ -316,9 +359,9 @@ function StepAccount({
       />
 
       {authError ? (
-        <View style={[styles.errorBox, { backgroundColor: "#FEF2F2", borderColor: "#FECACA" }]}>
-          <Ionicons name="alert-circle-outline" size={16} color="#DC2626" style={{ marginRight: 8 }} />
-          <Text style={[styles.errorText, { color: "#DC2626" }]}>{authError}</Text>
+        <View style={[styles.errorBox, { backgroundColor: colors.dangerBg, borderColor: colors.dangerBorder }]}>
+          <Ionicons name="alert-circle-outline" size={16} color={colors.danger} style={{ marginRight: 8 }} />
+          <Text style={[styles.errorText, { color: colors.danger }]}>{authError}</Text>
         </View>
       ) : null}
 
@@ -422,6 +465,23 @@ function StepInterests({ colors, selected, onToggle, canNext, onNext }: any) {
         </Text>
       </View>
       <ScrollView ref={scrollRef} showsVerticalScrollIndicator={false}>
+        {/* Discover via quiz */}
+        <View style={styles.discoverWrap}>
+          <TouchableOpacity
+            onPress={() => router.push("/quiz?returnTo=onboarding" as any)}
+            style={[styles.discoverCard, { backgroundColor: colors.secondary, borderColor: colors.primary }]}
+          >
+            <View style={[styles.discoverIcon, { backgroundColor: colors.primary }]}>
+              <Ionicons name="compass-outline" size={20} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.discoverTitle, { color: colors.text }]}>Don't have a hobby?</Text>
+              <Text style={[styles.discoverSub, { color: colors.secondaryText }]}>Let's discover together — take our 2-minute quiz</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.primary} />
+          </TouchableOpacity>
+        </View>
+
         {/* Predefined hobby tiles */}
         <View style={styles.hobbyGrid}>
           {HOBBY_OPTIONS.map((h) => {
@@ -653,6 +713,12 @@ const styles = StyleSheet.create({
   welcomeLogo: { width: 100, height: 100, resizeMode: "contain", alignSelf: "center", marginBottom: 16, marginTop: 40 },
   welcomeTitle: { fontSize: 42, fontWeight: "900", textAlign: "center", letterSpacing: -1 },
   welcomeTagline: { fontSize: 18, textAlign: "center", lineHeight: 28, marginVertical: 16 },
+  // Discover-via-quiz callout
+  discoverWrap: { paddingHorizontal: 16, paddingTop: 16 },
+  discoverCard: { flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 16, borderWidth: 1.5, borderStyle: "dashed", gap: 12 },
+  discoverIcon: { width: 40, height: 40, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+  discoverTitle: { fontSize: 14, fontWeight: "700", marginBottom: 2 },
+  discoverSub: { fontSize: 12, lineHeight: 16 },
   // Hobby grid — 3 columns so labels have room to breathe
   hobbyGrid: { flexDirection: "row", flexWrap: "wrap", padding: 16, gap: 12 },
   // Custom hobby adder

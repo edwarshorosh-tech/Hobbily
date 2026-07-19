@@ -248,25 +248,36 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
     await persist(updated, todayISO());
   }, [state]);
 
-  return (
-    <ProgressContext.Provider
-      value={{
-        currentStreak,
-        longestStreak: state.longestStreak,
-        totalSessions: state.totalSessions,
-        totalMinutes: state.totalMinutes,
-        achievements: state.achievements,
-        streakFreezeAvailable: state.streakFreezeAvailable,
-        recentActivity,
-        isLoaded,
-        loadError,
-        recordSession,
-        useStreakFreeze,
-      }}
-    >
-      {children}
-    </ProgressContext.Provider>
+  const value = useMemo(
+    () => ({
+      currentStreak,
+      longestStreak: state.longestStreak,
+      totalSessions: state.totalSessions,
+      totalMinutes: state.totalMinutes,
+      achievements: state.achievements,
+      streakFreezeAvailable: state.streakFreezeAvailable,
+      recentActivity,
+      isLoaded,
+      loadError,
+      recordSession,
+      useStreakFreeze,
+    }),
+    [
+      currentStreak,
+      state.longestStreak,
+      state.totalSessions,
+      state.totalMinutes,
+      state.achievements,
+      state.streakFreezeAvailable,
+      recentActivity,
+      isLoaded,
+      loadError,
+      recordSession,
+      useStreakFreeze,
+    ]
   );
+
+  return <ProgressContext.Provider value={value}>{children}</ProgressContext.Provider>;
 }
 
 export function useProgress() {

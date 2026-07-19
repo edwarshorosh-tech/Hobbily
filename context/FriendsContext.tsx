@@ -289,21 +289,38 @@ export function FriendsProvider({ children }: { children: React.ReactNode }) {
     [uid]
   );
 
-  const value: FriendsContextType = {
-    isLoaded,
-    loadError,
-    acceptedFriends,
-    incomingRequests,
-    outgoingRequests,
-    actionState,
-    sendRequest,
-    acceptRequest,
-    declineRequest,
-    cancelRequest,
-    removeFriendship,
-    searchUsername,
-    refreshFriendProfiles,
-  };
+  const value: FriendsContextType = useMemo(
+    () => ({
+      isLoaded,
+      loadError,
+      acceptedFriends,
+      incomingRequests,
+      outgoingRequests,
+      actionState,
+      sendRequest,
+      acceptRequest,
+      declineRequest,
+      cancelRequest,
+      removeFriendship,
+      searchUsername,
+      refreshFriendProfiles,
+    }),
+    [
+      isLoaded,
+      loadError,
+      acceptedFriends,
+      incomingRequests,
+      outgoingRequests,
+      actionState,
+      sendRequest,
+      acceptRequest,
+      declineRequest,
+      cancelRequest,
+      removeFriendship,
+      searchUsername,
+      refreshFriendProfiles,
+    ]
+  );
 
   return <FriendsContext.Provider value={value}>{children}</FriendsContext.Provider>;
 }

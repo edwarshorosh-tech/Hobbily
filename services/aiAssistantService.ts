@@ -62,6 +62,9 @@ const WORKER_CODE_MAP: Record<WorkerErrorCode, AiAssistantServiceErrorCode> = {
 
 const WORKER_URL = process.env.EXPO_PUBLIC_AI_WORKER_URL ?? "";
 
+/** Lets callers check upfront (e.g. to show a persistent notice) instead of only finding out via a thrown error. */
+export const isAiAssistantConfigured = Boolean(WORKER_URL);
+
 /** User-facing copy for service error codes — never surface raw backend/HF error text. */
 export function friendlyAiAssistantMessage(e: unknown): string {
   if (e instanceof AiAssistantServiceError) return e.message;

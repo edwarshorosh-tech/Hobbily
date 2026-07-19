@@ -1,22 +1,30 @@
 rules_version = '2';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// IMPORTANT — READ BEFORE DEPLOYING
-//
-// This project has no firestore.rules under version control prior to this
+// ═════════════════════════════════════════════════════════════════════════
+// ⚠️  WARNING — VERIFY AGAINST THE CONSOLE BEFORE RUNNING A FULL DEPLOY  ⚠️
+// ═════════════════════════════════════════════════════════════════════════
+// This project had no firestore.rules under version control prior to this
 // change (rules were only ever configured directly in the Firebase Console).
-// This file defines complete, tested rules for the collections added by the
-// friends feature (`friendships`, `publicProfiles`) and the notification
-// center (`users/{uid}/notifications`) — plus a clearly marked placeholder
-// for every other collection the app already uses
-// (`users`, `progress`, `posts`, `channels/{channelId}/messages`).
 //
-// Deploying this file REPLACES the entire ruleset. Before running
-// `firebase deploy --only firestore:rules`, copy your current live rules for
-// `users`, `progress`, `posts`, and `channels/*/messages` from the Firebase
-// Console into the placeholder block below. Deploying the placeholder as-is
-// (default-deny) will break those collections for the running app.
-// ─────────────────────────────────────────────────────────────────────────────
+// `friendships`, `publicProfiles`, and `users/{uid}/notifications` below are
+// complete, tested rules written for those features — no action needed.
+//
+// `users`, `progress`, `posts`, and `channels/{channelId}/messages` are a
+// signed-in-only BASELINE (any authenticated user may read/write), added
+// solely so deploying this file doesn't lock every user out of their own
+// data. This baseline is intentionally coarse — e.g. `users/{uid}` is NOT
+// yet restricted to its own owner — and is NOT a substitute for whatever
+// rules are already live in the Console.
+//
+// BEFORE running `firebase deploy --only firestore:rules`:
+//   1. Open Firebase Console → Firestore Database → Rules and compare
+//      against the four baseline blocks marked "BASELINE" below.
+//   2. If the live Console rules are stricter (e.g. owner-only reads/writes),
+//      port those exact conditions in instead of leaving the baseline as-is.
+//   3. Only then deploy.
+// Deploying this file REPLACES the entire ruleset — skipping this check
+// risks silently loosening production access control.
+// ═════════════════════════════════════════════════════════════════════════
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -241,14 +249,34 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // ── Existing collections — PLACEHOLDER, see the note at the top of this file ──
-    // Paste your current live rules for these paths here before deploying.
-    // Leaving this block as-is (no rules match below) denies all access to
-    // these collections once this file is deployed.
-    //
-    // match /users/{uid} { ... }
-    // match /progress/{uid} { ... }
-    // match /posts/{postId} { ... }
-    // match /channels/{channelId}/messages/{messageId} { ... }
+    // ── Existing collections — BASELINE, see the warning at the top of this file ──
+    // Signed-in-only placeholder so this file doesn't default-deny these
+    // collections on deploy. Verify against the Firebase Console before
+    // deploying — replace with owner-scoped rules if the live rules are
+    // stricter than this baseline.
+
+    // BASELINE — users/{uid}: the private profile document (email, age,
+    // city, hobbies, ...). Owner-scoped, matching the isOwner() pattern
+    // already used by publicProfiles/{uid} above.
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // BASELINE — progress/{uid}: streak/session tracking mirrored into
+    // publicProfiles/{uid}.currentStreak (see the note on that rule above).
+    // Owner-scoped, same pattern as users/{uid} above.
+    match /progress/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // BASELINE — posts/{postId}: community feed posts.
+    match /posts/{postId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // BASELINE — channels/{channelId}/messages/{messageId}: community chat.
+    match /channels/{channelId}/messages/{messageId} {
+      allow read, write: if request.auth != null;
+    }
   }
 }

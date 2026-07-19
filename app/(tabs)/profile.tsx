@@ -381,7 +381,6 @@ export default function ProfileScreen() {
   const [activeTab, setActiveTab] = useState<TabId>(initialTab);
   const [draft, setDraft] = useState({ ...profile });
   const [saveModalVisible, setSaveModalVisible] = useState(false);
-  const [saveError, setSaveError] = useState("");
   const [saveFailure, setSaveFailure] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -504,21 +503,15 @@ export default function ProfileScreen() {
 
   const ageNum = parseInt(draft.age, 10);
   const ageError =
-    draft.age !== "" && (isNaN(ageNum) || ageNum < 13 || ageNum > 150) ? "Age must be between 13 and 150." : "";
+    draft.age !== "" && (isNaN(ageNum) || ageNum < 13 || ageNum > 18) ? "Age must be between 13 and 18." : "";
 
   function requestSave() {
-    if (ageError) {
-      setSaveError(ageError);
-      setSaveModalVisible(true);
-      return;
-    }
-    setSaveError("");
     setSaveModalVisible(true);
   }
 
   async function handleConfirmSave() {
     setSaveModalVisible(false);
-    if (saveError || saving) return;
+    if (ageError || saving) return;
     setSaving(true);
     setSaveFailure(null);
     try {
@@ -924,10 +917,10 @@ export default function ProfileScreen() {
       {/* Save confirm */}
       <ConfirmModal
         visible={saveModalVisible}
-        title={saveError ? "Cannot Save" : "Save Changes?"}
-        message={saveError || "Your profile will be updated."}
-        confirmLabel={saveError ? "OK" : "Save"}
-        cancelLabel={saveError ? undefined : "Cancel"}
+        title={ageError ? "Cannot Save" : "Save Changes?"}
+        message={ageError || "Your profile will be updated."}
+        confirmLabel={ageError ? "OK" : "Save"}
+        cancelLabel={ageError ? undefined : "Cancel"}
         dangerous={false}
         onConfirm={handleConfirmSave}
         onCancel={() => setSaveModalVisible(false)}

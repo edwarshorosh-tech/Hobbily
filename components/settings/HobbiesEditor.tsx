@@ -25,6 +25,7 @@ type Props = {
 
 export default function HobbiesEditor({ hobbies, onChange, colors, disabled = false, title = "My Hobbies" }: Props) {
   const [query, setQuery] = useState("");
+  const [duplicateNotice, setDuplicateNotice] = useState("");
 
   const atLimit = hobbies.length >= MAX_HOBBIES;
 
@@ -40,9 +41,11 @@ export default function HobbiesEditor({ hobbies, onChange, colors, disabled = fa
     const trimmed = label.trim();
     if (!trimmed || disabled || atLimit) return;
     if (hobbies.some((h) => h.toLowerCase() === trimmed.toLowerCase())) {
+      setDuplicateNotice(`"${trimmed}" is already in your hobbies.`);
       setQuery("");
       return;
     }
+    setDuplicateNotice("");
     onChange([...hobbies, trimmed]);
     setQuery("");
   }
@@ -68,7 +71,10 @@ export default function HobbiesEditor({ hobbies, onChange, colors, disabled = fa
           placeholder={atLimit ? `Limit reached (${MAX_HOBBIES})` : "Search or add a hobby"}
           placeholderTextColor={colors.secondaryText}
           value={query}
-          onChangeText={setQuery}
+          onChangeText={(text) => {
+            setQuery(text);
+            setDuplicateNotice("");
+          }}
           onSubmitEditing={() => addHobby(query)}
           returnKeyType="done"
           editable={!disabled && !atLimit}
@@ -84,6 +90,10 @@ export default function HobbiesEditor({ hobbies, onChange, colors, disabled = fa
           </TouchableOpacity>
         )}
       </View>
+
+      {duplicateNotice ? (
+        <Text style={[styles.duplicateNotice, { color: colors.danger }]}>{duplicateNotice}</Text>
+      ) : null}
 
       {hobbies.length > 0 ? (
         <View style={styles.chipWrap}>
@@ -148,6 +158,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   input: { flex: 1, fontSize: 14, paddingVertical: 2 },
+  duplicateNotice: { fontSize: 12, fontWeight: "600" },
   chipWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   selectedChip: {
     flexDirection: "row",

@@ -57,6 +57,17 @@ export default function SwipeableTab({ tabIndex, backgroundColor, children }: Pr
         reduceMotionRef.current = v;
       })
       .catch(() => undefined);
+
+    // Initial check above only captures the setting at mount — subscribe so a
+    // user toggling Reduce Motion in OS settings while the app is already
+    // running (e.g. backgrounded) is picked up without needing a remount.
+    const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", (v) => {
+      reduceMotionRef.current = v;
+    });
+
+    return () => {
+      subscription.remove();
+    };
   }, []);
 
   // Reset position + fade content in every time this tab gains focus

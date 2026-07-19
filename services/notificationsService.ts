@@ -21,6 +21,7 @@ import {
 } from "firebase/firestore";
 import { db } from "../lib/firebase";
 import { AppNotification, NotificationRoute, NotificationType } from "../types/Notification";
+import { mapFirebaseError } from "./firebaseErrors";
 
 export const NOTIFICATIONS_PAGE_SIZE = 30;
 
@@ -36,18 +37,8 @@ export class NotificationServiceError extends Error {
 }
 
 function mapFirestoreError(e: unknown): NotificationServiceError {
-  const code = (e as { code?: string } | null)?.code;
-  if (code === "permission-denied") {
-    return new NotificationServiceError("permission-denied", "You don't have permission to do that.");
-  }
-  if (code === "unavailable" || code === "deadline-exceeded" || code === "cancelled") {
-    return new NotificationServiceError("network-error", "Network error — please try again.");
-  }
-  if (__DEV__) {
-    // eslint-disable-next-line no-console
-    console.warn("[notificationsService]", e);
-  }
-  return new NotificationServiceError("unknown", "Something went wrong. Please try again.");
+  const { code, message } = mapFirebaseError(e, "notificationsService");
+  return new NotificationServiceError(code, message);
 }
 
 export function notificationsCollection(uid: string): CollectionReference {

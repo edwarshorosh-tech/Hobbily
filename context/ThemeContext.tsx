@@ -1,43 +1,43 @@
 /**
  * ThemeContext
- * Light:  background #F5F5F5 · primary #2563EB · cards #FFFFFF · text #111827
- * Dark:   background #0F172A · primary #3B82F6 · cards #1E293B · text #F1F5F9
+ * Light:  background #CACEF2 · primary #032068 · cards #DEE1F7 · text #000000
+ * Dark:   background #05081E · primary #4C5FD1 · cards #101A4A · text #EDEFFB
  */
 import { createContext, useContext, useState, useEffect } from "react";
 import { Appearance } from "react-native";
 
 const lightTheme = {
-  background: "#F5F5F5",
-  card: "#FFFFFF",
-  text: "#111827",
-  secondaryText: "#6B7280",
-  border: "#E5E7EB",
-  primary: "#2563EB",
-  secondary: "#EFF6FF",
-  accent: "#1D4ED8",
-  danger: "#EF4444",
-  success: "#10B981",
-  tabBar: "#FFFFFF",
-  tabBarActive: "#2563EB",
-  tabBarInactive: "#9CA3AF",
-  inputBackground: "#F9FAFB",
+  background: "#CACEF2",
+  card: "#DEE1F7",
+  text: "#000000",
+  secondaryText: "#3F4368",
+  border: "#A9AEDD",
+  primary: "#032068",
+  secondary: "#B9BEEA",
+  accent: "#FC7273",
+  danger: "#FC7273",
+  success: "#0E9F6E",
+  tabBar: "#DEE1F7",
+  tabBarActive: "#032068",
+  tabBarInactive: "#7379B0",
+  inputBackground: "#DEE1F7",
 };
 
 const darkTheme = {
-  background: "#0F172A",
-  card: "#1E293B",
-  text: "#F1F5F9",
-  secondaryText: "#94A3B8",
-  border: "#334155",
-  primary: "#3B82F6",
-  secondary: "#1E3A5F",
-  accent: "#60A5FA",
-  danger: "#F87171",
+  background: "#05081E",
+  card: "#101A4A",
+  text: "#EDEFFB",
+  secondaryText: "#9BA1D4",
+  border: "#26316E",
+  primary: "#4C5FD1",
+  secondary: "#1B2456",
+  accent: "#FF8A8A",
+  danger: "#FF8A8A",
   success: "#34D399",
-  tabBar: "#1E293B",
-  tabBarActive: "#3B82F6",
-  tabBarInactive: "#64748B",
-  inputBackground: "#0F172A",
+  tabBar: "#101A4A",
+  tabBarActive: "#4C5FD1",
+  tabBarInactive: "#5C6399",
+  inputBackground: "#0B123A",
 };
 
 export type ColorTokens = typeof lightTheme;

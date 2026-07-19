@@ -14,6 +14,7 @@ import { useTime, TaskSaveResult } from "../../context/TimeContext";
 import { useProgress } from "../../context/ProgressContext";
 import SwipeableTab from "../../components/SwipeableTab";
 import TipBanner, { TIP_KEYS } from "../../components/TipBanner";
+import { interpretMessage, formatShortDate } from "../../services/aiService";
 import FriendsLeaderboard from "../../components/home/FriendsLeaderboard";
 import NotificationBell from "../../components/notifications/NotificationBell";
 import StreakInfoModal from "../../components/home/StreakInfoModal";
@@ -21,7 +22,7 @@ import StreakButton from "../../components/home/StreakButton";
 import { useState } from "react";
 import { localDateISO } from "../../utils/dateUtils";
 import { Task } from "../../types/Task";
-import { AiAssistantServiceError, friendlyAiAssistantMessage, parseActivityRequest } from "../../services/aiAssistantService";
+import { AiAssistantServiceError, friendlyAiAssistantMessage, isAiAssistantConfigured, parseActivityRequest } from "../../services/aiAssistantService";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -40,18 +41,21 @@ function formatTime(time: string): string {
 }
 
 // ── AI Assistant ─────────────────────────────────────────────────────────────
-// Natural-language requests are parsed server-side (worker/ -> Hugging Face
+// Free-time questions and exam mentions are answered locally (services/aiService.ts).
+// Plain scheduling requests are parsed server-side (worker/ -> Hugging Face
 // Inference Providers -> validated JSON) — see services/aiAssistantService.ts.
-// The parsed activity is then created through the exact same addTask() used
-// by the manual Add Activity flow; no second activity model, no direct
+// Either way the parsed activity is created through the exact same addTask()
+// used by the manual Add Activity flow; no second activity model, no direct
 // Firestore write here.
 
 function AIAssistantCard({
   colors,
   addTask,
+  tasks,
 }: {
   colors: any;
   addTask: (task: Omit<Task, "id" | "createdAt">) => Promise<TaskSaveResult>;
+  tasks: Task[];
 }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -62,6 +66,100 @@ function AIAssistantCard({
     if (!text || loading) return;
     setLoading(true);
     setFeedback(null);
+
+    // Free-time questions and exam mentions are handled locally (the backend
+    // parser only understands single-activity scheduling) — everything else
+    // goes to the real AI backend.
+    const action = interpretMessage(text, tasks, todayISO());
+
+    if (action.kind === "free_info") {
+      setFeedback({ ok: true, message: action.message });
+      setInput("");
+      setLoading(false);
+      return;
+    }
+
+    if (action.kind === "exam") {
+      try {
+        const examResult = await addTask({
+          title: action.label,
+          type: "task",
+          date: action.date,
+          time: action.time,
+          duration: 60,
+          completed: false,
+        });
+        if (!examResult.ok) {
+          setFeedback({
+            ok: false,
+            message:
+              examResult.reason === "conflict"
+                ? `That overlaps with "${examResult.conflict.title}" at ${examResult.conflict.time} — try a different time for your ${action.label.toLowerCase()}.`
+                : "That date/time is in the past — double-check it.",
+          });
+          return;
+        }
+
+        let studyAdded = 0;
+        const studyDates: string[] = [];
+        for (const session of action.studySessions) {
+          const r = await addTask({ title: session.title, type: "task", date: session.date, time: session.time, duration: session.duration, completed: false });
+          if (r.ok) {
+            studyAdded++;
+            studyDates.push(formatShortDate(session.date));
+          }
+        }
+
+        const guessNote = action.timeWasGuessed ? " (I guessed 9:00 AM — adjust it in your planner if needed)" : "";
+        const studyNote =
+          studyAdded > 0
+            ? ` I also blocked ${studyAdded} study session${studyAdded > 1 ? "s" : ""} on ${studyDates.join(", ")} so you're not cramming.`
+            : action.studySessions.length === 0
+            ? " I couldn't find open time beforehand to schedule prep sessions — good luck!"
+            : "";
+        setFeedback({ ok: true, message: `Added "${action.label}" on ${formatShortDate(action.date)}${guessNote}.${studyNote}` });
+        setInput("");
+      } catch (e) {
+        if (__DEV__) console.warn("[AIAssistantCard] exam scheduling failed", e);
+        setFeedback({ ok: false, message: "Couldn't save that — please try again." });
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    // Checked upfront rather than only discovered via the thrown error below —
+    // lets the UI show a persistent notice (see aiNotConfiguredBanner). Falls
+    // back to the local regex parser's own result instead of just failing, so
+    // plain scheduling still works offline like it did before the AI backend
+    // was added.
+    if (!isAiAssistantConfigured) {
+      if (action.kind === "schedule") {
+        const result = await addTask({
+          title: action.title,
+          type: "task",
+          date: action.date,
+          time: action.time,
+          duration: 60,
+          completed: false,
+        });
+        if (result.ok) {
+          setFeedback({ ok: true, message: `Scheduled "${action.title}" — ${formatShortDate(action.date)} at ${action.time}` });
+          setInput("");
+        } else if (result.reason === "conflict") {
+          setFeedback({ ok: false, message: `That overlaps with "${result.conflict.title}" at ${result.conflict.time} — try a different time.` });
+        } else {
+          setFeedback({ ok: false, message: "That's in the past — try a current or future date/time." });
+        }
+      } else {
+        setFeedback({
+          ok: false,
+          message: 'Couldn’t quite parse that — try "Soccer practice next Tuesday at 7pm".',
+        });
+      }
+      setLoading(false);
+      return;
+    }
 
     try {
       const parsed = await parseActivityRequest(text);
@@ -74,13 +172,10 @@ function AIAssistantCard({
         completed: false,
       });
       if (result.ok) {
-        setFeedback({ ok: true, message: `Scheduled "${parsed.title}" — ${parsed.date} at ${parsed.time}` });
+        setFeedback({ ok: true, message: `Scheduled "${parsed.title}" — ${formatShortDate(parsed.date)} at ${parsed.time}` });
         setInput("");
       } else if (result.reason === "conflict") {
-        setFeedback({
-          ok: false,
-          message: `That overlaps with "${result.conflict.title}" at ${result.conflict.time} — try a different time.`,
-        });
+        setFeedback({ ok: false, message: `That overlaps with "${result.conflict.title}" at ${result.conflict.time} — try a different time.` });
       } else {
         setFeedback({ ok: false, message: "That's in the past — try a current or future date/time." });
       }
@@ -106,13 +201,21 @@ function AIAssistantCard({
         <Text style={[styles.aiTitle, { color: colors.text }]}>AI Assistant</Text>
       </View>
       <Text style={[styles.aiSubtitle, { color: colors.secondaryText }]}>
-        Tell me about an activity and I'll add it to your schedule.
+        Schedule activities, ask "when am I free?", or mention an exam and I'll plan study time for it.
       </Text>
+      {!isAiAssistantConfigured && (
+        <View style={[styles.aiNotConfiguredBanner, { backgroundColor: colors.background, borderColor: colors.border }]}>
+          <Ionicons name="information-circle-outline" size={14} color={colors.secondaryText} />
+          <Text style={[styles.aiNotConfiguredText, { color: colors.secondaryText }]}>
+            Free-time questions and exam planning work now — scheduling by AI needs setup by the team.
+          </Text>
+        </View>
+      )}
       <View style={styles.aiInputRow}>
         <TextInput
           value={input}
           onChangeText={setInput}
-          placeholder='e.g. "Soccer practice on July 17th at 19:00"'
+          placeholder='e.g. "Soccer practice next Tuesday at 7pm"'
           placeholderTextColor={colors.secondaryText}
           style={[styles.aiInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }]}
           editable={!loading}
@@ -203,7 +306,7 @@ export default function HomeScreen() {
 
           <View style={styles.content}>
             {/* AI Assistant */}
-            <AIAssistantCard colors={colors} addTask={addTask} />
+            <AIAssistantCard colors={colors} addTask={addTask} tasks={tasks} />
 
             {/* Today's schedule */}
             <View style={styles.section}>
@@ -252,6 +355,7 @@ export default function HomeScreen() {
                 {[
                   { icon: "add-circle-outline" as const, label: "Post", action: () => router.push("/create-post" as any), color: colors.primary },
                   { icon: "newspaper-outline" as const, label: "Feed", action: () => router.push("/feed" as any), color: "#F59E0B" },
+                  { icon: "help-circle-outline" as const, label: "Quiz", action: () => router.push("/quiz" as any), color: "#8B5CF6" },
                 ].map((a) => (
                   <TouchableOpacity key={a.label} onPress={a.action} style={[styles.quickAction, { backgroundColor: colors.card, borderColor: colors.border }]}>
                     <View style={[styles.quickActionIcon, { backgroundColor: a.color + "18" }]}>
@@ -320,6 +424,16 @@ const styles = StyleSheet.create({
   aiHeaderRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   aiTitle: { fontSize: 15, fontWeight: "700" },
   aiSubtitle: { fontSize: 12, marginTop: 4, marginBottom: 10 },
+  aiNotConfiguredBanner: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 8,
+    marginBottom: 10,
+  },
+  aiNotConfiguredText: { fontSize: 11, flex: 1, lineHeight: 15 },
   aiInputRow: { flexDirection: "row", alignItems: "flex-end", gap: 8 },
   aiInput: {
     flex: 1,
