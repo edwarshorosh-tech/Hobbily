@@ -6,6 +6,7 @@
  */
 import { storage } from "../lib/firebase";
 import { deleteObject, getDownloadURL, ref, uploadBytes } from "firebase/storage";
+import { mapFirebaseError, rawErrorCode } from "./firebaseErrors";
 
 export type AvatarServiceErrorCode = "permission-denied" | "network-error" | "unknown";
 
@@ -19,14 +20,8 @@ export class AvatarServiceError extends Error {
 }
 
 function mapStorageError(e: unknown): AvatarServiceError {
-  const code = typeof e === "object" && e !== null && "code" in e ? String((e as { code: unknown }).code) : "";
-  if (code.includes("unauthorized") || code.includes("permission")) {
-    return new AvatarServiceError("permission-denied");
-  }
-  if (code.includes("network") || code.includes("retry-limit-exceeded") || code.includes("canceled")) {
-    return new AvatarServiceError("network-error");
-  }
-  return new AvatarServiceError("unknown");
+  const { code, message } = mapFirebaseError(e, "storageService");
+  return new AvatarServiceError(code, message);
 }
 
 function avatarRef(uid: string) {
@@ -51,8 +46,7 @@ export async function removeAvatar(uid: string): Promise<void> {
   try {
     await deleteObject(avatarRef(uid));
   } catch (e) {
-    const code = typeof e === "object" && e !== null && "code" in e ? String((e as { code: unknown }).code) : "";
-    if (code.includes("object-not-found")) return;
+    if (rawErrorCode(e).includes("object-not-found")) return;
     throw mapStorageError(e);
   }
 }

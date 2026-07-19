@@ -9,6 +9,7 @@
  * only has to dispatch on `action.kind` and persist via TimeContext.
  */
 import { Task } from "../types/Task";
+import { addDaysISO, parseLocalISO } from "../utils/dateUtils";
 
 // ── Date/time vocabulary ─────────────────────────────────────────────────────
 
@@ -42,21 +43,16 @@ function capitalize(s: string): string {
 
 // ── Timezone-proof date arithmetic ───────────────────────────────────────────
 // Every "date" here is a plain YYYY-MM-DD calendar day, never a Date wall-clock
-// instant — arithmetic goes through Date.UTC so the runtime's local timezone
-// (which may be ahead of UTC) can never shift a computed date by a day.
+// instant. Adding/subtracting days goes through the app's canonical
+// utils/dateUtils.ts `addDaysISO` instead of a local copy. `isoToEpochDay`
+// remains here only for numeric day-difference/ordering comparisons (e.g.
+// "is this date before today", "how many days until the exam") that
+// dateUtils.ts has no exported equivalent for — it goes through Date.UTC so
+// the runtime's local timezone can never shift a computed day by one.
 
 function isoToEpochDay(iso: string): number {
   const [y, m, d] = iso.split("-").map(Number);
   return Math.floor(Date.UTC(y, m - 1, d) / 86400000);
-}
-
-function epochDayToISO(epochDay: number): string {
-  const d = new Date(epochDay * 86400000);
-  return toISODate(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-}
-
-function addDaysISO(iso: string, n: number): string {
-  return epochDayToISO(isoToEpochDay(iso) + n);
 }
 
 /** 0=Sunday..6=Saturday for a calendar date, independent of local timezone. */
@@ -374,5 +370,5 @@ export function interpretMessage(text: string, tasks: Task[], todayISODate: stri
 }
 
 export function formatShortDate(dateISO: string): string {
-  return new Date(dateISO + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return parseLocalISO(dateISO).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }

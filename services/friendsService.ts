@@ -24,6 +24,7 @@ import { db } from "../lib/firebase";
 import { Friendship, FriendshipStatus } from "../types/Friendship";
 import { PublicProfile } from "../types/PublicProfile";
 import { buildNotificationPayload, notificationsCollection } from "./notificationsService";
+import { mapFirebaseError } from "./firebaseErrors";
 
 // ── View-model types ──────────────────────────────────────────────────────────
 
@@ -69,18 +70,8 @@ export class FriendServiceError extends Error {
 }
 
 function mapFirestoreError(e: unknown): FriendServiceError {
-  const code = (e as { code?: string } | null)?.code;
-  if (code === "permission-denied") {
-    return new FriendServiceError("permission-denied", "You don't have permission to do that.");
-  }
-  if (code === "unavailable" || code === "deadline-exceeded" || code === "cancelled") {
-    return new FriendServiceError("network-error", "Network error — please try again.");
-  }
-  if (__DEV__) {
-    // eslint-disable-next-line no-console
-    console.warn("[friendsService]", e);
-  }
-  return new FriendServiceError("unknown", "Something went wrong. Please try again.");
+  const { code, message } = mapFirebaseError(e, "friendsService");
+  return new FriendServiceError(code, message);
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

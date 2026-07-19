@@ -8,6 +8,14 @@
  * screen rather than popping back to the existing one. router.back() pops to the
  * exact existing instance, so this module hands the value across that pop instead.
  */
+// Not scoped to a user/session — it's a bare module-level value that persists
+// for the life of the JS runtime. On a shared device where the app isn't
+// reloaded between accounts, a hobby set here but never consumed (e.g. the
+// session is abandoned right after tapping "Add & Continue", before
+// onboarding's focus effect fires) could be picked up by a different user's
+// unrelated onboarding session later. Acceptable given this bridge's narrow,
+// single-session purpose (see file header) — revisit if that assumption ever
+// changes.
 let pendingHobby: string | null = null;
 
 export function setPendingQuizHobby(hobby: string) {

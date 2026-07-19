@@ -3,7 +3,7 @@
  * Real-time posts feed from Firestore via onSnapshot.
  * Mutations go through postsService; the listener auto-reflects all changes.
  */
-import { createContext, useContext, useState, useEffect } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { collection, query, orderBy, limit, onSnapshot } from "firebase/firestore";
 import { Post } from "../types/Post";
 import {
@@ -64,41 +64,49 @@ export function PostsProvider({ children }: { children: React.ReactNode }) {
     return () => unsub();
   }, [user]);
 
-  async function createPost(title: string, body: string, tags: string[]) {
-    await persistCreate(title, body, profile.username, tags);
-  }
-
-  async function editPost(id: string, title: string, body: string, tags: string[]) {
-    await persistEdit(id, title, body, tags);
-  }
-
-  async function deletePost(id: string) {
-    await persistDelete(id);
-  }
-
-  async function addComment(postId: string, content: string) {
-    await persistAddComment(postId, profile.username, content);
-  }
-
-  async function editComment(postId: string, commentId: string, content: string) {
-    await persistEditComment(postId, commentId, content);
-  }
-
-  async function deleteComment(postId: string, commentId: string) {
-    await persistDeleteComment(postId, commentId);
-  }
-
-  async function likePost(postId: string) {
-    await persistLike(postId, profile.username);
-  }
-
-  return (
-    <PostsContext.Provider
-      value={{ posts, isLoading, createPost, editPost, deletePost, addComment, editComment, deleteComment, likePost }}
-    >
-      {children}
-    </PostsContext.Provider>
+  const createPost = useCallback(
+    async (title: string, body: string, tags: string[]) => {
+      await persistCreate(title, body, profile.username, tags);
+    },
+    [profile.username]
   );
+
+  const editPost = useCallback(async (id: string, title: string, body: string, tags: string[]) => {
+    await persistEdit(id, title, body, tags);
+  }, []);
+
+  const deletePost = useCallback(async (id: string) => {
+    await persistDelete(id);
+  }, []);
+
+  const addComment = useCallback(
+    async (postId: string, content: string) => {
+      await persistAddComment(postId, profile.username, content);
+    },
+    [profile.username]
+  );
+
+  const editComment = useCallback(async (postId: string, commentId: string, content: string) => {
+    await persistEditComment(postId, commentId, content);
+  }, []);
+
+  const deleteComment = useCallback(async (postId: string, commentId: string) => {
+    await persistDeleteComment(postId, commentId);
+  }, []);
+
+  const likePost = useCallback(
+    async (postId: string) => {
+      await persistLike(postId, profile.username);
+    },
+    [profile.username]
+  );
+
+  const value = useMemo(
+    () => ({ posts, isLoading, createPost, editPost, deletePost, addComment, editComment, deleteComment, likePost }),
+    [posts, isLoading, createPost, editPost, deletePost, addComment, editComment, deleteComment, likePost]
+  );
+
+  return <PostsContext.Provider value={value}>{children}</PostsContext.Provider>;
 }
 
 export function usePosts() {

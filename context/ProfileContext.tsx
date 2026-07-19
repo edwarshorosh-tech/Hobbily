@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { Profile } from "../types/Profile";
 import {
   loadProfile,
@@ -71,19 +71,30 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
     };
   }, [user, isAuthLoaded]);
 
-  async function saveProfile(updated: Profile) {
-    setProfile(updated);
-    if (user) await persistProfile(user.uid, updated);
-  }
+  const saveProfile = useCallback(
+    async (updated: Profile) => {
+      setProfile(updated);
+      if (user) await persistProfile(user.uid, updated);
+    },
+    [user]
+  );
 
-  async function updateAvatar(avatarUrl: string | null) {
-    if (!user) return;
-    await updateAvatarUrl(user.uid, avatarUrl);
-    setProfile((p) => ({ ...p, avatarUrl }));
-  }
+  const updateAvatar = useCallback(
+    async (avatarUrl: string | null) => {
+      if (!user) return;
+      await updateAvatarUrl(user.uid, avatarUrl);
+      setProfile((p) => ({ ...p, avatarUrl }));
+    },
+    [user]
+  );
+
+  const value = useMemo(
+    () => ({ profile, isLoaded, saveProfile, updateAvatar }),
+    [profile, isLoaded, saveProfile, updateAvatar]
+  );
 
   return (
-    <ProfileContext.Provider value={{ profile, isLoaded, saveProfile, updateAvatar }}>
+    <ProfileContext.Provider value={value}>
       {children}
     </ProfileContext.Provider>
   );
