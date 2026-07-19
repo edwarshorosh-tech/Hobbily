@@ -13,6 +13,7 @@ import { PublicProfile } from "../../types/PublicProfile";
 import { generateFriendshipPairId } from "../../services/friendsService";
 import FriendAvatar from "./FriendAvatar";
 import ConfirmModal from "../ConfirmModal";
+import { brand } from "../../constants/colors";
 
 type Props = {
   profile: PublicProfile | null;
@@ -80,7 +81,7 @@ export default function FriendPreviewModal({ profile, colors, onClose }: Props) 
               </View>
             ) : null}
             <View style={styles.metaRow}>
-              <Ionicons name="flame" size={14} color="#F59E0B" />
+              <Ionicons name="flame" size={14} color={brand.streakFlame} />
               <Text style={[styles.metaText, { color: colors.secondaryText }]}>{streak} day streak</Text>
             </View>
 

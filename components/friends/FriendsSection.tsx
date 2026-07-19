@@ -13,6 +13,7 @@ import { useFriends } from "../../context/FriendsContext";
 import { PublicProfile } from "../../types/PublicProfile";
 import SectionCardHeader from "../profile/SectionCardHeader";
 import FriendAvatar from "./FriendAvatar";
+import { brand } from "../../constants/colors";
 import FriendSearchModal from "./FriendSearchModal";
 import FriendPreviewModal from "./FriendPreviewModal";
 
@@ -122,7 +123,7 @@ export default function FriendsSection({ colors, autoOpenRequests, onAutoOpenHan
                   </Text>
                   {streak > 0 ? (
                     <View style={styles.streakRow}>
-                      <Ionicons name="flame" size={11} color="#F59E0B" />
+                      <Ionicons name="flame" size={11} color={brand.streakFlame} />
                       <Text style={[styles.streakText, { color: colors.secondaryText }]}>{streak}</Text>
                     </View>
                   ) : null}

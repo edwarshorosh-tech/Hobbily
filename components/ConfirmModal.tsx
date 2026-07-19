@@ -74,7 +74,7 @@ export default function ConfirmModal({
 
             {/* Confirm — red for destructive actions, primary otherwise */}
             <Pressable
-              style={[styles.btn, { backgroundColor: dangerous ? "#DC2626" : colors.primary }]}
+              style={[styles.btn, { backgroundColor: dangerous ? colors.danger : colors.primary }]}
               onPress={onConfirm}
             >
               <Text style={[styles.btnText, { color: "#fff" }]}>{confirmLabel}</Text>

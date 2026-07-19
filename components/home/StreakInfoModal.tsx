@@ -14,6 +14,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { ColorTokens } from "../../context/ThemeContext";
 import { useProgress } from "../../context/ProgressContext";
 import BottomSheet from "../BottomSheet";
+import { brand } from "../../constants/colors";
+import { parseLocalISO } from "../../utils/dateUtils";
 
 type Props = {
   visible: boolean;
@@ -34,7 +36,10 @@ function streakCopy(currentStreak: number, longestStreak: number): { headline: s
   };
 }
 
-const DAY_LETTERS = ["S", "M", "T", "W", "T", "F", "S"];
+// Indexed by Date#getDay() (0 = Sunday … 6 = Saturday) — recentActivity is a
+// rolling 7-day window ending today, not a fixed Sun-Sat week, so each dot's
+// letter must come from its actual date rather than its position in the array.
+const WEEKDAY_LETTERS = ["S", "M", "T", "W", "T", "F", "S"];
 
 export default function StreakInfoModal({ visible, onClose, colors }: Props) {
   const { currentStreak, longestStreak, recentActivity, isLoaded, loadError } = useProgress();
@@ -69,7 +74,7 @@ export default function StreakInfoModal({ visible, onClose, colors }: Props) {
       ) : (
         <>
           <View style={styles.headlineRow}>
-            <Ionicons name="flame" size={28} color="#F59E0B" />
+            <Ionicons name="flame" size={28} color={brand.streakFlame} />
             <Text style={[styles.headline, { color: colors.text }]}>{headline}</Text>
           </View>
           <Text style={[styles.subText, { color: colors.secondaryText }]}>{sub}</Text>
@@ -87,7 +92,7 @@ export default function StreakInfoModal({ visible, onClose, colors }: Props) {
 
           <Text style={[styles.sectionLabel, { color: colors.secondaryText }]}>Last 7 days</Text>
           <View style={styles.daysRow}>
-            {recentActivity.map((d, i) => (
+            {recentActivity.map((d) => (
               <View key={d.date} style={styles.dayCol}>
                 <View
                   style={[
@@ -101,7 +106,9 @@ export default function StreakInfoModal({ visible, onClose, colors }: Props) {
                 >
                   {d.active && <Ionicons name="checkmark" size={12} color="#fff" />}
                 </View>
-                <Text style={[styles.dayLetter, { color: colors.secondaryText }]}>{DAY_LETTERS[i]}</Text>
+                <Text style={[styles.dayLetter, { color: colors.secondaryText }]}>
+                  {WEEKDAY_LETTERS[parseLocalISO(d.date).getDay()]}
+                </Text>
               </View>
             ))}
           </View>

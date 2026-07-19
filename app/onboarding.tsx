@@ -7,7 +7,7 @@
  */
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet,
-  Dimensions, Animated, Image, KeyboardAvoidingView, Platform, ActivityIndicator,
+  Animated, Image, KeyboardAvoidingView, Platform, ActivityIndicator, useWindowDimensions,
 } from "react-native";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -15,47 +15,36 @@ import { Ionicons } from "@expo/vector-icons";
 import { router, useFocusEffect } from "expo-router";
 import { useProfile } from "../context/ProfileContext";
 import { useAuth } from "../context/AuthContext";
-import { useTheme } from "../context/ThemeContext";
 import { FreeTimePerDay } from "../types/Profile";
 import { takePendingQuizHobby } from "../services/quizBridge";
 import { HOBBY_OPTIONS } from "../constants/hobbies";
+import { onboardingTheme, onboardingCardShadow } from "../constants/colors";
 
-const { width: SCREEN_W } = Dimensions.get("window");
 const TOTAL_STEPS = 6;
 
-// ── Sign-up / onboarding flow palette (independent of the app-wide theme) ─────
+/**
+ * TextInput wrapper that swaps its border to `colors.link` (and lifts with
+ * the standard card shadow) while focused — the only reliable cross-platform
+ * "focus ring" for a plain RN TextInput, and doubles as the web focus
+ * indicator (keyboard/tab navigation) since there's no native outline here.
+ */
+function FocusableInput({ colors, style, onFocus, onBlur, ...rest }: any) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <TextInput
+      {...rest}
+      style={[style, focused && { borderColor: colors.link ?? colors.primary, ...onboardingCardShadow }]}
+      onFocus={(e: any) => { setFocused(true); onFocus?.(e); }}
+      onBlur={(e: any) => { setFocused(false); onBlur?.(e); }}
+    />
+  );
+}
 
-const onboardingLight = {
-  background: "#CACEF2",
-  card: "#FFFFFF",
-  text: "#000000",
-  secondaryText: "#4A4E6D",
-  border: "#B7BCEA",
-  primary: "#032068",
-  secondary: "#E4E6FB",
-  danger: "#FC7273",
-  dangerBg: "#FDE2E2",
-  dangerBorder: "#FBB5B5",
-};
-
-const onboardingDark = {
-  background: "#05081E",
-  card: "#101A4A",
-  text: "#EDEFFB",
-  secondaryText: "#9BA1D4",
-  border: "#26316E",
-  primary: "#4C5FD1",
-  secondary: "#1B2456",
-  danger: "#FF8A8A",
-  dangerBg: "#3A1620",
-  dangerBorder: "#5C2430",
-};
-
-const FREE_TIME_OPTIONS: { label: string; sub: string; value: FreeTimePerDay }[] = [
-  { label: "< 30 min", sub: "Just a little", value: "<30" },
-  { label: "30 – 60 min", sub: "About an hour", value: "30-60" },
-  { label: "1 – 2 hours", sub: "Pretty free", value: "1-2h" },
-  { label: "2+ hours", sub: "Lots of time!", value: "2h+" },
+const FREE_TIME_OPTIONS: { label: string; value: FreeTimePerDay }[] = [
+  { label: "< 30 min", value: "<30" },
+  { label: "30 – 60 min", value: "30-60" },
+  { label: "1 – 2 hours", value: "1-2h" },
+  { label: "2+ hours", value: "2h+" },
 ];
 
 const FEATURES = [
@@ -82,10 +71,14 @@ function friendlyAuthError(code: string): string {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function OnboardingScreen() {
-  const { isDark } = useTheme();
-  const colors = isDark ? onboardingDark : onboardingLight;
+  const colors = onboardingTheme;
   const { saveProfile, profile } = useProfile();
   const { signUp, signIn, user } = useAuth();
+
+  // Reactive window width (not a one-time Dimensions.get() snapshot) so the
+  // slide-transition distance and hobby-tile grid stay correct across
+  // rotation/split-screen/foldable resizes, sized off it.
+  const { width: contentWidth } = useWindowDimensions();
 
   const [step, setStep] = useState(0);
   const slideAnim = useRef(new Animated.Value(0)).current;
@@ -126,9 +119,9 @@ export default function OnboardingScreen() {
 
   function animateTo(nextStep: number) {
     const direction = nextStep > step ? -1 : 1;
-    Animated.timing(slideAnim, { toValue: direction * SCREEN_W * 0.3, duration: 150, useNativeDriver: true }).start(() => {
+    Animated.timing(slideAnim, { toValue: direction * contentWidth * 0.3, duration: 150, useNativeDriver: true }).start(() => {
       setStep(nextStep);
-      slideAnim.setValue(-direction * SCREEN_W * 0.3);
+      slideAnim.setValue(-direction * contentWidth * 0.3);
       Animated.timing(slideAnim, { toValue: 0, duration: 150, useNativeDriver: true }).start();
     });
   }
@@ -200,8 +193,11 @@ export default function OnboardingScreen() {
       {/* Progress dots */}
       {step > 0 && (
         <View style={styles.progressRow}>
-          <TouchableOpacity onPress={goBack} style={styles.backBtn}>
-            <Ionicons name="arrow-back" size={22} color={colors.text} />
+          <TouchableOpacity
+            onPress={goBack}
+            style={[styles.backBtn, { backgroundColor: colors.card, borderColor: colors.border }, onboardingCardShadow]}
+          >
+            <Ionicons name="arrow-back" size={20} color={colors.text} />
           </TouchableOpacity>
           <View style={styles.dots}>
             {Array.from({ length: TOTAL_STEPS }).map((_, i) => (
@@ -215,7 +211,7 @@ export default function OnboardingScreen() {
               />
             ))}
           </View>
-          <View style={{ width: 40 }} />
+          <View style={{ width: 38 }} />
         </View>
       )}
 
@@ -253,6 +249,7 @@ export default function OnboardingScreen() {
           {step === 3 && (
             <StepInterests
               colors={colors}
+              contentWidth={contentWidth}
               selected={selectedHobbies}
               onToggle={toggleHobby}
               canNext={canContinue[3]}
@@ -290,7 +287,7 @@ function StepWelcome({ colors, onStart, onLogin }: { colors: any; onStart: () =>
         <Ionicons name="arrow-forward" size={18} color="#fff" style={{ marginLeft: 6 }} />
       </TouchableOpacity>
       <TouchableOpacity onPress={onLogin} style={styles.secondaryBtn}>
-        <Text style={[styles.secondaryBtnText, { color: colors.secondaryText }]}>
+        <Text style={[styles.secondaryBtnText, { color: colors.link ?? colors.primary }]}>
           Already have an account? Sign in
         </Text>
       </TouchableOpacity>
@@ -317,7 +314,7 @@ function StepAccount({
       </Text>
 
       {/* Toggle sign-in / sign-up */}
-      <View style={[styles.toggleModeRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
+      <View style={[styles.toggleModeRow, { backgroundColor: colors.card, borderColor: colors.border }, onboardingCardShadow]}>
         <TouchableOpacity
           style={[styles.toggleModeBtn, !signInMode && { backgroundColor: colors.primary }]}
           onPress={() => { setSignInMode(false); setAuthError(""); }}
@@ -337,24 +334,26 @@ function StepAccount({
       </View>
 
       <Text style={[styles.fieldLabel, { color: colors.secondaryText }]}>Email *</Text>
-      <TextInput
+      <FocusableInput
+        colors={colors}
         style={[styles.input, { backgroundColor: colors.card, borderColor: colors.border, color: colors.text }]}
         placeholder="you@example.com"
         placeholderTextColor={colors.secondaryText}
         value={email}
-        onChangeText={(v) => { setEmail(v); setAuthError(""); }}
+        onChangeText={(v: string) => { setEmail(v); setAuthError(""); }}
         keyboardType="email-address"
         autoCapitalize="none"
         autoCorrect={false}
       />
 
       <Text style={[styles.fieldLabel, { color: colors.secondaryText }]}>Password *</Text>
-      <TextInput
+      <FocusableInput
+        colors={colors}
         style={[styles.input, { backgroundColor: colors.card, borderColor: colors.border, color: colors.text }]}
         placeholder="At least 6 characters"
         placeholderTextColor={colors.secondaryText}
         value={password}
-        onChangeText={(v) => { setPassword(v); setAuthError(""); }}
+        onChangeText={(v: string) => { setPassword(v); setAuthError(""); }}
         secureTextEntry
       />
 
@@ -392,7 +391,8 @@ function StepBasicInfo({ colors, username, setUsername, age, setAge, city, setCi
       <Text style={[styles.stepSub, { color: colors.secondaryText }]}>This info appears on your profile.</Text>
 
       <Text style={[styles.fieldLabel, { color: colors.secondaryText }]}>Username *</Text>
-      <TextInput
+      <FocusableInput
+        colors={colors}
         style={[styles.input, { backgroundColor: colors.card, borderColor: colors.border, color: colors.text }]}
         placeholder="e.g. Sara_J"
         placeholderTextColor={colors.secondaryText}
@@ -402,7 +402,8 @@ function StepBasicInfo({ colors, username, setUsername, age, setAge, city, setCi
       />
 
       <Text style={[styles.fieldLabel, { color: colors.secondaryText }]}>Age</Text>
-      <TextInput
+      <FocusableInput
+        colors={colors}
         style={[
           styles.input,
           { backgroundColor: colors.card, borderColor: ageError ? colors.danger : colors.border, color: colors.text },
@@ -416,7 +417,8 @@ function StepBasicInfo({ colors, username, setUsername, age, setAge, city, setCi
       {ageError ? <Text style={[styles.fieldError, { color: colors.danger }]}>{ageError}</Text> : null}
 
       <Text style={[styles.fieldLabel, { color: colors.secondaryText }]}>City</Text>
-      <TextInput
+      <FocusableInput
+        colors={colors}
         style={[styles.input, { backgroundColor: colors.card, borderColor: colors.border, color: colors.text }]}
         placeholder="e.g. Jerusalem, Ramallah, Tel Aviv"
         placeholderTextColor={colors.secondaryText}
@@ -439,7 +441,7 @@ function StepBasicInfo({ colors, username, setUsername, age, setAge, city, setCi
 
 const PREDEFINED_LABELS = new Set(HOBBY_OPTIONS.map((h) => h.label));
 
-function StepInterests({ colors, selected, onToggle, canNext, onNext }: any) {
+function StepInterests({ colors, contentWidth, selected, onToggle, canNext, onNext }: any) {
   const [customInput, setCustomInput] = useState("");
   const scrollRef = useRef<ScrollView>(null);
 
@@ -469,16 +471,16 @@ function StepInterests({ colors, selected, onToggle, canNext, onNext }: any) {
         <View style={styles.discoverWrap}>
           <TouchableOpacity
             onPress={() => router.push("/quiz?returnTo=onboarding" as any)}
-            style={[styles.discoverCard, { backgroundColor: colors.secondary, borderColor: colors.primary }]}
+            style={[styles.discoverCard, { backgroundColor: colors.secondary, borderColor: colors.link ?? colors.primary }]}
           >
-            <View style={[styles.discoverIcon, { backgroundColor: colors.primary }]}>
+            <View style={[styles.discoverIcon, { backgroundColor: colors.link ?? colors.primary }]}>
               <Ionicons name="compass-outline" size={20} color="#fff" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={[styles.discoverTitle, { color: colors.text }]}>Don't have a hobby?</Text>
               <Text style={[styles.discoverSub, { color: colors.secondaryText }]}>Let's discover together — take our 2-minute quiz</Text>
             </View>
-            <Ionicons name="chevron-forward" size={18} color={colors.primary} />
+            <Ionicons name="chevron-forward" size={18} color={colors.link ?? colors.primary} />
           </TouchableOpacity>
         </View>
 
@@ -492,7 +494,12 @@ function StepInterests({ colors, selected, onToggle, canNext, onNext }: any) {
                 onPress={() => onToggle(h.label)}
                 style={[
                   styles.hobbyTile,
-                  { backgroundColor: active ? colors.primary : colors.card, borderColor: active ? colors.primary : colors.border },
+                  {
+                    width: (contentWidth - 56) / 3,
+                    backgroundColor: active ? colors.primary : colors.card,
+                    borderColor: active ? colors.primary : colors.border,
+                  },
+                  onboardingCardShadow,
                 ]}
               >
                 <Ionicons name={h.icon} size={34} color={active ? "#fff" : colors.secondaryText} />
@@ -510,8 +517,9 @@ function StepInterests({ colors, selected, onToggle, canNext, onNext }: any) {
             Don't see yours? Add it
           </Text>
           <View style={styles.customHobbyRow}>
-            <TextInput
-              style={[styles.customHobbyInput, { backgroundColor: colors.card, borderColor: colors.border, color: colors.text }]}
+            <FocusableInput
+              colors={colors}
+              style={[styles.customHobbyInput, { backgroundColor: colors.card, borderColor: colors.border, color: colors.text }, onboardingCardShadow]}
               placeholder="e.g. Skateboarding, Knitting…"
               placeholderTextColor={colors.secondaryText}
               value={customInput}
@@ -525,7 +533,7 @@ function StepInterests({ colors, selected, onToggle, canNext, onNext }: any) {
               style={[styles.customAddBtn, { backgroundColor: customInput.trim() ? colors.primary : colors.border }]}
               disabled={!customInput.trim()}
             >
-              <Ionicons name="add" size={22} color="#fff" />
+              <Ionicons name="add" size={22} color={customInput.trim() ? "#fff" : colors.secondaryText} />
             </TouchableOpacity>
           </View>
 
@@ -566,7 +574,7 @@ function StepInterests({ colors, selected, onToggle, canNext, onNext }: any) {
 
 function StepFreeTime({ colors, value, onSelect, canNext, onNext }: any) {
   return (
-    <View style={styles.stepContent}>
+    <ScrollView contentContainerStyle={styles.stepContent} keyboardShouldPersistTaps="handled">
       <Text style={[styles.stepTitle, { color: colors.text }]}>How much free time{"\n"}do you have daily?</Text>
       <Text style={[styles.stepSub, { color: colors.secondaryText }]}>
         This helps us suggest realistic hobby sessions.
@@ -585,9 +593,6 @@ function StepFreeTime({ colors, value, onSelect, canNext, onNext }: any) {
               ]}
             >
               <Text style={[styles.freeTimeLabel, { color: active ? "#fff" : colors.text }]}>{opt.label}</Text>
-              <Text style={[styles.freeTimeSub, { color: active ? "rgba(255,255,255,0.8)" : colors.secondaryText }]}>
-                {opt.sub}
-              </Text>
             </TouchableOpacity>
           );
         })}
@@ -600,7 +605,7 @@ function StepFreeTime({ colors, value, onSelect, canNext, onNext }: any) {
         <Text style={styles.primaryBtnText}>Continue</Text>
         <Ionicons name="arrow-forward" size={18} color="#fff" style={{ marginLeft: 6 }} />
       </TouchableOpacity>
-    </View>
+    </ScrollView>
   );
 }
 
@@ -608,7 +613,7 @@ function StepFreeTime({ colors, value, onSelect, canNext, onNext }: any) {
 
 function StepFeatures({ colors, onFinish }: { colors: any; onFinish: () => void }) {
   return (
-    <View style={styles.stepContent}>
+    <ScrollView contentContainerStyle={styles.stepContent} keyboardShouldPersistTaps="handled">
       <Text style={[styles.stepTitle, { color: colors.text }]}>You're all set! 🎉</Text>
       <Text style={[styles.stepSub, { color: colors.secondaryText }]}>Here's what Hobbily can do for you:</Text>
 
@@ -630,7 +635,7 @@ function StepFeatures({ colors, onFinish }: { colors: any; onFinish: () => void 
         <Text style={styles.primaryBtnText}>Enter Hobbily</Text>
         <Ionicons name="rocket-outline" size={18} color="#fff" style={{ marginLeft: 6 }} />
       </TouchableOpacity>
-    </View>
+    </ScrollView>
   );
 }
 
@@ -646,7 +651,14 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 4,
   },
-  backBtn: { width: 40, height: 40, justifyContent: "center" },
+  backBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   dots: { flexDirection: "row", gap: 6, alignItems: "center" },
   dot: { width: 6, height: 6, borderRadius: 3 },
   dotActive: { width: 20, height: 6, borderRadius: 3 },
@@ -705,10 +717,11 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     borderRadius: 14,
     marginTop: 8,
+    ...onboardingCardShadow,
   },
   primaryBtnText: { color: "#fff", fontWeight: "700", fontSize: 16 },
   secondaryBtn: { marginTop: 16, alignItems: "center", padding: 8 },
-  secondaryBtnText: { fontSize: 14 },
+  secondaryBtnText: { fontSize: 14, fontWeight: "700", textDecorationLine: "underline" },
   // Welcome
   welcomeLogo: { width: 100, height: 100, resizeMode: "contain", alignSelf: "center", marginBottom: 16, marginTop: 40 },
   welcomeTitle: { fontSize: 42, fontWeight: "900", textAlign: "center", letterSpacing: -1 },
@@ -730,7 +743,8 @@ const styles = StyleSheet.create({
   customChip: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20, borderWidth: 1 },
   customChipText: { fontSize: 13, fontWeight: "600" },
   hobbyTile: {
-    width: (SCREEN_W - 56) / 3,
+    // width is set inline per-tile from the live/capped content width (see
+    // StepInterests) — not a static value, since it depends on window size.
     aspectRatio: 1,
     borderRadius: 14,
     borderWidth: 1,
@@ -747,12 +761,9 @@ const styles = StyleSheet.create({
     padding: 18,
     borderRadius: 14,
     borderWidth: 1,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
+    ...onboardingCardShadow,
   },
   freeTimeLabel: { fontSize: 17, fontWeight: "700" },
-  freeTimeSub: { fontSize: 13 },
   // Features
   featureList: { gap: 12 },
   featureCard: {
@@ -762,6 +773,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     borderWidth: 1,
     gap: 14,
+    ...onboardingCardShadow,
   },
   featureIcon: { width: 52, height: 52, borderRadius: 14, alignItems: "center", justifyContent: "center" },
   featureTitle: { fontSize: 15, fontWeight: "700", marginBottom: 3 },
