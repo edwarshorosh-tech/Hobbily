@@ -6,6 +6,7 @@ import { PostsProvider, usePosts } from "../context/PostsContext";
 import { TimeProvider, useTime } from "../context/TimeContext";
 import { CommunityProvider } from "../context/CommunityContext";
 import { ProgressProvider, useProgress } from "../context/ProgressContext";
+import { FriendsProvider } from "../context/FriendsContext";
 import { Image, Animated, StyleSheet } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { TipsResetProvider } from "../components/TipBanner";
@@ -58,7 +59,22 @@ function AppShell() {
 
   return (
     <>
-      <Stack screenOptions={{ headerShown: false }} />
+      {/*
+        Subtle cross-screen fade for the primary stack (native-stack, backed by
+        react-native-screens, only exposes fixed animation presets — no custom
+        JS interpolator for an exact "4-8px translate", so a short fade is the
+        closest faithful match without swapping to the JS stack navigator).
+        create-post gets its own modal-style slide-up per the composer redesign.
+      */}
+      <Stack
+        initialRouteName="(tabs)"
+        screenOptions={{ headerShown: false, animation: "fade", animationDuration: 200 }}
+      >
+        <Stack.Screen
+          name="create-post"
+          options={{ presentation: "modal", animation: "slide_from_bottom" }}
+        />
+      </Stack>
       {showSplash && (
         <Animated.View
           style={[styles.splash, { backgroundColor: colors.background, opacity }]}
@@ -102,7 +118,9 @@ export default function RootLayout() {
               <TimeProvider>
                 <CommunityProvider>
                   <ProgressProvider>
-                    <AppShell />
+                    <FriendsProvider>
+                      <AppShell />
+                    </FriendsProvider>
                   </ProgressProvider>
                 </CommunityProvider>
               </TimeProvider>

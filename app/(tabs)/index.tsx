@@ -3,7 +3,7 @@
  * Greeting, streak indicator, today's tasks, suggested opportunities, quick actions.
  */
 import {
-  View, Text, ScrollView, StyleSheet, TouchableOpacity, Modal, ActivityIndicator, TextInput,
+  View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator, TextInput,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -15,11 +15,18 @@ import { useProgress } from "../../context/ProgressContext";
 import SwipeableTab from "../../components/SwipeableTab";
 import TipBanner, { TIP_KEYS } from "../../components/TipBanner";
 import { interpretMessage, formatShortDate } from "../../services/aiService";
+import FriendsLeaderboard from "../../components/home/FriendsLeaderboard";
+import NotificationBell from "../../components/notifications/NotificationBell";
+import StreakInfoModal from "../../components/home/StreakInfoModal";
+import StreakButton from "../../components/home/StreakButton";
 import { useState } from "react";
+import { localDateISO } from "../../utils/dateUtils";
+import { Task } from "../../types/Task";
+import { AiAssistantServiceError, friendlyAiAssistantMessage, parseActivityRequest } from "../../services/aiAssistantService";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function todayISO() { return new Date().toISOString().slice(0, 10); }
+function todayISO() { return localDateISO(); }
 
 function greeting(name: string): string {
   const h = new Date().getHours();
@@ -33,9 +40,23 @@ function formatTime(time: string): string {
   return `${h % 12 || 12}:${m.toString().padStart(2, "0")} ${ampm}`;
 }
 
-// ── AI Assistant ──────────────────────────────────────────────────────────────
+// ── AI Assistant ─────────────────────────────────────────────────────────────
+// Free-time questions and exam mentions are answered locally (services/aiService.ts).
+// Plain scheduling requests are parsed server-side (worker/ -> Hugging Face
+// Inference Providers -> validated JSON) — see services/aiAssistantService.ts.
+// Either way the parsed activity is created through the exact same addTask()
+// used by the manual Add Activity flow; no second activity model, no direct
+// Firestore write here.
 
-function AIAssistantCard({ colors, addTask, tasks }: { colors: any; addTask: (task: any) => Promise<TaskSaveResult>; tasks: import("../../types/Task").Task[] }) {
+function AIAssistantCard({
+  colors,
+  addTask,
+  tasks,
+}: {
+  colors: any;
+  addTask: (task: Omit<Task, "id" | "createdAt">) => Promise<TaskSaveResult>;
+  tasks: Task[];
+}) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; message: string } | null>(null);
@@ -46,34 +67,14 @@ function AIAssistantCard({ colors, addTask, tasks }: { colors: any; addTask: (ta
     setLoading(true);
     setFeedback(null);
 
-    await new Promise((resolve) => setTimeout(resolve, 600)); // mock AI processing delay
-
+    // Free-time questions and exam mentions are handled locally (the backend
+    // parser only understands single-activity scheduling) — everything else
+    // goes to the real AI backend.
     const action = interpretMessage(text, tasks, todayISO());
 
     if (action.kind === "free_info") {
       setFeedback({ ok: true, message: action.message });
       setInput("");
-      setLoading(false);
-      return;
-    }
-
-    if (action.kind === "schedule") {
-      const result = await addTask({
-        title: action.title,
-        type: "task",
-        date: action.date,
-        time: action.time,
-        duration: 60,
-        completed: false,
-      });
-      if (result.ok) {
-        setFeedback({ ok: true, message: `Scheduled "${action.title}" — ${formatShortDate(action.date)} at ${action.time}` });
-        setInput("");
-      } else if (result.reason === "conflict") {
-        setFeedback({ ok: false, message: `That overlaps with "${result.conflict.title}" at ${result.conflict.time} — try a different time.` });
-      } else {
-        setFeedback({ ok: false, message: "That's in the past — try a current or future date/time." });
-      }
       setLoading(false);
       return;
     }
@@ -122,11 +123,37 @@ function AIAssistantCard({ colors, addTask, tasks }: { colors: any; addTask: (ta
       return;
     }
 
-    setFeedback({
-      ok: false,
-      message: 'Couldn’t quite parse that — try "Soccer practice next Tuesday at 7pm", "when am I free tomorrow?", or "I have a biology exam on July 20th".',
-    });
-    setLoading(false);
+    try {
+      const parsed = await parseActivityRequest(text);
+      const result = await addTask({
+        title: parsed.title,
+        type: parsed.type,
+        date: parsed.date,
+        time: parsed.time,
+        duration: parsed.duration,
+        completed: false,
+      });
+      if (result.ok) {
+        setFeedback({ ok: true, message: `Scheduled "${parsed.title}" — ${formatShortDate(parsed.date)} at ${parsed.time}` });
+        setInput("");
+      } else if (result.reason === "conflict") {
+        setFeedback({ ok: false, message: `That overlaps with "${result.conflict.title}" at ${result.conflict.time} — try a different time.` });
+      } else {
+        setFeedback({ ok: false, message: "That's in the past — try a current or future date/time." });
+      }
+    } catch (e) {
+      if (__DEV__) console.warn("[AIAssistantCard] parseActivityRequest failed", e);
+      const code = e instanceof AiAssistantServiceError ? e.code : "unknown";
+      setFeedback({
+        ok: false,
+        message:
+          code === "no-activity-found"
+            ? 'Couldn’t find a date/time — try "Soccer practice tomorrow at 19:00"'
+            : friendlyAiAssistantMessage(e),
+      });
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -197,7 +224,7 @@ export default function HomeScreen() {
   const { profile } = useProfile();
   const { tasks, addTask } = useTime();
   const { currentStreak } = useProgress();
-  const [notifVisible, setNotifVisible] = useState(false);
+  const [streakModalVisible, setStreakModalVisible] = useState(false);
 
   const today = todayISO();
   const todayTasks = tasks
@@ -210,36 +237,24 @@ export default function HomeScreen() {
   return (
     <SwipeableTab tabIndex={0} backgroundColor={colors.background}>
       <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
-        {/* Header */}
+        {/* Header — greeting only; city intentionally removed from this row
+            (still shown on Profile/Settings/Explore/friend previews). */}
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
-          <View style={{ flex: 1 }}>
-            <Text style={[styles.greeting, { color: colors.text }]}>{greeting(profile.username)}</Text>
-            {profile.city ? (
-              <View style={styles.locationRow}>
-                <Ionicons name="location-outline" size={13} color={colors.secondaryText} />
-                <Text style={[styles.locationText, { color: colors.secondaryText }]}>{profile.city}</Text>
-              </View>
-            ) : null}
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={[styles.greeting, { color: colors.text }]} numberOfLines={1}>
+              {greeting(profile.username)}
+            </Text>
           </View>
-          <TouchableOpacity onPress={() => setNotifVisible(true)} style={[styles.notifBtn, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <Ionicons name="notifications-outline" size={20} color={colors.text} />
-          </TouchableOpacity>
-          <View
-            style={[styles.streakBadge, { backgroundColor: colors.card, borderColor: colors.border }]}
-            accessible
-            accessibilityLabel={`Current streak: ${currentStreak} days`}
-          >
-            <Ionicons name="flame" size={16} color="#F59E0B" />
-            <Text style={[styles.streakBadgeText, { color: colors.text }]}>{currentStreak ?? 0}</Text>
-          </View>
+          <NotificationBell colors={colors} />
+          <StreakButton streak={currentStreak ?? 0} colors={colors} onPress={() => setStreakModalVisible(true)} />
         </View>
 
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }}>
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 56 }}>
 
           <TipBanner
-            storageKey={TIP_KEYS.feedFirstPost}
-            text="Share what you've been practicing! Tap the pencil button to create your first post."
-            icon="create-outline"
+            storageKey={TIP_KEYS.homeGettingStarted}
+            text="Add your first activity with AI, or explore communities near you."
+            icon="sparkles-outline"
             colors={colors}
           />
 
@@ -305,25 +320,18 @@ export default function HomeScreen() {
                 ))}
               </View>
             </View>
+
+            {/* Friends streak leaderboard */}
+            <FriendsLeaderboard colors={colors} />
           </View>
 
         </ScrollView>
 
-        {/* Notification modal (placeholder) */}
-        <Modal visible={notifVisible} transparent animationType="fade" onRequestClose={() => setNotifVisible(false)}>
-          <TouchableOpacity style={styles.modalOverlay} onPress={() => setNotifVisible(false)}>
-            <View style={[styles.notifModal, { backgroundColor: colors.card, borderColor: colors.border }]}>
-              <Ionicons name="notifications-outline" size={32} color={colors.secondaryText} style={{ marginBottom: 8 }} />
-              <Text style={[{ color: colors.text, fontWeight: "700", fontSize: 16, marginBottom: 6 }]}>Push Notifications</Text>
-              <Text style={[{ color: colors.secondaryText, textAlign: "center", fontSize: 14 }]}>
-                Push notifications are coming in Phase 2!{"\n"}Stay tuned.
-              </Text>
-              <TouchableOpacity onPress={() => setNotifVisible(false)} style={[styles.notifClose, { backgroundColor: colors.primary }]}>
-                <Text style={{ color: "#fff", fontWeight: "700" }}>Got it</Text>
-              </TouchableOpacity>
-            </View>
-          </TouchableOpacity>
-        </Modal>
+        <StreakInfoModal
+          visible={streakModalVisible}
+          onClose={() => setStreakModalVisible(false)}
+          colors={colors}
+        />
       </SafeAreaView>
     </SwipeableTab>
   );
@@ -335,26 +343,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 20,
-    paddingVertical: 14,
+    paddingVertical: 12,
     borderBottomWidth: 1,
     gap: 10,
   },
   greeting: { fontSize: 22, fontWeight: "800", letterSpacing: -0.3 },
-  locationRow: { flexDirection: "row", alignItems: "center", gap: 3, marginTop: 2 },
-  locationText: { fontSize: 12 },
-  notifBtn: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", borderWidth: 1 },
-  streakBadge: {
-    minWidth: 44,
-    height: 44,
-    paddingHorizontal: 10,
-    borderRadius: 22,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 4,
-    borderWidth: 1,
-  },
-  streakBadgeText: { fontSize: 15, fontWeight: "800" },
   content: { paddingHorizontal: 16, marginTop: 16, gap: 24 },
   section: { gap: 12 },
   sectionRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
@@ -404,8 +397,4 @@ const styles = StyleSheet.create({
   },
   aiFeedbackRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 10 },
   aiFeedbackText: { fontSize: 12, flex: 1 },
-  // Notification modal
-  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center", alignItems: "center" },
-  notifModal: { width: 280, padding: 24, borderRadius: 20, borderWidth: 1, alignItems: "center" },
-  notifClose: { marginTop: 16, paddingHorizontal: 24, paddingVertical: 10, borderRadius: 10 },
 });

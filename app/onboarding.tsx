@@ -18,6 +18,7 @@ import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { FreeTimePerDay } from "../types/Profile";
 import { takePendingQuizHobby } from "../services/quizBridge";
+import { HOBBY_OPTIONS } from "../constants/hobbies";
 
 const { width: SCREEN_W } = Dimensions.get("window");
 const TOTAL_STEPS = 6;
@@ -49,27 +50,6 @@ const onboardingDark = {
   dangerBg: "#3A1620",
   dangerBorder: "#5C2430",
 };
-
-// ── Hobby grid data ───────────────────────────────────────────────────────────
-
-const HOBBY_OPTIONS: { label: string; icon: keyof typeof import("@expo/vector-icons").Ionicons.glyphMap }[] = [
-  { label: "Music", icon: "musical-notes-outline" },
-  { label: "Sports", icon: "football-outline" },
-  { label: "Photography", icon: "camera-outline" },
-  { label: "Drawing & Art", icon: "color-palette-outline" },
-  { label: "Coding", icon: "code-slash-outline" },
-  { label: "Cooking", icon: "restaurant-outline" },
-  { label: "Gaming", icon: "game-controller-outline" },
-  { label: "Reading", icon: "book-outline" },
-  { label: "Dance", icon: "body-outline" },
-  { label: "Film & Video", icon: "videocam-outline" },
-  { label: "Languages", icon: "globe-outline" },
-  { label: "Science", icon: "flask-outline" },
-  { label: "Writing", icon: "pencil-outline" },
-  { label: "Theater", icon: "happy-outline" },
-  { label: "Yoga", icon: "accessibility-outline" },
-  { label: "Fashion", icon: "shirt-outline" },
-];
 
 const FREE_TIME_OPTIONS: { label: string; sub: string; value: FreeTimePerDay }[] = [
   { label: "< 30 min", sub: "Just a little", value: "<30" },
@@ -686,8 +666,10 @@ const styles = StyleSheet.create({
   input: {
     borderWidth: 1,
     borderRadius: 12,
-    padding: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
     fontSize: 15,
+    lineHeight: 20,
     marginBottom: 16,
   },
   // Sign-up / sign-in mode toggle

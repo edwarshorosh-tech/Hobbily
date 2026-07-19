@@ -9,8 +9,8 @@
  *   - activeOffsetX: gesture only activates after a clear horizontal move
  *   - No bounce: snap-back is withTiming (ease-out), not a spring
  */
-import { View, Dimensions } from "react-native";
-import { useCallback } from "react";
+import { AccessibilityInfo, View, Dimensions } from "react-native";
+import { useCallback, useEffect, useRef } from "react";
 import { GestureDetector, Gesture } from "react-native-gesture-handler";
 import Animated, {
   useSharedValue,
@@ -41,14 +41,34 @@ type Props = {
 
 export default function SwipeableTab({ tabIndex, backgroundColor, children }: Props) {
   const translateX = useSharedValue(0);
+  // Subtle content fade + small rise whenever this tab gains focus — the
+  // bottom tab bar itself is untouched (Tabs navigator has no
+  // screen-transition animation of its own), this just softens the instant
+  // content swap. Reduced-motion collapses both to an instant, no-animation set.
+  const contentOpacity = useSharedValue(1);
+  const focusTranslateY = useSharedValue(0);
+  const reduceMotionRef = useRef(false);
   const hasPrev = tabIndex > 0;
   const hasNext = tabIndex < TABS.length - 1;
 
-  // Reset position every time this tab gains focus
+  useEffect(() => {
+    AccessibilityInfo.isReduceMotionEnabled?.()
+      .then((v) => {
+        reduceMotionRef.current = v;
+      })
+      .catch(() => undefined);
+  }, []);
+
+  // Reset position + fade content in every time this tab gains focus
   useFocusEffect(
     useCallback(() => {
       translateX.value = 0;
-    }, [translateX])
+      const reduceMotion = reduceMotionRef.current;
+      contentOpacity.value = reduceMotion ? 1 : 0.85;
+      focusTranslateY.value = reduceMotion ? 0 : 6;
+      contentOpacity.value = withTiming(1, { duration: reduceMotion ? 0 : 170 });
+      focusTranslateY.value = withTiming(0, { duration: reduceMotion ? 0 : 170 });
+    }, [translateX, contentOpacity, focusTranslateY])
   );
 
   function navigateTo(index: number) {
@@ -96,7 +116,8 @@ export default function SwipeableTab({ tabIndex, backgroundColor, children }: Pr
     });
 
   const animStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: translateX.value }],
+    transform: [{ translateX: translateX.value }, { translateY: focusTranslateY.value }],
+    opacity: contentOpacity.value,
   }));
 
   return (

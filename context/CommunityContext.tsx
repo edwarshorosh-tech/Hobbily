@@ -82,10 +82,16 @@ export function CommunityProvider({ children }: { children: React.ReactNode }) {
         orderBy("createdAt", "asc"),
         limit(200)
       );
-      channelUnsubs.current[channelId] = onSnapshot(q, (snap) => {
-        const msgs = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as CommunityMessage[];
-        setMessages((prev) => ({ ...prev, [channelId]: msgs }));
-      });
+      channelUnsubs.current[channelId] = onSnapshot(
+        q,
+        (snap) => {
+          const msgs = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as CommunityMessage[];
+          setMessages((prev) => ({ ...prev, [channelId]: msgs }));
+        },
+        (error) => {
+          if (__DEV__) console.warn(`[CommunityContext] messages listener error (${channelId})`, error);
+        }
+      );
     });
   }, [joinedChannelIds, isLoading, user]);
 
