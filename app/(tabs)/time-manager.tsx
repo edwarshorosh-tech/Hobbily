@@ -44,6 +44,15 @@ function tomorrowISO() {
   return addDaysISO(todayISO(), 1);
 }
 
+/** Current time + 1 minute, as "HH:MM" — the +1 keeps a freshly-opened Add
+ *  Task modal from defaulting to a slot that's already "in the past" the
+ *  instant isPastDateTime() checks it (it compares against Date.now(), which
+ *  only ever moves forward from the moment this default was computed). */
+function defaultTaskTime(): string {
+  const d = new Date(Date.now() + 60000);
+  return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
+}
+
 function formatDate(iso: string): string {
   const today = todayISO();
   const tomorrow = tomorrowISO();
@@ -367,7 +376,7 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
 
   const [title, setTitle] = useState(editingTask?.title ?? "");
   const [type, setType] = useState<"task" | "hobby">(editingTask?.type ?? "task");
-  const [time, setTime] = useState(editingTask?.time ?? "09:00");
+  const [time, setTime] = useState(editingTask?.time ?? defaultTaskTime());
   const [duration, setDuration] = useState(String(editingTask?.duration ?? 30));
   const [conflict, setConflict] = useState<Task | null>(null);
   const [pastError, setPastError] = useState(false);
@@ -408,7 +417,7 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
   function handleOpen() {
     setTitle(editingTask?.title ?? "");
     setType(editingTask?.type ?? "task");
-    setTime(editingTask?.time ?? "09:00");
+    setTime(editingTask?.time ?? defaultTaskTime());
     setDuration(String(editingTask?.duration ?? 30));
     setConflict(null);
     setPastError(false);
@@ -816,19 +825,32 @@ export default function TimeManagerScreen() {
           </View>
         </ScrollView>
 
-        {/* Floating Practice Now button */}
+        {/* Floating action row — Add Activity stays available even once the day
+            already has tasks scheduled; Practice Now only makes sense once
+            there's at least one task to practice. */}
         {dayTasks.length > 0 && (
-          <TouchableOpacity
-            onPress={() => {
-              const firstHobby = dayTasks.find((t) => t.type === "hobby");
-              setTimerTask({ title: firstHobby?.title ?? dayTasks[0].title, duration: firstHobby?.duration ?? dayTasks[0].duration });
-              setTimerVisible(true);
-            }}
-            style={[styles.practiceFloatBtn, { backgroundColor: colors.primary }]}
-          >
-            <Ionicons name="play-circle" size={20} color="#fff" style={{ marginRight: 6 }} />
-            <Text style={{ color: "#fff", fontWeight: "700", fontSize: 14 }}>Practice Now</Text>
-          </TouchableOpacity>
+          <View style={styles.floatingRow}>
+            <TouchableOpacity
+              onPress={openAdd}
+              style={[styles.floatBtn, styles.addFloatBtn, { backgroundColor: colors.card, borderColor: colors.primary }]}
+              accessibilityRole="button"
+              accessibilityLabel={`Add activity for ${formatLongDate(selectedDate)}`}
+            >
+              <Ionicons name="add" size={20} color={colors.primary} style={{ marginRight: 6 }} />
+              <Text style={{ color: colors.primary, fontWeight: "700", fontSize: 14 }}>Add Activity</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => {
+                const firstHobby = dayTasks.find((t) => t.type === "hobby");
+                setTimerTask({ title: firstHobby?.title ?? dayTasks[0].title, duration: firstHobby?.duration ?? dayTasks[0].duration });
+                setTimerVisible(true);
+              }}
+              style={[styles.floatBtn, { backgroundColor: colors.primary }]}
+            >
+              <Ionicons name="play-circle" size={20} color="#fff" style={{ marginRight: 6 }} />
+              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 14 }}>Practice Now</Text>
+            </TouchableOpacity>
+          </View>
         )}
 
         <TaskModal
@@ -882,7 +904,9 @@ const styles = StyleSheet.create({
   weekLabel: { fontSize: 13, fontWeight: "700" },
   streakMini: { flexDirection: "row", alignItems: "center", gap: 6, marginHorizontal: 16, marginTop: 12, padding: 10, borderRadius: 10, borderWidth: 1 },
   streakMiniText: { fontSize: 13, fontWeight: "600" },
-  practiceFloatBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", margin: 16, marginTop: 8, padding: 14, borderRadius: 14 },
+  floatingRow: { flexDirection: "row", gap: 10, marginHorizontal: 16, marginTop: 8, marginBottom: 16 },
+  floatBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", padding: 14, borderRadius: 14 },
+  addFloatBtn: { borderWidth: 1.5 },
   dayItemWrap: { flex: 1 },
   dayItem: {
     width: "100%",

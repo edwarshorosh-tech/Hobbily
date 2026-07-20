@@ -9,12 +9,15 @@
  *   Second tap → chip is removed
  *   Tapping a different chip → resets the pending state of the previous one
  */
-import { ScrollView, Text, TextInput, StyleSheet, View, Pressable } from "react-native";
+import { ScrollView, Text, TextInput, StyleSheet, View, Pressable, Image } from "react-native";
 import { useState } from "react";
 import { useLocalSearchParams, router } from "expo-router";
+import * as ImagePicker from "expo-image-picker";
 import { useTheme } from "../../context/ThemeContext";
 import { usePosts } from "../../context/PostsContext";
 import { useProfile } from "../../context/ProfileContext";
+import { useAuth } from "../../context/AuthContext";
+import { uploadPostImage, deletePostImage } from "../../services/storageService";
 import PrimaryButton from "../../components/PrimaryButton";
 import TagChip from "../../components/TagChip";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -24,6 +27,7 @@ export default function EditPost() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { posts, editPost } = usePosts();
   const { profile } = useProfile();
+  const { user } = useAuth();
 
   // Look up the post to pre-fill the form
   const found = posts.find((p) => p.id === id);
@@ -35,6 +39,10 @@ export default function EditPost() {
   const [body, setBody] = useState(existing?.body ?? "");
   const [tags, setTags] = useState<string[]>(existing?.tags ?? []);
   const [newTag, setNewTag] = useState("");
+  // Holds either the existing remote URL, a freshly-picked local uri, or null if removed.
+  const [imageUri, setImageUri] = useState<string | null>(existing?.imageUrl || null);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   // Tracks which tag chip is in the "pending delete" state
   const [pendingTag, setPendingTag] = useState<string | null>(null);
@@ -47,6 +55,11 @@ export default function EditPost() {
       </SafeAreaView>
     );
   }
+
+  // Narrowed alias for use inside the handlers below — `existing` is guaranteed
+  // non-undefined past the guard above, but TS doesn't carry that narrowing
+  // into nested function declarations.
+  const post = existing;
 
   /** Adds a non-duplicate tag to the list */
   function addTag() {
@@ -70,11 +83,48 @@ export default function EditPost() {
     }
   }
 
+  async function handlePickImage() {
+    setImageError(null);
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        setImageError("Photo access was denied. Enable it in your device settings to add a photo.");
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsEditing: true,
+        quality: 0.7,
+      });
+      if (result.canceled || !result.assets?.[0]?.uri) return;
+
+      setImageUri(result.assets[0].uri);
+    } catch (e) {
+      if (__DEV__) console.warn("[EditPost] image pick failed", e);
+      setImageError("Couldn't open your photo library. Please try again.");
+    }
+  }
+
   /** Validates inputs, persists the edit (sets editedAt), then goes back */
   async function handleSave() {
-    if (!title.trim() || !body.trim()) return;
-    await editPost(id!, title.trim(), body.trim(), tags);
-    router.back();
+    if (!title.trim() || !body.trim() || saving) return;
+    setSaving(true);
+    setImageError(null);
+    try {
+      const originalImageUrl = post.imageUrl || null;
+      let imageUrl = originalImageUrl ?? "";
+      if (imageUri !== originalImageUrl) {
+        imageUrl = imageUri && user ? await uploadPostImage(user.uid, imageUri) : "";
+        if (originalImageUrl) await deletePostImage(originalImageUrl).catch(() => {});
+      }
+      await editPost(id!, title.trim(), body.trim(), tags, imageUrl);
+      router.back();
+    } catch (e) {
+      if (__DEV__) console.warn("[EditPost] save failed", e);
+      setImageError("Couldn't save your changes. Please check your connection and try again.");
+      setSaving(false);
+    }
   }
 
   return (
@@ -103,6 +153,38 @@ export default function EditPost() {
           placeholder="Write your post..."
           placeholderTextColor={colors.secondaryText}
         />
+
+        {/* ── Photo ────────────────────────────────────────── */}
+        <Text style={[styles.label, { color: colors.text }]}>Photo</Text>
+        {imageUri ? (
+          <View style={{ marginBottom: 12 }}>
+            <Image source={{ uri: imageUri }} style={styles.imagePreview} />
+            <View style={styles.photoActionRow}>
+              <PrimaryButton
+                label="Change Photo"
+                onPress={handlePickImage}
+                buttonStyle={{ flex: 1, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border }}
+                textStyle={{ color: colors.text }}
+              />
+              <PrimaryButton
+                label="Remove Photo"
+                onPress={() => setImageUri(null)}
+                buttonStyle={{ flex: 1, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border }}
+                textStyle={{ color: colors.text }}
+              />
+            </View>
+          </View>
+        ) : (
+          <PrimaryButton
+            label="Add Photo"
+            onPress={handlePickImage}
+            buttonStyle={{ backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, marginBottom: 12 }}
+            textStyle={{ color: colors.text }}
+          />
+        )}
+        {imageError && (
+          <Text style={[styles.hint, { color: colors.danger }]}>{imageError}</Text>
+        )}
 
         {/* ── Hobbies ──────────────────────────────────────── */}
         <Text style={[styles.label, { color: colors.text }]}>Hobbies</Text>
@@ -152,7 +234,7 @@ export default function EditPost() {
             textStyle={{ color: colors.text }}
           />
           <PrimaryButton
-            label="Save Changes"
+            label={saving ? "Saving..." : "Save Changes"}
             onPress={handleSave}
             buttonStyle={{ flex: 1, backgroundColor: colors.primary }}
             textStyle={{ color: colors.text }}
@@ -169,5 +251,7 @@ const styles = StyleSheet.create({
   label: { fontWeight: "600", fontSize: 16, marginBottom: 4 },
   input: { borderWidth: 1, borderRadius: 8, padding: 12, marginBottom: 12 },
   hint: { fontSize: 12, marginBottom: 8, fontStyle: "italic" },
+  imagePreview: { width: "100%", aspectRatio: 4 / 3, borderRadius: 12 },
+  photoActionRow: { flexDirection: "row", gap: 8, marginTop: 8 },
   actionRow: { flexDirection: "row", gap: 12 },
 });

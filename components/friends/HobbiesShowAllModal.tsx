@@ -83,7 +83,7 @@ export default function HobbiesShowAllModal({ visible, onClose, hobbies, colors 
           <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: "70%" }}>
             <View style={styles.tagWrap}>
               {hobbies.map((tag) => (
-                <TagChip key={tag} label={tag} textColor="#fff" variant="tinted" />
+                <TagChip key={tag} label={tag} textColor="#fff" backgroundColor={colors.primary} />
               ))}
             </View>
           </ScrollView>

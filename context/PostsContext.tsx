@@ -22,8 +22,8 @@ import { db } from "../lib/firebase";
 type PostsContextType = {
   posts: Post[];
   isLoading: boolean;
-  createPost: (title: string, body: string, tags: string[]) => Promise<void>;
-  editPost: (id: string, title: string, body: string, tags: string[]) => Promise<void>;
+  createPost: (title: string, body: string, tags: string[], imageUrl?: string) => Promise<void>;
+  editPost: (id: string, title: string, body: string, tags: string[], imageUrl?: string) => Promise<void>;
   deletePost: (id: string) => Promise<void>;
   addComment: (postId: string, content: string) => Promise<void>;
   editComment: (postId: string, commentId: string, content: string) => Promise<void>;
@@ -65,14 +65,14 @@ export function PostsProvider({ children }: { children: React.ReactNode }) {
   }, [user]);
 
   const createPost = useCallback(
-    async (title: string, body: string, tags: string[]) => {
-      await persistCreate(title, body, profile.username, tags);
+    async (title: string, body: string, tags: string[], imageUrl: string = "") => {
+      await persistCreate(title, body, profile.username, tags, imageUrl);
     },
     [profile.username]
   );
 
-  const editPost = useCallback(async (id: string, title: string, body: string, tags: string[]) => {
-    await persistEdit(id, title, body, tags);
+  const editPost = useCallback(async (id: string, title: string, body: string, tags: string[], imageUrl: string = "") => {
+    await persistEdit(id, title, body, tags, imageUrl);
   }, []);
 
   const deletePost = useCallback(async (id: string) => {

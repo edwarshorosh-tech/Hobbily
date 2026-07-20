@@ -1,0 +1,10 @@
+<!-- Placeholder app icon. Replace the glyph/colors per app.
+     To make the PNGs the manifest needs (192 + 512), rasterize this with rsvg/ImageMagick/etc:
+       rsvg-convert -w 192 -h 192 icon.svg > icon-192.png
+       rsvg-convert -w 512 -h 512 icon.svg > icon-512.png
+     If those tools aren't present, draw a fresh simple SVG per app and rasterize. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="112" fill="#c97d3a"/>
+  <circle cx="256" cy="256" r="150" fill="none" stroke="#fdf6ee" stroke-width="28"/>
+  <circle cx="256" cy="256" r="58" fill="#fdf6ee"/>
+</svg>

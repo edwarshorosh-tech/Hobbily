@@ -30,6 +30,8 @@ export type Post = {
   username: string;
   /** Topic/hobby tags added when creating or editing the post */
   tags: string[];
+  /** Download URL of an attached photo, or "" if the post has none. Absent on posts created before this field existed. */
+  imageUrl?: string;
   createdAt: string;  // ISO 8601
   /** Set when the post is edited — drives the "✎ edited" badge in the UI */
   editedAt?: string;  // ISO 8601

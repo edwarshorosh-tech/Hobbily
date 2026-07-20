@@ -20,13 +20,6 @@ type Props = {
   isPendingDelete?: boolean;
   /** Called on every press — the parent decides the behaviour based on current state */
   onPress?: () => void;
-  /**
-   * "solid" (default) — the existing bright-color pill used for interactive/tag
-   * contexts (Settings hobby editor, PostCard tags).
-   * "tinted" — a subtle tinted-blue read-only look for static interest chips
-   * (Profile Overview hobbies) that shouldn't look like a form control.
-   */
-  variant?: "solid" | "tinted";
 };
 
 export default function TagChip({
@@ -35,9 +28,7 @@ export default function TagChip({
   backgroundColor,
   isPendingDelete = false,
   onPress,
-  variant = "solid",
 }: Props) {
-  const tintedStyle = { backgroundColor: "rgba(59,130,246,0.16)", borderColor: "rgba(96,165,250,0.4)" };
   return (
     <Pressable
       onPress={onPress}
@@ -46,8 +37,6 @@ export default function TagChip({
         styles.chip,
         isPendingDelete
           ? styles.chipPending
-          : variant === "tinted"
-          ? tintedStyle
           : { backgroundColor: backgroundColor ?? "#ddd", borderColor: backgroundColor ?? "#999" },
       ]}
     >
@@ -55,7 +44,7 @@ export default function TagChip({
         {isPendingDelete && <Text style={styles.deleteIcon}>× </Text>}
         <Text
           style={{
-            color: isPendingDelete ? "#fff" : variant === "tinted" ? "#F1F5F9" : textColor,
+            color: isPendingDelete ? "#fff" : textColor,
             fontWeight: "600",
             fontSize: 13,
           }}

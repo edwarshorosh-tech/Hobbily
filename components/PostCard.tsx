@@ -13,7 +13,7 @@
  *   ↑  Share button — opens the native share sheet with post content.
  */
 
-import { View, Text, StyleSheet, Pressable, Share } from "react-native";
+import { View, Text, StyleSheet, Pressable, Share, Image } from "react-native";
 import { useState } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import TagChip from "./TagChip";
@@ -85,6 +85,11 @@ export default function PostCard({ post, colors, onEdit, onDelete }: Props) {
 
           {/* ── Post title ── */}
           <Text style={[styles.title, { color: colors.text }]}>{post.title}</Text>
+
+          {/* Attached photo, if any */}
+          {!!post.imageUrl && (
+            <Image source={{ uri: post.imageUrl }} style={styles.postImage} resizeMode="cover" />
+          )}
 
           {/* Body preview — capped at 2 lines; full text visible on the detail screen */}
           <Text style={[styles.content, { color: colors.secondaryText }]} numberOfLines={2}>
@@ -160,6 +165,7 @@ const styles = StyleSheet.create({
   actions: { flexDirection: "row", gap: 8 },
   actionBtn: { padding: 4 },
   title: { fontSize: 16, fontWeight: "700", marginBottom: 4 },
+  postImage: { width: "100%", aspectRatio: 16 / 9, borderRadius: 8, marginBottom: 6 },
   content: { marginBottom: 6 },
   edited: { fontSize: 11, fontStyle: "italic", marginBottom: 4 },
   tagRow: { flexDirection: "row", flexWrap: "wrap", marginTop: 4, marginBottom: 4 },
