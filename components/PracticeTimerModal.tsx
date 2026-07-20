@@ -84,7 +84,7 @@ export default function PracticeTimerModal({
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={tStyles.overlay}>
         <View style={[tStyles.sheet, { backgroundColor: colors.card }]}>
-          <View style={tStyles.handle} />
+          <View style={[tStyles.handle, { backgroundColor: colors.border }]} />
 
           {done ? (
             <View style={tStyles.doneView}>
@@ -197,7 +197,13 @@ export default function PracticeTimerModal({
 
 const tStyles = StyleSheet.create({
   overlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" },
-  sheet: { borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 24, paddingBottom: 44 },
+  sheet: {
+    width: "100%",
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    padding: 24,
+    paddingBottom: 44,
+  },
   handle: { width: 36, height: 4, borderRadius: 2, backgroundColor: "#ccc", alignSelf: "center", marginBottom: 20 },
   banner: { flexDirection: "row", alignItems: "center", justifyContent: "center", borderWidth: 1, borderRadius: 10, paddingVertical: 8, marginBottom: 14 },
   bannerText: { fontSize: 13, fontWeight: "700" },

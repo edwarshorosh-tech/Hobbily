@@ -54,10 +54,17 @@ export default function PostCard({ post, colors, onEdit, onDelete }: Props) {
   /** Opens the native share sheet with a preview of the post */
   async function handleShare(e: any) {
     e.stopPropagation?.();
-    await Share.share({
-      message: `Check out "${post.title}" by @${post.username} on Hobbily!\n\n${post.body}`,
-      title: post.title,
-    });
+    try {
+      await Share.share({
+        message: `Check out "${post.title}" by @${post.username} on Hobbily!\n\n${post.body}`,
+        title: post.title,
+      });
+    } catch {
+      // Share.share() rejects when the user cancels (native) or when the
+      // browser has no Web Share API (most desktop browsers) — neither is
+      // an error worth surfacing, so this fails silently rather than as an
+      // unhandled promise rejection.
+    }
   }
 
   return (

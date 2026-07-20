@@ -13,7 +13,7 @@ import { Text, Pressable, StyleSheet, View } from "react-native";
 
 type Props = {
   label: string;
-  textColor: string;
+  textColor?: string;
   /** Background color for the chip in its default (non-pending) state */
   backgroundColor?: string;
   /** True when this chip is in the "about to be deleted" state (first press done) */

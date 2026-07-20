@@ -10,8 +10,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import Svg, { Circle } from "react-native-svg";
-import { useTheme } from "../context/ThemeContext";
 import { setPendingQuizHobby } from "../services/quizBridge";
+import { onboardingTheme, onboardingCardShadow } from "../constants/colors";
 
 // ── Quiz data ─────────────────────────────────────────────────────────────────
 
@@ -84,14 +84,18 @@ const QUESTIONS: Question[] = [
   q("One year from now, what would make you the proudest?", "I created something unique.", "I became stronger and healthier.", "Active & Sporty", "I mastered a difficult skill.", "I found a hobby I truly love.", ["Social & Leadership", "Performing Arts & Expression"]),
 ];
 
-/** Fixed categorical hues (validated for CVD/contrast) — always in this order, never reassigned by score. */
-const SUBJECT_COLORS: Record<Subject, { light: string; dark: string }> = {
-  "Creative": { light: "#2a78d6", dark: "#3987e5" },
-  "Active & Sporty": { light: "#1baf7a", dark: "#199e70" },
-  "Curious & STEM": { light: "#eda100", dark: "#c98500" },
-  "Nature & Adventure": { light: "#008300", dark: "#008300" },
-  "Social & Leadership": { light: "#4a3aa7", dark: "#9085e9" },
-  "Performing Arts & Expression": { light: "#e34948", dark: "#e66767" },
+/**
+ * Fixed categorical hues (validated for CVD/contrast) — always in this
+ * order, never reassigned by score. The quiz is a fixed-light screen (see
+ * HiddenHobbiesQuiz below), so only the light variant is used.
+ */
+const SUBJECT_COLORS: Record<Subject, string> = {
+  "Creative": "#2a78d6",
+  "Active & Sporty": "#1baf7a",
+  "Curious & STEM": "#eda100",
+  "Nature & Adventure": "#008300",
+  "Social & Leadership": "#4a3aa7",
+  "Performing Arts & Expression": "#e34948",
 };
 
 /** Sums each answer's subject weights (every option's weights sum to 1, so totals sum to 15). */
@@ -244,7 +248,11 @@ function computeResult(answers: Letter[]): Result {
 // ── Screen ────────────────────────────────────────────────────────────────────
 
 export default function HiddenHobbiesQuiz() {
-  const { colors } = useTheme();
+  // Fixed light theme, like onboarding/auth — the quiz is reachable both
+  // from onboarding (unauthenticated) and from inside the authenticated
+  // (dark) app, but it's a self-contained light-themed mini-experience
+  // either way, not meant to follow the app-wide dark mode toggle.
+  const colors = onboardingTheme;
   const { returnTo } = useLocalSearchParams<{ returnTo?: string }>();
   const [index, setIndex] = useState(0);
   const [answers, setAnswers] = useState<(Letter | null)[]>(Array(QUESTIONS.length).fill(null));
@@ -304,7 +312,7 @@ export default function HiddenHobbiesQuiz() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={styles.header}>
-        <Pressable onPress={goBack} hitSlop={10} style={[styles.backBtn, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        <Pressable onPress={goBack} hitSlop={10} style={[styles.backBtn, { backgroundColor: colors.card, borderColor: colors.border }, onboardingCardShadow]}>
           <Ionicons name="chevron-back" size={20} color={colors.text} />
         </Pressable>
         <View style={[styles.progressTrack, { backgroundColor: colors.border }]}>
@@ -314,7 +322,7 @@ export default function HiddenHobbiesQuiz() {
       </View>
 
       <Animated.View style={[styles.body, { opacity: fadeAnim }]}>
-        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }, onboardingCardShadow]}>
           <Text style={[styles.questionEyebrow, { color: colors.primary }]}>QUESTION {index + 1}</Text>
           <Text style={[styles.questionText, { color: colors.text }]}>{question.prompt}</Text>
         </View>
@@ -328,6 +336,7 @@ export default function HiddenHobbiesQuiz() {
                 onPress={() => selectOption(opt.letter)}
                 style={({ pressed }) => [
                   styles.optionBtn,
+                  onboardingCardShadow,
                   {
                     backgroundColor: isSelected ? colors.primary + "18" : colors.card,
                     borderColor: isSelected ? colors.primary : colors.border,
@@ -359,7 +368,6 @@ export default function HiddenHobbiesQuiz() {
 function ResultScreen({
   result, subjectScores, colors, onRetake, returnTo,
 }: { result: Result; subjectScores: Record<Subject, number>; colors: any; onRetake: () => void; returnTo?: string }) {
-  const { isDark } = useTheme();
   const fromOnboarding = returnTo === "onboarding";
 
   return (
@@ -383,7 +391,7 @@ function ResultScreen({
               <View key={row} style={styles.subjectRow}>
                 {SUBJECTS.slice(row * 3, row * 3 + 3).map((subject) => {
                   const percent = Math.round((subjectScores[subject] / QUESTIONS.length) * 100);
-                  const color = isDark ? SUBJECT_COLORS[subject].dark : SUBJECT_COLORS[subject].light;
+                  const color = SUBJECT_COLORS[subject];
                   return (
                     <View key={subject} style={styles.subjectTile}>
                       <View style={styles.ringWrap}>

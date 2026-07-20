@@ -85,6 +85,7 @@ export default function BottomSheet({ visible, onClose, colors, children, maxHei
 const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "flex-end" },
   sheet: {
+    width: "100%",
     borderTopLeftRadius: 22,
     borderTopRightRadius: 22,
     borderWidth: 1,

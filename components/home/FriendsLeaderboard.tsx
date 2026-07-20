@@ -13,6 +13,7 @@ import { router } from "expo-router";
 import { ColorTokens } from "../../context/ThemeContext";
 import { useAuth } from "../../context/AuthContext";
 import { useProfile } from "../../context/ProfileContext";
+import { brand } from "../../constants/colors";
 import { useProgress } from "../../context/ProgressContext";
 import { useFriends } from "../../context/FriendsContext";
 import FriendAvatar from "../friends/FriendAvatar";
@@ -78,7 +79,7 @@ function PodiumSlot({
         {entry.isCurrentUser ? "You" : entry.username}
       </Text>
       <View style={styles.podiumStreakRow}>
-        <Ionicons name="flame" size={12} color="#F59E0B" />
+        <Ionicons name="flame" size={12} color={brand.streakFlame} />
         <Text
           style={[styles.podiumStreakText, { color: colors.secondaryText }]}
           accessibilityLabel={`${entry.isCurrentUser ? "Current user" : entry.username}, ${entry.currentStreak} day streak`}

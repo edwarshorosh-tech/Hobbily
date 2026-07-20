@@ -3,6 +3,9 @@ node_modules/
 .env
 .expo/
 
+# expo export -p web output — regenerated on every deploy, not source.
+dist/
+
 # Cloudflare Worker (worker/) — local secrets and build state.
 # HF_TOKEN must only ever live as a `wrangler secret put` value, never here.
 .dev.vars

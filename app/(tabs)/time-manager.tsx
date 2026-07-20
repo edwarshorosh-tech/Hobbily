@@ -23,6 +23,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../../context/ThemeContext";
 import { useTime, TaskSaveResult, isPastDateTime } from "../../context/TimeContext";
+import { brand } from "../../constants/colors";
 import { useProfile } from "../../context/ProfileContext";
 import { useProgress } from "../../context/ProgressContext";
 import SwipeableTab from "../../components/SwipeableTab";
@@ -477,7 +478,7 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
             hitSlop={{ top: 12, bottom: 12, left: 40, right: 40 }}
             style={styles.dragHandleZone}
           >
-            <View style={styles.modalHandle} />
+            <View style={[styles.modalHandle, { backgroundColor: colors.border }]} />
           </View>
 
           {/* Modal header */}
@@ -741,7 +742,7 @@ export default function TimeManagerScreen() {
           {/* Streak mini */}
           {currentStreak > 0 && (
             <View style={[styles.streakMini, { backgroundColor: colors.primary + "12", borderColor: colors.primary + "30" }]}>
-              <Ionicons name="flame" size={18} color="#F59E0B" />
+              <Ionicons name="flame" size={18} color={brand.streakFlame} />
               <Text style={[styles.streakMiniText, { color: colors.primary }]}>
                 {currentStreak}-day streak · {totalSessions} sessions total
               </Text>

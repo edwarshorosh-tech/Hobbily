@@ -136,10 +136,14 @@ export default function PostDetail() {
 
   /** Opens the native share sheet with post content */
   async function handleShare() {
-    await Share.share({
-      message: `Check out "${p.title}" by @${p.username} on Hobbily!\n\n${p.body}`,
-      title: p.title,
-    });
+    try {
+      await Share.share({
+        message: `Check out "${p.title}" by @${p.username} on Hobbily!\n\n${p.body}`,
+        title: p.title,
+      });
+    } catch {
+      // See PostCard.tsx's handleShare — cancel/unsupported-browser, not an error.
+    }
   }
 
   return (
