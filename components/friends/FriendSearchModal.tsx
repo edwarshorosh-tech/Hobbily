@@ -526,6 +526,7 @@ const styles = StyleSheet.create({
   },
   kbWrapper: { justifyContent: "flex-end" },
   sheet: {
+    width: "100%",
     borderTopLeftRadius: 22,
     borderTopRightRadius: 22,
     borderWidth: 1,

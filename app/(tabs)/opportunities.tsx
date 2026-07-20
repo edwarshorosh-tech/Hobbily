@@ -13,6 +13,7 @@ import { useLocalSearchParams } from "expo-router";
 import { useTheme } from "../../context/ThemeContext";
 import { useProfile } from "../../context/ProfileContext";
 import SwipeableTab from "../../components/SwipeableTab";
+import { brand } from "../../constants/colors";
 
 // ── Data ──────────────────────────────────────────────────────────────────────
 
@@ -39,7 +40,7 @@ const OPPORTUNITIES: Opportunity[] = [
 ];
 
 const CATEGORIES = ["All", "Saved", "Photography", "Coding", "Sports", "Music", "Drawing & Art", "Film & Video", "Dance", "Cooking", "Gaming", "Reading"];
-const COST_COLORS: Record<string, string> = { Free: "#10B981", Subsidised: "#2563EB", Paid: "#8B5CF6" };
+const COST_COLORS: Record<string, string> = { Free: brand.costFree, Subsidised: brand.costSubsidised, Paid: brand.costPaid };
 
 /** True if the opportunity's location text mentions the user's city (either direction, case-insensitive). */
 function isNearCity(location: string, city: string): boolean {
@@ -61,7 +62,7 @@ function RegistrationModal({ opp, onClose, colors }: { opp: Opportunity; onClose
     <Modal visible animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.modalOverlay}>
         <View style={[styles.modalSheet, { backgroundColor: colors.card }]}>
-          <View style={styles.modalHandle} />
+          <View style={[styles.modalHandle, { backgroundColor: colors.border }]} />
           {submitted ? (
             <View style={{ alignItems: "center", paddingVertical: 16, gap: 12 }}>
               <Ionicons name="checkmark-circle" size={64} color={colors.success} />
@@ -152,7 +153,7 @@ function DetailModal({ opp, saved, onToggleSave, onRegister, onClose, colors }: 
     <Modal visible animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.modalOverlay}>
         <View style={[styles.modalSheet, { backgroundColor: colors.card }]}>
-          <View style={styles.modalHandle} />
+          <View style={[styles.modalHandle, { backgroundColor: colors.border }]} />
           <ScrollView showsVerticalScrollIndicator={false}>
             <View style={{ flexDirection: "row", alignItems: "flex-start", marginBottom: 12 }}>
               <View style={{ flex: 1 }}>
@@ -383,7 +384,14 @@ const styles = StyleSheet.create({
   footerText: { flex: 1, fontSize: 13, lineHeight: 18 },
   // Modals
   modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "flex-end" },
-  modalSheet: { borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 24, paddingBottom: 36, maxHeight: "92%" },
+  modalSheet: {
+    width: "100%",
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    padding: 24,
+    paddingBottom: 36,
+    maxHeight: "92%",
+  },
   modalHandle: { width: 36, height: 4, borderRadius: 2, backgroundColor: "#ccc", alignSelf: "center", marginBottom: 20 },
   modalTitle: { fontSize: 22, fontWeight: "800", marginBottom: 6, letterSpacing: -0.3 },
   modalOrg: { fontSize: 14, fontWeight: "600" },

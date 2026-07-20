@@ -9,7 +9,7 @@
  *   - activeOffsetX: gesture only activates after a clear horizontal move
  *   - No bounce: snap-back is withTiming (ease-out), not a spring
  */
-import { AccessibilityInfo, View, Dimensions } from "react-native";
+import { AccessibilityInfo, LayoutChangeEvent, View, useWindowDimensions } from "react-native";
 import { useCallback, useEffect, useRef } from "react";
 import { GestureDetector, Gesture } from "react-native-gesture-handler";
 import Animated, {
@@ -28,7 +28,6 @@ const TABS = [
   "/(tabs)/profile",
 ] as const;
 
-const SCREEN_WIDTH = Dimensions.get("window").width;
 const SWIPE_THRESHOLD = 60;
 
 type Props = {
@@ -40,6 +39,14 @@ type Props = {
 };
 
 export default function SwipeableTab({ tabIndex, backgroundColor, children }: Props) {
+  // The commit-swipe slide-off distance needs the *actual rendered* width of
+  // this component, not a stale window snapshot — useWindowDimensions()
+  // seeds a same-frame default; onLayout below corrects it to the real
+  // container width as soon as it's known, and keeps it live across
+  // rotation/split-screen/foldable resizes.
+  const { width: windowWidth } = useWindowDimensions();
+  const containerWidth = useSharedValue(windowWidth);
+
   const translateX = useSharedValue(0);
   // Subtle content fade + small rise whenever this tab gains focus — the
   // bottom tab bar itself is untouched (Tabs navigator has no
@@ -69,6 +76,17 @@ export default function SwipeableTab({ tabIndex, backgroundColor, children }: Pr
       subscription.remove();
     };
   }, []);
+
+  useEffect(() => {
+    containerWidth.value = windowWidth;
+  }, [windowWidth, containerWidth]);
+
+  const handleLayout = useCallback(
+    (e: LayoutChangeEvent) => {
+      containerWidth.value = e.nativeEvent.layout.width;
+    },
+    [containerWidth]
+  );
 
   // Reset position + fade content in every time this tab gains focus
   useFocusEffect(
@@ -104,7 +122,7 @@ export default function SwipeableTab({ tabIndex, backgroundColor, children }: Pr
     .onEnd((e) => {
       if (e.translationX < -SWIPE_THRESHOLD && hasNext) {
         // Commit: slide off to the left then navigate
-        translateX.value = withTiming(-SCREEN_WIDTH, { duration: 200 }, (finished) => {
+        translateX.value = withTiming(-containerWidth.value, { duration: 200 }, (finished) => {
           "worklet";
           if (finished) {
             runOnJS(navigateTo)(tabIndex + 1);
@@ -113,7 +131,7 @@ export default function SwipeableTab({ tabIndex, backgroundColor, children }: Pr
         });
       } else if (e.translationX > SWIPE_THRESHOLD && hasPrev) {
         // Commit: slide off to the right then navigate
-        translateX.value = withTiming(SCREEN_WIDTH, { duration: 200 }, (finished) => {
+        translateX.value = withTiming(containerWidth.value, { duration: 200 }, (finished) => {
           "worklet";
           if (finished) {
             runOnJS(navigateTo)(tabIndex - 1);
@@ -132,7 +150,7 @@ export default function SwipeableTab({ tabIndex, backgroundColor, children }: Pr
   }));
 
   return (
-    <View style={{ flex: 1, backgroundColor, overflow: "hidden" }}>
+    <View style={{ flex: 1, backgroundColor, overflow: "hidden" }} onLayout={handleLayout}>
       <GestureDetector gesture={pan}>
         <Animated.View style={[{ flex: 1, backgroundColor }, animStyle]}>
           {children}

@@ -7,6 +7,7 @@
 import { StyleSheet, Text, TouchableOpacity } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { ColorTokens } from "../../context/ThemeContext";
+import { brand } from "../../constants/colors";
 
 type Props = {
   streak: number;
@@ -23,7 +24,7 @@ export default function StreakButton({ streak, colors, onPress }: Props) {
       accessibilityRole="button"
       accessibilityLabel={`Current streak: ${value} day${value === 1 ? "" : "s"}. View streak details.`}
     >
-      <Ionicons name="flame" size={16} color="#F59E0B" />
+      <Ionicons name="flame" size={16} color={brand.streakFlame} />
       <Text style={[styles.text, { color: colors.text }]}>{value}</Text>
     </TouchableOpacity>
   );

@@ -37,6 +37,7 @@ import FriendAvatar from "../../components/friends/FriendAvatar";
 import * as ImagePicker from "expo-image-picker";
 import { uploadAvatar, removeAvatar, AvatarServiceError } from "../../services/storageService";
 import { Achievement } from "../../types/Progress";
+import { brand } from "../../constants/colors";
 
 // Overview hobbies: how many chips to show before collapsing behind "Show all".
 const HOBBIES_PREVIEW_COUNT = 8;
@@ -189,8 +190,8 @@ function DeleteAccountModal({
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={handleCancel}>
       <View style={styles.modalOverlay}>
-        <View style={[styles.deleteModal, { backgroundColor: colors.card, borderColor: "#ef4444" }]}>
-          <Ionicons name="warning-outline" size={36} color="#ef4444" style={{ alignSelf: "center" }} />
+        <View style={[styles.deleteModal, { backgroundColor: colors.card, borderColor: brand.criticalDanger }]}>
+          <Ionicons name="warning-outline" size={36} color={brand.criticalDanger} style={{ alignSelf: "center" }} />
           <Text style={[styles.deleteTitle, { color: colors.text }]}>Delete Account</Text>
           <Text style={[styles.deleteBody, { color: colors.secondaryText }]}>
             This will permanently delete your profile, progress, and all your data. This cannot be undone.
@@ -198,7 +199,7 @@ function DeleteAccountModal({
 
           {/* Step 1: checkbox */}
           <TouchableOpacity style={styles.checkRow} onPress={() => setChecked(!checked)} activeOpacity={0.7}>
-            <View style={[styles.checkbox, { borderColor: "#ef4444", backgroundColor: checked ? "#ef4444" : "transparent" }]}>
+            <View style={[styles.checkbox, { borderColor: brand.criticalDanger, backgroundColor: checked ? brand.criticalDanger : "transparent" }]}>
               {checked && <Ionicons name="checkmark" size={14} color="#fff" />}
             </View>
             <Text style={[styles.checkLabel, { color: colors.text }]}>
@@ -208,10 +209,10 @@ function DeleteAccountModal({
 
           {/* Step 2: type DELETE */}
           <Text style={[styles.deleteHint, { color: colors.secondaryText }]}>
-            Type <Text style={{ color: "#ef4444", fontWeight: "700" }}>DELETE</Text> to confirm:
+            Type <Text style={{ color: brand.criticalDanger, fontWeight: "700" }}>DELETE</Text> to confirm:
           </Text>
           <TextInput
-            style={[styles.deleteInput, { color: colors.text, borderColor: confirmText === "DELETE" ? "#ef4444" : colors.border, backgroundColor: colors.inputBackground }]}
+            style={[styles.deleteInput, { color: colors.text, borderColor: confirmText === "DELETE" ? brand.criticalDanger : colors.border, backgroundColor: colors.inputBackground }]}
             value={confirmText}
             onChangeText={setConfirmText}
             autoCapitalize="characters"
@@ -234,7 +235,7 @@ function DeleteAccountModal({
           />
 
           {error ? (
-            <Text style={{ color: "#ef4444", fontSize: 13, textAlign: "center" }}>{error}</Text>
+            <Text style={{ color: brand.criticalDanger, fontSize: 13, textAlign: "center" }}>{error}</Text>
           ) : null}
 
           <View style={styles.deleteActions}>
@@ -246,7 +247,7 @@ function DeleteAccountModal({
               <Text style={[styles.deleteCancelText, { color: colors.text }]}>Cancel</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.deleteConfirmBtn, { backgroundColor: canDelete ? "#ef4444" : colors.border }]}
+              style={[styles.deleteConfirmBtn, { backgroundColor: canDelete ? brand.criticalDanger : colors.border }]}
               onPress={handleDelete}
               disabled={!canDelete || loading}
             >
@@ -636,7 +637,7 @@ export default function ProfileScreen() {
                   {draft.hobbies.length > 0 ? (
                     <View style={styles.tagWrap}>
                       {draft.hobbies.slice(0, HOBBIES_PREVIEW_COUNT).map((tag) => (
-                        <TagChip key={tag} label={tag} textColor="#fff" variant="tinted" />
+                        <TagChip key={tag} label={tag} variant="tinted" colors={colors} />
                       ))}
                     </View>
                   ) : (
@@ -870,7 +871,7 @@ export default function ProfileScreen() {
                 onPress={() => setDeleteModalVisible(true)}
                 activeOpacity={0.7}
               >
-                <Ionicons name="trash-outline" size={18} color="#ef4444" />
+                <Ionicons name="trash-outline" size={18} color={brand.criticalDanger} />
                 <Text style={styles.deleteBtnText}>Delete Account</Text>
               </TouchableOpacity>
             </View>
@@ -1191,7 +1192,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
     marginBottom: 8,
   },
-  deleteBtnText: { color: "#ef4444", fontSize: 14, fontWeight: "600" },
+  deleteBtnText: { color: brand.criticalDanger, fontSize: 14, fontWeight: "600" },
 
   // Delete account modal
   modalOverlay: {

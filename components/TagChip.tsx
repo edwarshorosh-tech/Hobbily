@@ -10,10 +10,12 @@
  * `isPendingDelete` — the chip renders as a plain non-interactive label.
  */
 import { Text, Pressable, StyleSheet, View } from "react-native";
+import { ColorTokens } from "../context/ThemeContext";
 
 type Props = {
   label: string;
-  textColor: string;
+  /** Required for variant="solid"; ignored for variant="tinted" (uses colors.chipTintText instead). */
+  textColor?: string;
   /** Background color for the chip in its default (non-pending) state */
   backgroundColor?: string;
   /** True when this chip is in the "about to be deleted" state (first press done) */
@@ -25,8 +27,14 @@ type Props = {
    * contexts (Settings hobby editor, PostCard tags).
    * "tinted" — a subtle tinted-blue read-only look for static interest chips
    * (Profile Overview hobbies) that shouldn't look like a form control.
+   *
+   * Required when variant is "tinted", since its colors come from the active
+   * theme's chipTintBg/chipTintText tokens (a pale tint needs dark text in
+   * light mode and can afford light text in dark mode — a fixed hex pair
+   * can't serve both).
    */
   variant?: "solid" | "tinted";
+  colors?: ColorTokens;
 };
 
 export default function TagChip({
@@ -36,8 +44,12 @@ export default function TagChip({
   isPendingDelete = false,
   onPress,
   variant = "solid",
+  colors,
 }: Props) {
-  const tintedStyle = { backgroundColor: "rgba(59,130,246,0.16)", borderColor: "rgba(96,165,250,0.4)" };
+  const tintedStyle = {
+    backgroundColor: colors?.chipTintBg ?? "rgba(59,130,246,0.16)",
+    borderColor: colors?.chipTintBorder ?? "rgba(96,165,250,0.4)",
+  };
   return (
     <Pressable
       onPress={onPress}
@@ -55,7 +67,7 @@ export default function TagChip({
         {isPendingDelete && <Text style={styles.deleteIcon}>× </Text>}
         <Text
           style={{
-            color: isPendingDelete ? "#fff" : variant === "tinted" ? "#F1F5F9" : textColor,
+            color: isPendingDelete ? "#fff" : variant === "tinted" ? (colors?.chipTintText ?? "#F1F5F9") : (textColor ?? colors?.text ?? "#000"),
             fontWeight: "600",
             fontSize: 13,
           }}

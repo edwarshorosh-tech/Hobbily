@@ -1,46 +1,13 @@
 /**
- * ThemeContext
- * Light:  background #CACEF2 · primary #032068 · cards #DEE1F7 · text #000000
- * Dark:   background #05081E · primary #4C5FD1 · cards #101A4A · text #EDEFFB
+ * ThemeContext — the authenticated app's light/dark mode (Profile > Settings
+ * > Appearance > Dark Mode). Palettes live in constants/colors.ts, the single
+ * source of truth also used by the onboarding/auth flow's fixed light theme.
  */
 import { createContext, useContext, useState, useEffect } from "react";
 import { Appearance } from "react-native";
+import { ColorTokens, lightTheme, darkTheme } from "../constants/colors";
 
-const lightTheme = {
-  background: "#CACEF2",
-  card: "#DEE1F7",
-  text: "#000000",
-  secondaryText: "#3F4368",
-  border: "#A9AEDD",
-  primary: "#032068",
-  secondary: "#B9BEEA",
-  accent: "#FC7273",
-  danger: "#FC7273",
-  success: "#0E9F6E",
-  tabBar: "#DEE1F7",
-  tabBarActive: "#032068",
-  tabBarInactive: "#7379B0",
-  inputBackground: "#DEE1F7",
-};
-
-const darkTheme = {
-  background: "#05081E",
-  card: "#101A4A",
-  text: "#EDEFFB",
-  secondaryText: "#9BA1D4",
-  border: "#26316E",
-  primary: "#4C5FD1",
-  secondary: "#1B2456",
-  accent: "#FF8A8A",
-  danger: "#FF8A8A",
-  success: "#34D399",
-  tabBar: "#101A4A",
-  tabBarActive: "#4C5FD1",
-  tabBarInactive: "#5C6399",
-  inputBackground: "#0B123A",
-};
-
-export type ColorTokens = typeof lightTheme;
+export type { ColorTokens };
 
 type ThemeContextType = {
   isDark: boolean;
