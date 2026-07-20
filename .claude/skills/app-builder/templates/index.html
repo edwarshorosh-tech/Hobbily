@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<!--
+  App shell template — local-first single-file PWA.
+  Pre-wired: design tokens, light/dark pre-paint, SPA nav, Android back button,
+  in-app dialogs, toasts, settings, version badge + auto-update.
+  Fill in: the DATA MODEL and the app-specific SCREENS (search "TODO").
+  Then: set APP_VERSION, manifest fields, theme-color, icons. Bump CACHE in sw.js on deploy.
+-->
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#fdf6ee">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>App Name</title>
+<link rel="manifest" href="manifest.json">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
+
+<!-- PRE-PAINT: set theme + font before first paint to avoid a flash -->
+<script>
+  try{
+    var s=(JSON.parse(localStorage.getItem('app-v1')||'{}').settings)||{};
+    var dark = s.theme==='dark' || (s.theme!=='light' && matchMedia('(prefers-color-scheme:dark)').matches);
+    if(dark) document.documentElement.classList.add('pre-dark');
+    if(s.fontScale) document.documentElement.style.fontSize=(16*s.fontScale)+'px';
+    if(s.lang){ document.documentElement.lang=s.lang; document.documentElement.dir = s.lang==='he'?'rtl':'ltr'; }
+  }catch(e){}
+</script>
+
+<style>
+:root{
+  --bg:#fdf6ee; --bg-card:#fff; --surface:#f5e6d3; --surface-2:#ecdcc8; --border:#e0cdb8;
+  --text:#2d1f0f; --text-2:#7a5c3a; --text-3:#b0937a;
+  --accent:#c97d3a; --accent-2:#e8a055; --accent-soft:rgba(201,125,58,.12); --accent-glow:rgba(201,125,58,.25);
+  --danger:#c0392b; --success:#2d7a4f;
+  --r-sm:8px; --r-md:14px; --r-lg:20px; --r-xl:28px;
+  --shadow-sm:0 1px 4px rgba(0,0,0,.06); --shadow-md:0 4px 16px rgba(0,0,0,.09); --shadow-lg:0 8px 32px rgba(0,0,0,.12);
+  --font-display:'Fraunces',Georgia,serif; --font-body:'DM Sans',sans-serif;
+  --theme-pattern:none; --theme-texture:none;
+}
+body.dark, html.pre-dark body, html.pre-dark{
+  --bg:#1a1410; --bg-card:#241c16; --surface:#2a2018; --surface-2:#332820; --border:#3d3026;
+  --text:#fdf6ee; --text-2:#c9b59a; --text-3:#8a7560;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font-family:var(--font-body);
+  -webkit-tap-highlight-color:transparent;overscroll-behavior-y:contain}
+.screen{display:none;min-height:100vh;padding:20px 18px 90px;max-width:560px;margin:0 auto}
+.screen.active{display:block}
+h1{font-family:var(--font-display);font-size:1.7rem;font-weight:600;margin-bottom:14px}
+h2{font-family:var(--font-display);font-size:1.2rem;font-weight:600;margin:18px 0 10px}
+.card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--r-md);
+  padding:16px;box-shadow:var(--shadow-sm);margin-bottom:12px}
+.btn{font:inherit;border:none;border-radius:var(--r-md);padding:13px 16px;cursor:pointer;
+  background:var(--surface);color:var(--text)}
+.btn-fill{background:var(--accent);color:#fff;font-weight:500}
+.btn-danger{background:transparent;color:var(--danger);border:1px solid var(--danger)}
+.row{display:flex;gap:10px;align-items:center}
+.input{width:100%;font:inherit;background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--r-md);padding:12px 14px}
+.label{font-size:.8rem;color:var(--text-2);display:block;margin-bottom:6px}
+.field{margin-bottom:14px}
+/* bottom nav */
+.tabbar{position:fixed;left:0;right:0;bottom:0;display:flex;justify-content:space-around;
+  background:var(--bg-card);border-top:1px solid var(--border);padding:8px 0;z-index:20}
+.tab{flex:1;text-align:center;font-size:.75rem;color:var(--text-3);background:none;border:none;cursor:pointer}
+.tab.active{color:var(--accent)}
+/* overlay sheet */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:flex-end;
+  justify-content:center;z-index:40}
+.overlay.active{display:flex}
+.sheet{background:var(--bg-card);width:100%;max-width:560px;border-radius:var(--r-xl) var(--r-xl) 0 0;
+  padding:20px 18px 30px;box-shadow:var(--shadow-lg)}
+.sheet-handle{width:40px;height:4px;border-radius:2px;background:var(--border);margin:0 auto 14px}
+.sheet-title{font-family:var(--font-display);font-size:1.2rem;margin-bottom:14px}
+.sheet-actions{display:flex;gap:10px;margin-top:18px}.sheet-actions .btn{flex:1}
+/* version badge — low-contrast, readable only when sought */
+.ver-badge{font-size:.7rem;color:var(--text);opacity:.10;letter-spacing:.5px;text-align:center;margin-top:24px}
+/* toast */
+#toast{position:fixed;left:50%;bottom:80px;transform:translateX(-50%) translateY(20px);
+  background:var(--text);color:var(--bg);padding:11px 18px;border-radius:var(--r-md);
+  font-size:.85rem;opacity:0;pointer-events:none;transition:.25s;z-index:60}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+
+<!-- ░░ SCREEN: HOME ░░ -->
+<div class="screen active" id="screen-home">
+  <div class="row" style="justify-content:space-between">
+    <h1>App Name</h1>
+    <button class="btn btn-fill" onclick="openNew()">+ New</button>
+  </div>
+  <!-- TODO: render your list here -->
+  <div id="home-list"></div>
+</div>
+
+<!-- ░░ SCREEN: SETTINGS ░░ -->
+<div class="screen" id="screen-settings">
+  <h1>Settings</h1>
+  <div class="card">
+    <div class="field">
+      <span class="label">Theme</span>
+      <div class="row">
+        <button class="btn" onclick="setTheme('light')">Light</button>
+        <button class="btn" onclick="setTheme('dark')">Dark</button>
+        <button class="btn" onclick="setTheme('auto')">Auto</button>
+      </div>
+    </div>
+    <div class="field">
+      <span class="label">Text size</span>
+      <div class="row">
+        <button class="btn" onclick="setFont(0.9)">A-</button>
+        <button class="btn" onclick="setFont(1)">A</button>
+        <button class="btn" onclick="setFont(1.15)">A+</button>
+      </div>
+    </div>
+    <!-- RTL toggle is here but harmless for English-only apps -->
+    <div class="field">
+      <span class="label">Language / שפה</span>
+      <div class="row">
+        <button class="btn" onclick="setLang('en')">English</button>
+        <button class="btn" onclick="setLang('he')">עברית</button>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <button class="btn" onclick="exportBackup()">Export backup</button>
+      <button class="btn" onclick="triggerImport()">Import backup</button>
+    </div>
+    <div class="row" style="justify-content:space-between;margin-top:10px">
+      <button class="btn" onclick="checkUpdate()">Check for updates</button>
+      <button class="btn btn-fill" id="install-update" hidden onclick="installUpdate()">Install update</button>
+    </div>
+  </div>
+  <!-- version badge: ticks up after an update lands; near-invisible normally -->
+  <div class="ver-badge" id="ver-badge"></div>
+</div>
+
+<!-- ░░ EDIT SHEET (example) ░░ -->
+<div class="overlay" id="edit-overlay" onclick="closeSheet('edit-overlay')">
+  <div class="sheet" onclick="event.stopPropagation()">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title" id="edit-title">New</div>
+    <div class="field">
+      <span class="label">Name</span>
+      <input class="input" id="name-input" maxlength="60">
+    </div>
+    <!-- TODO: more fields -->
+    <div class="sheet-actions">
+      <button class="btn btn-danger" id="delete-btn" hidden onclick="deleteCurrent()">Delete</button>
+      <button class="btn btn-fill" onclick="saveCurrent()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ░░ CONFIRM DIALOG (in-app, not native) ░░ -->
+<div class="overlay" id="confirm-modal">
+  <div class="sheet" onclick="event.stopPropagation()" style="max-width:420px;border-radius:var(--r-xl)">
+    <div class="sheet-title" id="confirm-msg"></div>
+    <div class="sheet-actions">
+      <button class="btn" id="confirm-cancel">Cancel</button>
+      <button class="btn btn-fill" id="confirm-ok">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- ░░ BOTTOM NAV ░░ -->
+<div class="tabbar">
+  <button class="tab active" id="tab-home" onclick="showScreen('home')">Home</button>
+  <button class="tab" id="tab-settings" onclick="showScreen('settings')">Settings</button>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* ═════════ VERSION ═════════ */
+const APP_VERSION = '1.0.0';            // bump every deploy (with sw.js CACHE + version.json)
+
+/* ═════════ STATE ═════════ */
+const STORAGE_KEY = 'app-v1';          // keep STABLE — per-origin data is tied to it
+const DEFAULT_SETTINGS = { theme:'auto', fontScale:1, lang:'en' };
+let items = [];                        // TODO: your data model
+let settings = { ...DEFAULT_SETTINGS };
+let stats = { daily:{} };              // dormant heatmap bucket; accrues even if no UI yet
+let currentScreen = 'home';
+let editingId = null;
+
+/* ═════════ PERSISTENCE (always try/catch) ═════════ */
+function load(){
+  try{
+    const d = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+    items = Array.isArray(d.items) ? d.items : [];
+    settings = { ...DEFAULT_SETTINGS, ...(d.settings||{}) };
+    stats = d.stats || { daily:{} };
+  }catch(e){ console.error('load failed', e); items=[]; settings={...DEFAULT_SETTINGS}; stats={daily:{}}; }
+}
+function save(){
+  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify({ items, settings, stats })); }
+  catch(e){ toast('Storage full — export a backup.'); }
+}
+
+/* ═════════ NAVIGATION (show/hide, no router) ═════════ */
+function showScreen(id){
+  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+  document.getElementById('screen-'+id).classList.add('active');
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById('tab-'+id)?.classList.add('active');
+  currentScreen = id;
+  if(id==='home') renderHome();
+  window.scrollTo(0,0);
+}
+
+/* ═════════ ANDROID BACK BUTTON ═════════ */
+function pushNav(){ history.pushState({app:true},''); }
+function initBackButton(){
+  history.replaceState({app:true},'');
+  window.addEventListener('popstate',()=>{
+    const open = document.querySelector('.overlay.active');
+    if(open){ open.classList.remove('active'); pushNav(); return; }
+    if(currentScreen!=='home'){ showScreen('home'); pushNav(); return; }
+    pushNav(); // on home: don't exit
+  });
+}
+
+/* ═════════ SHEETS + DIALOGS ═════════ */
+function openSheet(id){ document.getElementById(id).classList.add('active'); pushNav(); }
+function closeSheet(id){ document.getElementById(id).classList.remove('active'); }
+function customConfirm(msg){
+  return new Promise(res=>{
+    const m=document.getElementById('confirm-modal');
+    document.getElementById('confirm-msg').textContent=msg; m.classList.add('active'); pushNav();
+    const ok=document.getElementById('confirm-ok'), no=document.getElementById('confirm-cancel');
+    const done=v=>{ m.classList.remove('active'); ok.onclick=no.onclick=null; res(v); };
+    ok.onclick=()=>done(true); no.onclick=()=>done(false);
+  });
+}
+
+/* ═════════ TOAST ═════════ */
+let toastT;
+function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove('show'),2200); }
+
+/* ═════════ DEFAULT NAMES (create-without-typing) ═════════ */
+function defaultName(base, list){ let n=1; const names=new Set(list.map(x=>x.name));
+  while(names.has(base+' '+n)) n++; return base+' '+n; }
+
+/* ═════════ CRUD (example — adapt) ═════════ */
+function openNew(){
+  editingId=null;
+  document.getElementById('edit-title').textContent='New';
+  document.getElementById('delete-btn').hidden=true;
+  const inp=document.getElementById('name-input'); inp.value=defaultName('Item', items);
+  openSheet('edit-overlay');
+  setTimeout(()=>{ inp.focus(); inp.select(); },300);   // typing overwrites the default
+}
+function saveCurrent(){
+  let name=document.getElementById('name-input').value.trim();
+  if(!name) name=defaultName('Item', items);            // never empty
+  if(editingId){ const it=items.find(x=>x.id===editingId); it.name=name; }
+  else items.push({ id:'i_'+Date.now(), name });
+  save(); closeSheet('edit-overlay'); renderHome();
+}
+async function deleteCurrent(){
+  if(!editingId) return;
+  if(!(await customConfirm('Delete this item?'))) return;
+  items=items.filter(x=>x.id!==editingId); save(); closeSheet('edit-overlay'); renderHome();
+}
+
+/* ═════════ RENDER (innerHTML; escape user text) ═════════ */
+function esc(s){ return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function renderHome(){
+  const el=document.getElementById('home-list');
+  if(!items.length){ el.innerHTML='<div class="card" style="text-align:center;color:var(--text-3)">No items yet. Tap + New.</div>'; return; }
+  el.innerHTML = items.map(it=>`
+    <div class="card" onclick="openEdit('${it.id}')">${esc(it.name)}</div>`).join('');
+}
+function openEdit(id){
+  const it=items.find(x=>x.id===id); if(!it) return;
+  editingId=id;
+  document.getElementById('edit-title').textContent='Edit';
+  document.getElementById('delete-btn').hidden=false;
+  const inp=document.getElementById('name-input'); inp.value=it.name;
+  openSheet('edit-overlay');
+}
+function renderAll(){ renderHome(); }
+
+/* ═════════ SETTINGS ═════════ */
+function applyTheme(){
+  const dark = settings.theme==='dark' || (settings.theme!=='light' && matchMedia('(prefers-color-scheme:dark)').matches);
+  document.body.classList.toggle('dark', dark);
+  document.documentElement.classList.remove('pre-dark');
+}
+function setTheme(t){ settings.theme=t; save(); applyTheme(); }
+function setFont(f){ settings.fontScale=f; save(); document.documentElement.style.fontSize=(16*f)+'px'; }
+function setLang(l){ settings.lang=l; save();
+  document.documentElement.lang=l; document.documentElement.dir = l==='he'?'rtl':'ltr'; }
+
+/* ═════════ VERSION BADGE + UPDATE ═════════ */
+function showBadge(){ document.getElementById('ver-badge').textContent='v'+APP_VERSION; }
+function versionIsNewer(a,b){ const pa=a.split('.').map(Number), pb=b.split('.').map(Number);
+  for(let i=0;i<3;i++){ if((pa[i]||0)>(pb[i]||0))return true; if((pa[i]||0)<(pb[i]||0))return false; } return false; }
+async function fetchRemoteVersion(){ const r=await fetch('version.json',{cache:'no-store'}); return (await r.json()).version; }
+async function maybeAutoUpdate(){           // default: auto. swap for checkUpdate() to go manual.
+  try{ const v=await fetchRemoteVersion(); if(versionIsNewer(v,APP_VERSION)) await doUpdate(); }catch(e){}
+}
+async function checkUpdate(){               // manual button
+  try{ const v=await fetchRemoteVersion();
+    if(versionIsNewer(v,APP_VERSION)){ document.getElementById('install-update').hidden=false; toast('Update available: v'+v); }
+    else toast('Up to date');
+  }catch(e){ toast('Could not check (offline?)'); }
+}
+async function doUpdate(){
+  const reg=await navigator.serviceWorker.getRegistration();
+  await reg?.update(); reg?.waiting?.postMessage('skipWaiting');
+  navigator.serviceWorker.addEventListener('controllerchange',()=>location.reload());
+}
+function installUpdate(){ doUpdate(); }
+
+/* ═════════ BOOT ═════════ */
+function registerServiceWorker(){ if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js'); }
+document.addEventListener('DOMContentLoaded',()=>{
+  load(); applyTheme(); showBadge();
+  registerServiceWorker(); initBackButton();
+  showScreen('home');
+  maybeAutoUpdate();   // comment out if you chose manual-only updates
+});
+</script>
+</body>
+</html>

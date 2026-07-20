@@ -8,6 +8,7 @@ import {
   collection, doc, getDoc, addDoc, updateDoc, deleteDoc,
 } from "firebase/firestore";
 import { Post, Comment } from "../types/Post";
+import { deletePostImage } from "./storageService";
 
 const POSTS = "posts";
 
@@ -15,10 +16,11 @@ export async function createPost(
   title: string,
   body: string,
   username: string,
-  tags: string[]
+  tags: string[],
+  imageUrl: string
 ): Promise<Post> {
   const data = {
-    title, body, username, tags,
+    title, body, username, tags, imageUrl,
     createdAt: new Date().toISOString(),
     comments: [],
     likes: [],
@@ -31,13 +33,19 @@ export async function editPost(
   id: string,
   title: string,
   body: string,
-  tags: string[]
+  tags: string[],
+  imageUrl: string
 ): Promise<void> {
-  await updateDoc(doc(db, POSTS, id), { title, body, tags, editedAt: new Date().toISOString() });
+  await updateDoc(doc(db, POSTS, id), { title, body, tags, imageUrl, editedAt: new Date().toISOString() });
 }
 
 export async function deletePost(id: string): Promise<void> {
+  const snap = await getDoc(doc(db, POSTS, id));
+  const imageUrl = snap.exists() ? (snap.data().imageUrl as string | undefined) : undefined;
   await deleteDoc(doc(db, POSTS, id));
+  // Best-effort — an orphaned Storage file is a minor cost, but failing the
+  // whole delete over Storage cleanup would be a worse trade.
+  if (imageUrl) await deletePostImage(imageUrl).catch(() => {});
 }
 
 export async function addComment(

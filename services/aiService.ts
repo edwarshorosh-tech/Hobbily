@@ -33,6 +33,20 @@ function pad(n: number): string {
   return n.toString().padStart(2, "0");
 }
 
+/** Current wall-clock time as "HH:MM", used as the guessed time when the user doesn't say one. */
+function currentTimeHHMM(): string {
+  const d = new Date();
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** "HH:MM" (24h) -> "h:mm AM/PM" for user-facing messages. */
+export function formatTimeAMPM(time: string): string {
+  const [h, m] = time.split(":").map(Number);
+  const ampm = h >= 12 ? "PM" : "AM";
+  const hour = h % 12 || 12;
+  return `${hour}:${pad(m)} ${ampm}`;
+}
+
 function toISODate(year: number, monthIdx: number, day: number): string {
   return `${year}-${pad(monthIdx + 1)}-${pad(day)}`;
 }
@@ -347,7 +361,7 @@ export function interpretMessage(text: string, tasks: Task[], todayISODate: stri
     const keyword = examMatch[1];
     const subject = extractExamSubject(text, dateResult.match, timeResult?.match ?? "", keyword);
     const label = subject ? `${subject} ${capitalize(keyword)}` : capitalize(keyword);
-    const time = timeResult?.time ?? "09:00";
+    const time = timeResult?.time ?? currentTimeHHMM();
     const studySessions = planStudySessions(dateResult.date, tasks, todayISODate).map((s) => ({
       title: `Study for ${subject || label}`,
       date: s.date,

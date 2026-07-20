@@ -637,7 +637,7 @@ export default function ProfileScreen() {
                   {draft.hobbies.length > 0 ? (
                     <View style={styles.tagWrap}>
                       {draft.hobbies.slice(0, HOBBIES_PREVIEW_COUNT).map((tag) => (
-                        <TagChip key={tag} label={tag} variant="tinted" colors={colors} />
+                        <TagChip key={tag} label={tag} textColor="#fff" backgroundColor={colors.primary} />
                       ))}
                     </View>
                   ) : (

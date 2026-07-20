@@ -22,6 +22,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Share,
+  Image,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../../context/ThemeContext";
@@ -170,6 +171,11 @@ export default function PostDetail() {
             </Text>
             <Text style={[styles.title, { color: colors.text }]}>{post.title}</Text>
             <Text style={[styles.meta, { color: colors.secondaryText }]}>{createdDate}</Text>
+
+            {/* Attached photo, if any */}
+            {!!post.imageUrl && (
+              <Image source={{ uri: post.imageUrl }} style={styles.postImage} resizeMode="cover" />
+            )}
 
             <Text style={[styles.body, { color: colors.secondaryText }]}>{post.body}</Text>
 
@@ -372,6 +378,7 @@ const styles = StyleSheet.create({
   username: { fontSize: 13, marginTop: 4 },
   title: { fontSize: 24, fontWeight: "700", marginTop: 4, marginBottom: 2 },
   meta: { fontSize: 12, marginBottom: 10 },
+  postImage: { width: "100%", aspectRatio: 4 / 3, borderRadius: 12, marginBottom: 12 },
   body: { fontSize: 15, lineHeight: 22, marginBottom: 8 },
   editedBadge: { fontSize: 11, fontStyle: "italic", marginBottom: 8 },
   tagRow: { flexDirection: "row", flexWrap: "wrap", marginBottom: 4 },

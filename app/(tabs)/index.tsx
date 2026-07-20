@@ -14,7 +14,7 @@ import { useTime, TaskSaveResult } from "../../context/TimeContext";
 import { useProgress } from "../../context/ProgressContext";
 import SwipeableTab from "../../components/SwipeableTab";
 import TipBanner, { TIP_KEYS } from "../../components/TipBanner";
-import { interpretMessage, formatShortDate } from "../../services/aiService";
+import { interpretMessage, formatShortDate, formatTimeAMPM } from "../../services/aiService";
 import FriendsLeaderboard from "../../components/home/FriendsLeaderboard";
 import NotificationBell from "../../components/notifications/NotificationBell";
 import StreakInfoModal from "../../components/home/StreakInfoModal";
@@ -110,7 +110,7 @@ function AIAssistantCard({
           }
         }
 
-        const guessNote = action.timeWasGuessed ? " (I guessed 9:00 AM — adjust it in your planner if needed)" : "";
+        const guessNote = action.timeWasGuessed ? ` (I guessed ${formatTimeAMPM(action.time)} — adjust it in your planner if needed)` : "";
         const studyNote =
           studyAdded > 0
             ? ` I also blocked ${studyAdded} study session${studyAdded > 1 ? "s" : ""} on ${studyDates.join(", ")} so you're not cramming.`

@@ -7,6 +7,7 @@
  */
 import {
   ActivityIndicator,
+  Image,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -19,11 +20,14 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
 import { useNavigation } from "@react-navigation/native";
 import { useTheme } from "../context/ThemeContext";
 import { useProfile } from "../context/ProfileContext";
+import { useAuth } from "../context/AuthContext";
 import { usePosts } from "../context/PostsContext";
+import { uploadPostImage } from "../services/storageService";
 import ConfirmModal from "../components/ConfirmModal";
 import HobbiesEditor from "../components/settings/HobbiesEditor";
 
@@ -33,12 +37,15 @@ const BODY_MAX = 1000;
 export default function CreatePost() {
   const { colors } = useTheme();
   const { profile } = useProfile();
+  const { user } = useAuth();
   const { createPost } = usePosts();
   const navigation = useNavigation();
 
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [tags, setTags] = useState<string[]>([]);
+  const [image, setImage] = useState<{ uri: string } | null>(null);
+  const [imageError, setImageError] = useState<string | null>(null);
   const [attemptedSubmit, setAttemptedSubmit] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -47,7 +54,7 @@ export default function CreatePost() {
   const justPublishedRef = useRef(false);
   const pendingLeaveActionRef = useRef<(() => void) | null>(null);
 
-  const hasContent = title.trim().length > 0 || body.trim().length > 0 || tags.length > 0;
+  const hasContent = title.trim().length > 0 || body.trim().length > 0 || tags.length > 0 || !!image;
   const canPublish = title.trim().length > 0 && body.trim().length > 0 && !submitting;
 
   // Intercept both the top-bar close button (via router.back()) and Android
@@ -64,13 +71,37 @@ export default function CreatePost() {
 
   const initials = (profile.username || "?").trim().charAt(0).toUpperCase() || "?";
 
+  async function handlePickImage() {
+    setImageError(null);
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        setImageError("Photo access was denied. Enable it in your device settings to add a photo.");
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsEditing: true,
+        quality: 0.7,
+      });
+      if (result.canceled || !result.assets?.[0]?.uri) return;
+
+      setImage({ uri: result.assets[0].uri });
+    } catch (e) {
+      if (__DEV__) console.warn("[CreatePost] image pick failed", e);
+      setImageError("Couldn't open your photo library. Please try again.");
+    }
+  }
+
   async function handleSubmit() {
     setAttemptedSubmit(true);
     if (!canPublish) return;
     setSubmitting(true);
     setSubmitError(null);
     try {
-      await createPost(title.trim(), body.trim(), tags);
+      const imageUrl = image && user ? await uploadPostImage(user.uid, image.uri) : "";
+      await createPost(title.trim(), body.trim(), tags, imageUrl);
       justPublishedRef.current = true;
       router.back();
     } catch (e) {
@@ -162,6 +193,38 @@ export default function CreatePost() {
             </View>
           </View>
 
+          {/* Photo */}
+          <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Text style={[styles.sectionLabel, { color: colors.text }]}>Photo</Text>
+            {image ? (
+              <View style={styles.imagePreviewWrap}>
+                <Image source={{ uri: image.uri }} style={styles.imagePreview} />
+                <TouchableOpacity
+                  onPress={() => setImage(null)}
+                  style={[styles.removeImageBtn, { backgroundColor: colors.background }]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Remove photo"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Ionicons name="close" size={16} color={colors.text} />
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity
+                onPress={handlePickImage}
+                style={[styles.addPhotoBtn, { borderColor: colors.border }]}
+                accessibilityRole="button"
+                accessibilityLabel="Add photo"
+              >
+                <Ionicons name="image-outline" size={20} color={colors.primary} />
+                <Text style={[styles.addPhotoText, { color: colors.primary }]}>Add Photo</Text>
+              </TouchableOpacity>
+            )}
+            {imageError ? (
+              <Text style={[styles.errorText, { color: colors.danger, marginTop: 8 }]}>{imageError}</Text>
+            ) : null}
+          </View>
+
           {/* Related hobbies */}
           <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <HobbiesEditor
@@ -242,6 +305,30 @@ const styles = StyleSheet.create({
   errorText: { fontSize: 12, flex: 1 },
   counterText: { fontSize: 11 },
   sectionCard: { borderRadius: 16, borderWidth: 1, padding: 14 },
+  sectionLabel: { fontSize: 14, fontWeight: "700", marginBottom: 10 },
+  addPhotoBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderStyle: "dashed",
+  },
+  addPhotoText: { fontSize: 14, fontWeight: "600" },
+  imagePreviewWrap: { position: "relative" },
+  imagePreview: { width: "100%", aspectRatio: 4 / 3, borderRadius: 12 },
+  removeImageBtn: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   errorBanner: { flexDirection: "row", alignItems: "center", gap: 8, borderWidth: 1, borderRadius: 12, padding: 12 },
   errorBannerText: { flex: 1, fontSize: 13, lineHeight: 18 },
   publishFooter: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: 14, borderTopWidth: 1 },
