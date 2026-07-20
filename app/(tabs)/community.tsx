@@ -320,7 +320,9 @@ export default function CommunityScreen() {
 
   return (
     <SwipeableTab tabIndex={2} backgroundColor={colors.background}>
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+    {/* Bottom inset excluded — the Tabs navigator's own tab bar already
+        reserves it (see hooks/useTabBarHeight.ts). */}
+    <SafeAreaView edges={["top", "left", "right"]} style={[styles.container, { backgroundColor: colors.background }]}>
       {/* Header */}
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <View>

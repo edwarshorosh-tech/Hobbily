@@ -35,7 +35,7 @@ import StreakInfoModal from "../../components/home/StreakInfoModal";
 import HobbiesEditor from "../../components/settings/HobbiesEditor";
 import FriendAvatar from "../../components/friends/FriendAvatar";
 import * as ImagePicker from "expo-image-picker";
-import { uploadAvatar, removeAvatar, AvatarServiceError } from "../../services/storageService";
+import { uploadAvatar, removeAvatar, avatarErrorMessage, AvatarServiceError } from "../../services/storageService";
 import { Achievement } from "../../types/Progress";
 import { brand } from "../../constants/colors";
 
@@ -408,8 +408,12 @@ export default function ProfileScreen() {
   }, [profile.avatarUrl]);
 
   async function handlePickAvatar() {
-    if (avatarUploading || !user) return;
+    if (avatarUploading) return;
     setAvatarError(null);
+    if (!user) {
+      setAvatarError(avatarErrorMessage("not-authenticated"));
+      return;
+    }
 
     // The permission request and picker launch previously ran outside any
     // try/catch — if either rejected (e.g. no media-library permission
@@ -419,7 +423,7 @@ export default function ProfileScreen() {
     try {
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!perm.granted) {
-        setAvatarError("Photo access was denied. Enable it in your device settings to add a profile picture.");
+        setAvatarError(avatarErrorMessage("permission-denied"));
         return;
       }
 
@@ -429,19 +433,22 @@ export default function ProfileScreen() {
         aspect: [1, 1],
         quality: 0.7,
       });
+      // User cancellation is not an error — no message, no thrown exception.
       if (result.canceled || !result.assets?.[0]?.uri) return;
 
       setAvatarUploading(true);
+      // Old avatar stays on screen (avatarUrl only changes on success below)
+      // — a failed upload never leaves the user with a broken image.
       const url = await uploadAvatar(user.uid, result.assets[0].uri);
-      await updateAvatar(url);
+      try {
+        await updateAvatar(url);
+      } catch (e) {
+        throw new AvatarServiceError("profile-update-failed", e instanceof Error ? e.message : undefined);
+      }
     } catch (e) {
       if (__DEV__) console.warn("[Profile] avatar upload failed", e);
       const code = e instanceof AvatarServiceError ? e.code : "unknown";
-      setAvatarError(
-        code === "permission-denied"
-          ? "You don't have permission to update this photo."
-          : "Couldn't update your photo. Please check your connection and try again."
-      );
+      setAvatarError(avatarErrorMessage(code));
     } finally {
       setAvatarUploading(false);
     }
@@ -449,15 +456,24 @@ export default function ProfileScreen() {
 
   async function handleRemoveAvatarConfirmed() {
     setRemoveAvatarConfirmVisible(false);
-    if (avatarUploading || !user) return;
-    setAvatarUploading(true);
+    if (avatarUploading) return;
     setAvatarError(null);
+    if (!user) {
+      setAvatarError(avatarErrorMessage("not-authenticated"));
+      return;
+    }
+    setAvatarUploading(true);
     try {
       await removeAvatar(user.uid);
-      await updateAvatar(null);
+      try {
+        await updateAvatar(null);
+      } catch (e) {
+        throw new AvatarServiceError("profile-update-failed", e instanceof Error ? e.message : undefined);
+      }
     } catch (e) {
       if (__DEV__) console.warn("[Profile] avatar removal failed", e);
-      setAvatarError("Couldn't remove your photo. Please check your connection and try again.");
+      const code = e instanceof AvatarServiceError ? e.code : "delete-failed";
+      setAvatarError(avatarErrorMessage(code));
     } finally {
       setAvatarUploading(false);
     }
@@ -549,7 +565,11 @@ export default function ProfileScreen() {
 
   return (
     <SwipeableTab tabIndex={4} backgroundColor={colors.background}>
-      <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+      {/* Bottom inset excluded — the Tabs navigator's own tab bar already
+          reserves it (see hooks/useTabBarHeight.ts); the sticky Save footer
+          below also needs to sit flush above the tab bar, not floating
+          above an extra reserved gap. */}
+      <SafeAreaView edges={["top", "left", "right"]} style={[styles.container, { backgroundColor: colors.background }]}>
         {/* Header */}
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
           <Text style={[styles.headerTitle, { color: colors.text }]}>Profile</Text>

@@ -10,6 +10,7 @@
  */
 import { Task } from "../types/Task";
 import { addDaysISO, parseLocalISO } from "../utils/dateUtils";
+import { formatTimeString, isValidHour, isValidMinute, parseTimeString, timeStringToMinutes } from "../utils/time";
 
 // ── Date/time vocabulary ─────────────────────────────────────────────────────
 
@@ -39,12 +40,13 @@ function currentTimeHHMM(): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** "HH:MM" (24h) -> "h:mm AM/PM" for user-facing messages. */
+/** "HH:MM" (24h) -> "h:mm AM/PM" for user-facing messages. Falls back to the raw value if it's ever passed something that isn't a valid canonical time — this module only ever produces already-validated times, but callers pass values right back through it, so it stays defensive. */
 export function formatTimeAMPM(time: string): string {
-  const [h, m] = time.split(":").map(Number);
-  const ampm = h >= 12 ? "PM" : "AM";
-  const hour = h % 12 || 12;
-  return `${hour}:${pad(m)} ${ampm}`;
+  const parsed = parseTimeString(time);
+  if (!parsed) return time;
+  const ampm = parsed.hour >= 12 ? "PM" : "AM";
+  const hour = parsed.hour % 12 || 12;
+  return `${hour}:${pad(parsed.minute)} ${ampm}`;
 }
 
 function toISODate(year: number, monthIdx: number, day: number): string {
@@ -160,7 +162,14 @@ function extractDate(text: string, todayISODate: string): { date: string; match:
   return null;
 }
 
-/** Understands "noon"/"midnight", HH:MM (24h or with am/pm), bare "H am/pm", and a bare "at H" guess. */
+/**
+ * Understands "noon"/"midnight", HH:MM (24h or with am/pm), bare "H am/pm",
+ * and a bare "at H" guess. Every branch validates the result against the
+ * canonical HH:mm model before returning it — a match like "90:00" or
+ * "12:66" is a real regex hit but not a real time, so it's rejected here
+ * rather than handed to addTask() unchecked (that used to be able to save
+ * an out-of-range time straight from free-text AI input).
+ */
 function extractTime(text: string): { time: string; match: string } | null {
   const lower = text.toLowerCase();
 
@@ -170,10 +179,13 @@ function extractTime(text: string): { time: string; match: string } | null {
   let m = text.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/i);
   if (m) {
     let h = parseInt(m[1], 10);
+    const minute = parseInt(m[2], 10);
     const ampm = m[3]?.toLowerCase();
     if (ampm === "pm" && h < 12) h += 12;
     if (ampm === "am" && h === 12) h = 0;
-    return { time: `${pad(h)}:${m[2]}`, match: m[0] };
+    if (isValidHour(h) && isValidMinute(minute)) {
+      return { time: formatTimeString({ hour: h, minute }), match: m[0] };
+    }
   }
 
   m = text.match(/\b(\d{1,2})\s*(am|pm)\b/i);
@@ -182,7 +194,7 @@ function extractTime(text: string): { time: string; match: string } | null {
     const ampm = m[2].toLowerCase();
     if (ampm === "pm" && h < 12) h += 12;
     if (ampm === "am" && h === 12) h = 0;
-    return { time: `${pad(h)}:00`, match: m[0] };
+    if (isValidHour(h)) return { time: formatTimeString({ hour: h, minute: 0 }), match: m[0] };
   }
 
   // No am/pm given — "at 7" reads as evening for a teen's after-school schedule.
@@ -190,7 +202,8 @@ function extractTime(text: string): { time: string; match: string } | null {
   if (m) {
     let h = parseInt(m[1], 10);
     if (h >= 1 && h <= 7) h += 12;
-    return { time: `${pad(h % 24)}:00`, match: m[0] };
+    h = h % 24;
+    if (isValidHour(h)) return { time: formatTimeString({ hour: h, minute: 0 }), match: m[0] };
   }
 
   return null;
@@ -233,8 +246,7 @@ const DAY_END = 22 * 60; // 22:00
 const MIN_SLOT = 20; // ignore slivers shorter than this when reporting free time
 
 function timeToMinutes(t: string): number {
-  const [h, m] = t.split(":").map(Number);
-  return h * 60 + m;
+  return timeStringToMinutes(t) ?? 0;
 }
 
 function minutesToClock24(mins: number): string {

@@ -7,10 +7,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  AccessibilityInfo,
   ActivityIndicator,
   Animated,
-  Easing,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -27,6 +25,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { ColorTokens } from "../../context/ThemeContext";
 import { friendlyMessage, FriendRequestViewModel, useFriends } from "../../context/FriendsContext";
 import { FriendRelationshipStatus, FriendSearchResult } from "../../services/friendsService";
+import { useSwipeToCloseSheet } from "../../hooks/useSwipeToCloseSheet";
 import FriendAvatar from "./FriendAvatar";
 
 type Tab = "find" | "requests";
@@ -397,40 +396,11 @@ export default function FriendSearchModal({ visible, onClose, colors, initialTab
   const insets = useSafeAreaInsets();
   const { incomingRequests } = useFriends();
   const [tab, setTab] = useState<Tab>("find");
-  const [mounted, setMounted] = useState(visible);
-  const [reduceMotion, setReduceMotion] = useState(false);
-
-  const backdropOpacity = useRef(new Animated.Value(0)).current;
-  const sheetTranslate = useRef(new Animated.Value(28)).current;
-  const sheetScale = useRef(new Animated.Value(0.97)).current;
+  const { mounted, backdropOpacity, sheetTranslate, dragY, dragHandlers } = useSwipeToCloseSheet(visible, onClose);
 
   useEffect(() => {
-    AccessibilityInfo.isReduceMotionEnabled?.()
-      .then(setReduceMotion)
-      .catch(() => undefined);
-  }, []);
-
-  useEffect(() => {
-    const duration = reduceMotion ? 0 : visible ? 240 : 180;
-    if (visible) {
-      setMounted(true);
-      setTab(initialTab);
-      Animated.parallel([
-        Animated.timing(backdropOpacity, { toValue: 1, duration, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-        Animated.timing(sheetTranslate, { toValue: 0, duration, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-        Animated.timing(sheetScale, { toValue: 1, duration, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-      ]).start();
-    } else {
-      Animated.parallel([
-        Animated.timing(backdropOpacity, { toValue: 0, duration, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
-        Animated.timing(sheetTranslate, { toValue: 28, duration, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
-        Animated.timing(sheetScale, { toValue: 0.97, duration, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
-      ]).start(({ finished }) => {
-        if (finished) setMounted(false);
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, reduceMotion, initialTab]);
+    if (visible) setTab(initialTab);
+  }, [visible, initialTab]);
 
   if (!mounted) return null;
 
@@ -450,11 +420,11 @@ export default function FriendSearchModal({ visible, onClose, colors, initialTab
                 backgroundColor: colors.background,
                 borderColor: colors.border,
                 paddingBottom: insets.bottom + 12,
-                transform: [{ translateY: sheetTranslate }, { scale: sheetScale }],
+                transform: [{ translateY: Animated.add(sheetTranslate, dragY) }],
               },
             ]}
           >
-            <View style={styles.handleRow}>
+            <View {...dragHandlers} hitSlop={{ top: 10, bottom: 10, left: 40, right: 40 }} style={styles.handleRow}>
               <View style={[styles.handle, { backgroundColor: colors.border }]} />
             </View>
             <View style={styles.titleRow}>

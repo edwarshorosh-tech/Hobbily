@@ -21,6 +21,7 @@ import StreakInfoModal from "../../components/home/StreakInfoModal";
 import StreakButton from "../../components/home/StreakButton";
 import { useState } from "react";
 import { localDateISO } from "../../utils/dateUtils";
+import { formatTimeLabel, timeStringToMinutes } from "../../utils/time";
 import { Task } from "../../types/Task";
 import { AiAssistantServiceError, friendlyAiAssistantMessage, isAiAssistantConfigured, parseActivityRequest } from "../../services/aiAssistantService";
 
@@ -32,12 +33,6 @@ function greeting(name: string): string {
   const h = new Date().getHours();
   const part = h < 12 ? "Morning" : h < 17 ? "Afternoon" : "Evening";
   return `Good ${part}, ${name || "there"}!`;
-}
-
-function formatTime(time: string): string {
-  const [h, m] = time.split(":").map(Number);
-  const ampm = h >= 12 ? "PM" : "AM";
-  return `${h % 12 || 12}:${m.toString().padStart(2, "0")} ${ampm}`;
 }
 
 // ── AI Assistant ─────────────────────────────────────────────────────────────
@@ -248,7 +243,12 @@ function AIAssistantCard({
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function TodayTaskRow({ title, time, completed, type, colors }: { title: string; time: string; completed: boolean; type: string; colors: any }) {
+function TodayTaskRow({ id, title, time, completed, type, colors }: { id: string; title: string; time: string; completed: boolean; type: string; colors: any }) {
+  // Never trust a task's raw `time` field directly — legacy/malformed records
+  // (e.g. an incomplete manual entry saved before Planner's time picker
+  // enforced a valid HH:mm) must render as "Time not set" instead of
+  // crashing this row and, with it, the rest of Home.
+  const timeResult = formatTimeLabel(time, { taskId: id });
   return (
     <View style={[styles.todayTask, { backgroundColor: colors.card, borderColor: colors.border, opacity: completed ? 0.55 : 1 }]}>
       <View style={[styles.todayTaskDot, { backgroundColor: type === "hobby" ? colors.primary : colors.accent }]} />
@@ -256,7 +256,11 @@ function TodayTaskRow({ title, time, completed, type, colors }: { title: string;
         <Text style={[styles.todayTaskTitle, { color: colors.text }, completed && { textDecorationLine: "line-through" }]} numberOfLines={1}>
           {title}
         </Text>
-        <Text style={[styles.todayTaskTime, { color: colors.secondaryText }]}>{formatTime(time)}</Text>
+        <Text
+          style={[styles.todayTaskTime, { color: timeResult.ok ? colors.secondaryText : colors.danger }]}
+        >
+          {timeResult.label}
+        </Text>
       </View>
       {completed && <Ionicons name="checkmark-circle" size={18} color={colors.success} />}
     </View>
@@ -275,14 +279,20 @@ export default function HomeScreen() {
   const today = todayISO();
   const todayTasks = tasks
     .filter((t) => t.date === today)
-    .sort((a, b) => a.time.localeCompare(b.time))
+    // Malformed/legacy times (timeStringToMinutes -> null) sort last instead
+    // of throwing or corrupting the order of the valid tasks around them.
+    .sort((a, b) => (timeStringToMinutes(a.time) ?? Infinity) - (timeStringToMinutes(b.time) ?? Infinity))
     .slice(0, 4);
 
   const completedToday = todayTasks.filter((t) => t.completed).length;
 
   return (
     <SwipeableTab tabIndex={0} backgroundColor={colors.background}>
-      <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+      {/* Bottom safe-area inset is intentionally excluded here: the Tabs
+          navigator's own (non-absolute) tab bar already reserves that space
+          in its own height, so reserving it again would just add an empty
+          gap between this screen's content and the tab bar. */}
+      <SafeAreaView edges={["top", "left", "right"]} style={[styles.container, { backgroundColor: colors.background }]}>
         {/* Header — greeting only; city intentionally removed from this row
             (still shown on Profile/Settings/Explore/friend previews). */}
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
@@ -331,7 +341,7 @@ export default function HomeScreen() {
                 ) : (
                   <>
                     {todayTasks.map((t) => (
-                      <TodayTaskRow key={t.id} title={t.title} time={t.time} completed={t.completed} type={t.type} colors={colors} />
+                      <TodayTaskRow key={t.id} id={t.id} title={t.title} time={t.time} completed={t.completed} type={t.type} colors={colors} />
                     ))}
                     {completedToday > 0 && (
                       <View style={[styles.progressMini, { backgroundColor: colors.card, borderColor: colors.border }]}>

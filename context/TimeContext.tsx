@@ -6,7 +6,9 @@
 import { createContext, useContext, useState, useEffect, useRef } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Task } from "../types/Task";
-import { localDateISO, parseLocalISO } from "../utils/dateUtils";
+import { localDateISO, isValidDateISO, parseLocalISO } from "../utils/dateUtils";
+import { isDateTimeInPast, parseTimeString, timeStringToMinutes } from "../utils/time";
+import { isValidDurationMinutes } from "../utils/duration";
 
 const TASKS_KEY = "@hobbily_tasks";
 const REMINDER_KEY = "@hobbily_daily_reminder";
@@ -21,19 +23,26 @@ const DUE_CHECK_INTERVAL_MS = 15 * 1000;
 export type TaskSaveResult =
   | { ok: true }
   | { ok: false; reason: "conflict"; conflict: Task }
-  | { ok: false; reason: "past" };
+  | { ok: false; reason: "past" }
+  | { ok: false; reason: "invalid"; message: string };
 
-function timeToMinutes(time: string): number {
-  const [h, m] = time.split(":").map(Number);
-  return h * 60 + m;
+/** True if the given date+time is earlier than the current moment. Invalid date/time is never "past" — callers must validate first. */
+export function isPastDateTime(date: string, time: string): boolean {
+  const parsedTime = parseTimeString(time);
+  if (!isValidDateISO(date) || !parsedTime) return false;
+  return isDateTimeInPast(date, parsedTime);
 }
 
-/** True if the given date+time is earlier than the current moment. */
-export function isPastDateTime(date: string, time: string): boolean {
-  const [h, m] = time.split(":").map(Number);
-  const dt = parseLocalISO(date);
-  dt.setHours(h || 0, m || 0, 0, 0);
-  return dt.getTime() < Date.now();
+/** Rejects a task whose date/time/duration don't hold up on their own — the last line of defense before a value reaches AsyncStorage, regardless of which UI path produced it (manual, edit, or AI-created). */
+function validateTaskFields(fields: { date: string; time: string; duration: number }): string | null {
+  if (!isValidDateISO(fields.date)) return "That date isn't valid.";
+  if (!parseTimeString(fields.time)) return "That time isn't valid.";
+  // Wider than the Planner slider's own 5-240 range (see utils/duration.ts) so
+  // this repository-level check stays a sanity backstop for every caller —
+  // manual, edited, and AI-created alike — without re-litigating the
+  // slider's UX bounds; 480 matches the AI worker's own MAX_DURATION.
+  if (!isValidDurationMinutes(fields.duration, { min: 1, max: 480 })) return "That duration isn't valid.";
+  return null;
 }
 
 /** Finds a same-day task whose [time, time+duration) range overlaps the candidate's, excluding excludeId (used when editing). */
@@ -42,11 +51,13 @@ function findOverlap(
   candidate: { date: string; time: string; duration: number },
   excludeId?: string
 ): Task | null {
-  const start = timeToMinutes(candidate.time);
+  const start = timeStringToMinutes(candidate.time);
+  if (start === null) return null;
   const end = start + candidate.duration;
   for (const t of existing) {
     if (t.id === excludeId || t.date !== candidate.date) continue;
-    const tStart = timeToMinutes(t.time);
+    const tStart = timeStringToMinutes(t.time);
+    if (tStart === null) continue;
     const tEnd = tStart + t.duration;
     if (start < tEnd && tStart < end) return t;
   }
@@ -113,9 +124,10 @@ export function TimeProvider({ children }: { children: React.ReactNode }) {
         const now = Date.now();
         for (const t of tasks) {
           if (t.completed || notifiedIdsRef.current.has(t.id)) continue;
-          const [h, m] = t.time.split(":").map(Number);
+          const parsedTime = parseTimeString(t.time);
+          if (!isValidDateISO(t.date) || !parsedTime) continue; // malformed legacy task — never eligible to pop up
           const dt = parseLocalISO(t.date);
-          dt.setHours(h || 0, m || 0, 0, 0);
+          dt.setHours(parsedTime.hour, parsedTime.minute, 0, 0);
           const diff = now - dt.getTime();
           if (diff >= 0 && diff <= DUE_WINDOW_MS) {
             notifiedIdsRef.current.add(t.id);
@@ -145,6 +157,8 @@ export function TimeProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function addTask(task: Omit<Task, "id" | "createdAt">): Promise<TaskSaveResult> {
+    const invalidReason = validateTaskFields(task);
+    if (invalidReason) return { ok: false, reason: "invalid", message: invalidReason };
     if (isPastDateTime(task.date, task.time)) return { ok: false, reason: "past" };
 
     const conflict = findOverlap(tasks, task);
@@ -162,6 +176,9 @@ export function TimeProvider({ children }: { children: React.ReactNode }) {
   async function updateTask(id: string, updates: Partial<Task>): Promise<TaskSaveResult> {
     const current = tasks.find((t) => t.id === id);
     const merged = current ? { ...current, ...updates } : updates;
+
+    const invalidReason = validateTaskFields(merged as Task);
+    if (invalidReason) return { ok: false, reason: "invalid", message: invalidReason };
 
     // Only re-validate against "now" if the date/time actually moved — otherwise
     // an already-past task could never have its title/duration edited again.

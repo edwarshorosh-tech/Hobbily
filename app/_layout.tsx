@@ -17,15 +17,18 @@ function AppShell() {
   const { isLoading } = usePosts();
   const { profile, isLoaded } = useProfile();
   const { isAuthLoaded, user } = useAuth();
-  const { colors } = useTheme();
+  const { colors, isReady: themeReady } = useTheme();
   const { dueTask, dismissDueTask, deleteTask } = useTime();
   const { recordSession } = useProgress();
   const opacity = useRef(new Animated.Value(1)).current;
   const [showSplash, setShowSplash] = useState(true);
   const redirected = useRef(false);
 
-  // Wait for Firebase auth state + Firestore profile load
-  const allReady = isAuthLoaded && isLoaded && !isLoading;
+  // Wait for Firebase auth state + Firestore profile load + the theme
+  // preference to resolve (local device value, or the profile's saved one)
+  // — the last of these keeps the splash up just long enough that the first
+  // real frame is never a light/dark flash.
+  const allReady = isAuthLoaded && isLoaded && !isLoading && themeReady;
 
   useEffect(() => {
     if (!allReady) return;
@@ -112,8 +115,11 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <TipsResetProvider>
       <AuthProvider>
-        <ThemeProvider>
-          <ProfileProvider>
+        <ProfileProvider>
+          {/* ThemeProvider reads useProfile() for the signed-in user's saved
+              theme preference (see context/ThemeContext.tsx priority order),
+              so it must sit below ProfileProvider in the tree. */}
+          <ThemeProvider>
             <PostsProvider>
               <TimeProvider>
                 <CommunityProvider>
@@ -125,8 +131,8 @@ export default function RootLayout() {
                 </CommunityProvider>
               </TimeProvider>
             </PostsProvider>
-          </ProfileProvider>
-        </ThemeProvider>
+          </ThemeProvider>
+        </ProfileProvider>
       </AuthProvider>
       </TipsResetProvider>
     </GestureHandlerRootView>

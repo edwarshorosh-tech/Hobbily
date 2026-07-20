@@ -12,11 +12,12 @@
  */
 import { db } from "../lib/firebase";
 import { doc, getDoc, serverTimestamp, setDoc, writeBatch } from "firebase/firestore";
-import { Profile } from "../types/Profile";
+import { Profile, ThemePreference } from "../types/Profile";
 import { PublicProfile } from "../types/PublicProfile";
 import { normalizeUsername } from "./friendsService";
 
-const DEFAULT_PROFILE: Profile = {
+/** The one canonical default-profile literal — context/ProfileContext.tsx imports this rather than keeping its own copy in sync by hand. */
+export const DEFAULT_PROFILE: Profile = {
   username: "explorer",
   email: "",
   age: "",
@@ -28,6 +29,7 @@ const DEFAULT_PROFILE: Profile = {
   freeTimePerDay: "30-60",
   hasOnboarded: false,
   savedOpportunities: [],
+  themePreference: null,
 };
 
 export async function loadProfile(uid: string): Promise<Profile> {
@@ -65,6 +67,16 @@ export async function updateAvatarUrl(uid: string, avatarUrl: string | null): Pr
   batch.set(doc(db, "users", uid), { avatarUrl }, { merge: true });
   batch.set(doc(db, "publicProfiles", uid), { avatarUrl, updatedAt: serverTimestamp() }, { merge: true });
   await batch.commit();
+}
+
+/**
+ * Updates only the theme preference, in users/{uid} — never publicProfiles,
+ * since a user's dark/light choice isn't public data. Applied immediately on
+ * toggle by ThemeContext (via ProfileContext.updateThemePreference), same
+ * pattern as updateAvatarUrl: not part of the Settings draft/save flow.
+ */
+export async function updateThemePreference(uid: string, themePreference: ThemePreference): Promise<void> {
+  await setDoc(doc(db, "users", uid), { themePreference }, { merge: true });
 }
 
 /**

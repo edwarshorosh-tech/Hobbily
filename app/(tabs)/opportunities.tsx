@@ -278,7 +278,9 @@ export default function OpportunitiesScreen() {
 
   return (
     <SwipeableTab tabIndex={3} backgroundColor={colors.background}>
-      <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+      {/* Bottom inset excluded — the Tabs navigator's own tab bar already
+          reserves it (see hooks/useTabBarHeight.ts). */}
+      <SafeAreaView edges={["top", "left", "right"]} style={[styles.container, { backgroundColor: colors.background }]}>
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
           <View style={styles.headerTopRow}>
             <Text style={[styles.headerTitle, { color: colors.text }]}>Explore</Text>

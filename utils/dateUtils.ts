@@ -46,3 +46,20 @@ export function deviceTimeZone(): string {
     return "UTC";
   }
 }
+
+/**
+ * True only for a real calendar date in strict YYYY-MM-DD form (rejects
+ * "2024-02-30", "2024-13-01", non-strings, and anything not zero-padded).
+ * Never throws.
+ */
+export function isValidDateISO(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const d = parseLocalISO(value);
+  return d.getFullYear() === year && d.getMonth() === month - 1 && d.getDate() === day;
+}

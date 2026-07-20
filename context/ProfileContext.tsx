@@ -1,26 +1,14 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { Profile } from "../types/Profile";
+import { Profile, ThemePreference } from "../types/Profile";
 import {
+  DEFAULT_PROFILE,
   loadProfile,
   saveProfile as persistProfile,
   ensurePublicProfileFresh,
   updateAvatarUrl,
+  updateThemePreference as persistThemePreference,
 } from "../services/profileService";
 import { useAuth } from "./AuthContext";
-
-const DEFAULT_PROFILE: Profile = {
-  username: "explorer",
-  email: "",
-  age: "",
-  bio: "",
-  hobbies: [],
-  avatarUrl: null,
-  preferredCity: "",
-  city: "",
-  freeTimePerDay: "30-60",
-  hasOnboarded: false,
-  savedOpportunities: [],
-};
 
 type ProfileContextType = {
   profile: Profile;
@@ -29,6 +17,8 @@ type ProfileContextType = {
   saveProfile: (updated: Profile) => Promise<void>;
   /** Applies immediately (not part of the Settings draft/save flow) — used after avatar upload/removal. */
   updateAvatar: (avatarUrl: string | null) => Promise<void>;
+  /** Applies immediately — used by ThemeContext when the user changes their theme. Updates local state right away and syncs to Firestore in the background (never blocks the UI, and is a no-op when signed out). */
+  updateThemePreference: (pref: ThemePreference) => void;
 };
 
 const ProfileContext = createContext<ProfileContextType | undefined>(undefined);
@@ -88,9 +78,23 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
     [user]
   );
 
+  const updateThemePreference = useCallback(
+    (pref: ThemePreference) => {
+      // Local state updates immediately regardless of auth state — a signed-
+      // out user (or one mid-onboarding) can still have this called once
+      // they authenticate; ThemeContext itself decides when to call it.
+      setProfile((p) => (p.themePreference === pref ? p : { ...p, themePreference: pref }));
+      if (!user) return;
+      persistThemePreference(user.uid, pref).catch((e) => {
+        if (__DEV__) console.warn("[ProfileContext] failed to sync theme preference", e);
+      });
+    },
+    [user]
+  );
+
   const value = useMemo(
-    () => ({ profile, isLoaded, saveProfile, updateAvatar }),
-    [profile, isLoaded, saveProfile, updateAvatar]
+    () => ({ profile, isLoaded, saveProfile, updateAvatar, updateThemePreference }),
+    [profile, isLoaded, saveProfile, updateAvatar, updateThemePreference]
   );
 
   return (
