@@ -1,4 +1,5 @@
 import { Stack, router } from "expo-router";
+import { StatusBar } from "expo-status-bar";
 import { ThemeProvider, useTheme } from "../context/ThemeContext";
 import { AuthProvider, useAuth } from "../context/AuthContext";
 import { ProfileProvider, useProfile } from "../context/ProfileContext";
@@ -17,7 +18,7 @@ function AppShell() {
   const { isLoading } = usePosts();
   const { profile, isLoaded } = useProfile();
   const { isAuthLoaded, user } = useAuth();
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
   const { dueTask, dismissDueTask, deleteTask } = useTime();
   const { recordSession } = useProgress();
   const opacity = useRef(new Animated.Value(1)).current;
@@ -59,6 +60,9 @@ function AppShell() {
 
   return (
     <>
+      {/* Keeps the native status bar icons/text readable against the current
+          in-app theme — independent of the device's system color scheme. */}
+      <StatusBar style={isDark ? "light" : "dark"} />
       {/*
         Subtle cross-screen fade for the primary stack (native-stack, backed by
         react-native-screens, only exposes fixed animation presets — no custom

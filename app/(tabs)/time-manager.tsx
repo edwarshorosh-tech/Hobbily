@@ -82,6 +82,14 @@ function formatTimeInput(raw: string): string {
   return `${digits.slice(0, 2)}:${digits.slice(2)}`;
 }
 
+/** True only once a full "HH:MM" has been typed but the values are out of
+ *  range (e.g. "16:66") — never flags a still-in-progress partial entry. */
+function isInvalidTimeString(time: string): boolean {
+  if (!/^\d{2}:\d{2}$/.test(time)) return false;
+  const [h, m] = time.split(":").map(Number);
+  return h > 23 || m > 59;
+}
+
 // ── Task Row ──────────────────────────────────────────────────────────────────
 
 type TaskRowProps = {
@@ -181,6 +189,14 @@ function TaskRow({ task, colors, onToggle, onEdit, onDelete }: TaskRowProps) {
 function buildWeekDays(anchorISO: string): string[] {
   const monday = startOfWeekISO(anchorISO);
   return Array.from({ length: 7 }, (_, i) => addDaysISO(monday, i));
+}
+
+/** Every YYYY-MM-DD date in the calendar month containing anchorISO, in order. */
+function buildMonthDays(anchorISO: string): string[] {
+  const d = parseLocalISO(anchorISO);
+  const firstOfMonth = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+  const daysInMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  return Array.from({ length: daysInMonth }, (_, i) => addDaysISO(firstOfMonth, i));
 }
 
 type DayTileProps = {
@@ -300,12 +316,33 @@ type WeekOverviewProps = {
 };
 
 function WeekOverview({ tasks, selected, onSelect, colors }: WeekOverviewProps) {
-  const days = buildWeekDays(selected);
+  // "Zoomed out" toggles the glance list from the current week to the whole
+  // calendar month containing the selected date — same row layout, just more
+  // of them; the page's own ScrollView handles the extra length.
+  const [zoomedOut, setZoomedOut] = useState(false);
+  const days = zoomedOut ? buildMonthDays(selected) : buildWeekDays(selected);
   const today = todayISO();
+  const monthLabel = parseLocalISO(selected).toLocaleDateString(undefined, { month: "long", year: "numeric" });
 
   return (
     <View style={[styles.weekOverviewCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-      <Text style={[styles.weekOverviewTitle, { color: colors.text }]}>Week at a Glance</Text>
+      <View style={styles.weekOverviewHeader}>
+        <Text style={[styles.weekOverviewTitle, { color: colors.text }]}>
+          {zoomedOut ? `${monthLabel} at a Glance` : "Week at a Glance"}
+        </Text>
+        <TouchableOpacity
+          onPress={() => setZoomedOut((v) => !v)}
+          style={styles.weekOverviewZoomBtn}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          accessibilityRole="button"
+          accessibilityLabel={zoomedOut ? "Zoom in to week view" : "Zoom out to month view"}
+        >
+          <Ionicons name={zoomedOut ? "contract-outline" : "expand-outline"} size={15} color={colors.primary} />
+          <Text style={[styles.weekOverviewZoomText, { color: colors.primary }]}>
+            {zoomedOut ? "Week" : "Month"}
+          </Text>
+        </TouchableOpacity>
+      </View>
       {days.map((iso, i) => {
         const dayTasks = tasks
           .filter((t) => t.date === iso)
@@ -384,7 +421,8 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
   const [saving, setSaving] = useState(false);
 
   const targetDate = editingTask?.date ?? defaultDate;
-  const isPastSelection = isPastDateTime(targetDate, time);
+  const isInvalidTime = isInvalidTimeString(time);
+  const isPastSelection = !isInvalidTime && isPastDateTime(targetDate, time);
 
   // Swipe-down-to-close: track sheet position with an Animated value
   const panY = useRef(new Animated.Value(0)).current;
@@ -426,7 +464,7 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
   }
 
   async function handleSave() {
-    if (!title.trim() || saving || isPastSelection) return;
+    if (!title.trim() || saving || isPastSelection || isInvalidTime) return;
     setSaving(true);
     setConflict(null);
     setPastError(false);
@@ -559,7 +597,7 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
             <View style={{ flex: 1, marginRight: 8 }}>
               <Text style={[styles.fieldLabel, { color: colors.secondaryText }]}>Time (HH:MM)</Text>
               <TextInput
-                style={[styles.modalInput, { backgroundColor: colors.inputBackground, color: colors.text, borderColor: (conflict || pastError || isPastSelection) ? colors.danger : colors.border }]}
+                style={[styles.modalInput, { backgroundColor: colors.inputBackground, color: colors.text, borderColor: (conflict || pastError || isPastSelection || isInvalidTime) ? colors.danger : colors.border }]}
                 placeholder="09:00"
                 placeholderTextColor={colors.secondaryText}
                 value={time}
@@ -604,8 +642,18 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
             ))}
           </View>
 
+          {/* Invalid time warning — takes priority over the past-time warning below */}
+          {isInvalidTime && (
+            <View style={[styles.conflictWarning, { backgroundColor: colors.danger + "18", borderColor: colors.danger }]}>
+              <Ionicons name="warning-outline" size={16} color={colors.danger} />
+              <Text style={[styles.conflictWarningText, { color: colors.danger }]}>
+                That's not a real time. Use 24-hour HH:MM, e.g. 09:00 or 16:30.
+              </Text>
+            </View>
+          )}
+
           {/* Past-time warning */}
-          {(isPastSelection || pastError) && (
+          {!isInvalidTime && (isPastSelection || pastError) && (
             <View style={[styles.conflictWarning, { backgroundColor: colors.danger + "18", borderColor: colors.danger }]}>
               <Ionicons name="warning-outline" size={16} color={colors.danger} />
               <Text style={[styles.conflictWarningText, { color: colors.danger }]}>
@@ -636,8 +684,8 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
             </TouchableOpacity>
             <TouchableOpacity
               onPress={handleSave}
-              style={[styles.modalSaveBtn, { backgroundColor: colors.primary }, (!title.trim() || saving || isPastSelection) && { opacity: 0.4 }]}
-              disabled={!title.trim() || saving || isPastSelection}
+              style={[styles.modalSaveBtn, { backgroundColor: colors.primary }, (!title.trim() || saving || isPastSelection || isInvalidTime) && { opacity: 0.4 }]}
+              disabled={!title.trim() || saving || isPastSelection || isInvalidTime}
             >
               {saving ? (
                 <ActivityIndicator size="small" color="#fff" />
@@ -976,7 +1024,17 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: 6,
   },
-  weekOverviewTitle: { fontSize: 15, fontWeight: "700", marginHorizontal: 10, marginTop: 8, marginBottom: 6 },
+  weekOverviewHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginHorizontal: 10,
+    marginTop: 8,
+    marginBottom: 6,
+  },
+  weekOverviewTitle: { fontSize: 15, fontWeight: "700", flexShrink: 1 },
+  weekOverviewZoomBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingVertical: 2, paddingLeft: 8 },
+  weekOverviewZoomText: { fontSize: 13, fontWeight: "700" },
   weekOverviewRow: {
     flexDirection: "row",
     alignItems: "center",

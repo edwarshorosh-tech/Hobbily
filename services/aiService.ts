@@ -167,22 +167,31 @@ function extractTime(text: string): { time: string; match: string } | null {
   let om = matchOriginalCase(text, lower, /\b(noon|midnight)\b/);
   if (om) return { time: om[1] === "noon" ? "12:00" : "00:00", match: om[0] };
 
+  // Hour/minute are range-checked (not just shape-matched) so a garbled
+  // phrase like "at 19:75" or "25:30" can't turn into a stored task with a
+  // not-a-real-time value — it just falls through to the next pattern (and
+  // ultimately to "I didn't understand") instead.
   let m = text.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/i);
   if (m) {
     let h = parseInt(m[1], 10);
+    const min = parseInt(m[2], 10);
     const ampm = m[3]?.toLowerCase();
     if (ampm === "pm" && h < 12) h += 12;
     if (ampm === "am" && h === 12) h = 0;
-    return { time: `${pad(h)}:${m[2]}`, match: m[0] };
+    if (h <= 23 && min <= 59) {
+      return { time: `${pad(h)}:${pad(min)}`, match: m[0] };
+    }
   }
 
   m = text.match(/\b(\d{1,2})\s*(am|pm)\b/i);
   if (m) {
     let h = parseInt(m[1], 10);
     const ampm = m[2].toLowerCase();
-    if (ampm === "pm" && h < 12) h += 12;
-    if (ampm === "am" && h === 12) h = 0;
-    return { time: `${pad(h)}:00`, match: m[0] };
+    if (h >= 1 && h <= 12) {
+      if (ampm === "pm" && h < 12) h += 12;
+      if (ampm === "am" && h === 12) h = 0;
+      return { time: `${pad(h)}:00`, match: m[0] };
+    }
   }
 
   // No am/pm given — "at 7" reads as evening for a teen's after-school schedule.
