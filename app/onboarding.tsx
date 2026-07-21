@@ -19,6 +19,8 @@ import { FreeTimePerDay } from "../types/Profile";
 import { takePendingQuizHobby } from "../services/quizBridge";
 import { HOBBY_OPTIONS } from "../constants/hobbies";
 import { onboardingTheme, onboardingCardShadow } from "../constants/colors";
+import LocalitySearchInput from "../components/LocalitySearchInput";
+import { validateCustomHobby } from "../utils/hobbyValidation";
 
 const TOTAL_STEPS = 6;
 
@@ -93,6 +95,8 @@ export default function OnboardingScreen() {
   const [username, setUsername] = useState("");
   const [age, setAge] = useState("");
   const [city, setCity] = useState("");
+  const [localityId, setLocalityId] = useState<string | null>(null);
+  const [locationSource, setLocationSource] = useState<"official" | "custom" | null>(null);
   const [selectedHobbies, setSelectedHobbies] = useState<string[]>([]);
   const [freeTime, setFreeTime] = useState<FreeTimePerDay | "">("");
 
@@ -172,6 +176,8 @@ export default function OnboardingScreen() {
         age,
         city: city.trim(),
         preferredCity: city.trim() || "London",
+        localityId,
+        locationSource,
         hobbies: selectedHobbies,
         freeTimePerDay: (freeTime as FreeTimePerDay) || "30-60",
         hasOnboarded: true,
@@ -256,7 +262,12 @@ export default function OnboardingScreen() {
               colors={colors}
               username={username} setUsername={setUsername}
               age={age} setAge={setAge}
-              city={city} setCity={setCity}
+              city={city}
+              onCityChange={(next: string, meta: { localityId: string | null; locationSource: "official" | "custom" }) => {
+                setCity(next);
+                setLocalityId(meta.localityId);
+                setLocationSource(meta.locationSource);
+              }}
               ageError={ageError}
               canNext={canContinue[2]} onNext={goNext}
             />
@@ -399,7 +410,7 @@ function StepAccount({
 
 // ── Step 2: Basic Info ────────────────────────────────────────────────────────
 
-function StepBasicInfo({ colors, username, setUsername, age, setAge, city, setCity, ageError, canNext, onNext }: any) {
+function StepBasicInfo({ colors, username, setUsername, age, setAge, city, onCityChange, ageError, canNext, onNext }: any) {
   return (
     <ScrollView contentContainerStyle={styles.stepContent} keyboardShouldPersistTaps="handled">
       <Text style={[styles.stepTitle, { color: colors.text }]}>Tell us about yourself</Text>
@@ -432,13 +443,11 @@ function StepBasicInfo({ colors, username, setUsername, age, setAge, city, setCi
       {ageError ? <Text style={[styles.fieldError, { color: colors.danger }]}>{ageError}</Text> : null}
 
       <Text style={[styles.fieldLabel, { color: colors.secondaryText }]}>City</Text>
-      <FocusableInput
+      <LocalitySearchInput
         colors={colors}
-        style={[styles.input, { backgroundColor: colors.card, borderColor: colors.border, color: colors.text }]}
-        placeholder="e.g. Jerusalem, Ramallah, Tel Aviv"
-        placeholderTextColor={colors.secondaryText}
         value={city}
-        onChangeText={setCity}
+        onChange={onCityChange}
+        placeholder="Search your city, town, or village"
       />
 
       <TouchableOpacity
@@ -457,17 +466,23 @@ function StepBasicInfo({ colors, username, setUsername, age, setAge, city, setCi
 const PREDEFINED_LABELS = new Set(HOBBY_OPTIONS.map((h) => h.label));
 
 function StepInterests({ colors, contentWidth, selected, onToggle, canNext, onNext }: any) {
-  const [customInput, setCustomInput] = useState("");
+  const [query, setQuery] = useState("");
   const scrollRef = useRef<ScrollView>(null);
 
   // Hobbies the user typed themselves (not in the predefined grid)
   const customHobbies: string[] = selected.filter((h: string) => !PREDEFINED_LABELS.has(h));
 
+  const trimmedQuery = query.trim();
+  const filteredHobbies = trimmedQuery
+    ? HOBBY_OPTIONS.filter((h) => h.label.toLowerCase().includes(trimmedQuery.toLowerCase()))
+    : HOBBY_OPTIONS;
+  const noMatches = trimmedQuery.length > 0 && filteredHobbies.length === 0;
+  const customError = trimmedQuery.length > 0 ? validateCustomHobby(trimmedQuery, selected) : null;
+
   function addCustomHobby() {
-    const label = customInput.trim();
-    if (!label) return;
-    if (!selected.includes(label)) onToggle(label);
-    setCustomInput("");
+    if (customError) return;
+    onToggle(trimmedQuery.trim());
+    setQuery("");
   }
 
   return (
@@ -481,8 +496,49 @@ function StepInterests({ colors, contentWidth, selected, onToggle, canNext, onNe
           Pick at least one. You can change these later.
         </Text>
       </View>
+
+      {/* Search/add — directly under the heading, not buried below a long
+          grid, so the "add your own" path is discoverable without scrolling. */}
+      <View style={styles.searchHobbyRow}>
+        <View style={[styles.searchHobbyInputWrap, { backgroundColor: colors.card, borderColor: colors.border }, onboardingCardShadow]}>
+          <Ionicons name="search" size={17} color={colors.secondaryText} />
+          <FocusableInput
+            colors={colors}
+            style={[styles.searchHobbyInput, { color: colors.text }]}
+            placeholder="Search or add a hobby"
+            placeholderTextColor={colors.secondaryText}
+            value={query}
+            onChangeText={setQuery}
+            onSubmitEditing={noMatches ? addCustomHobby : undefined}
+            returnKeyType={noMatches ? "done" : "search"}
+          />
+          {query.length > 0 && (
+            <TouchableOpacity onPress={() => setQuery("")} accessibilityRole="button" accessibilityLabel="Clear search">
+              <Ionicons name="close-circle" size={17} color={colors.secondaryText} />
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {noMatches && (
+          <View style={[styles.noHobbyMatchBox, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Text style={[styles.noHobbyMatchText, { color: colors.secondaryText }]}>No matching hobby found</Text>
+            {customError && customError !== "Type a hobby first." ? (
+              <Text style={[styles.fieldError, { color: colors.danger, marginTop: 2 }]}>{customError}</Text>
+            ) : (
+              <TouchableOpacity onPress={addCustomHobby} style={{ alignSelf: "flex-start", marginTop: 4 }}>
+                <Text style={[styles.noHobbyMatchAction, { color: colors.link ?? colors.primary }]}>
+                  Add &quot;{trimmedQuery}&quot; as a custom hobby
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+      </View>
+
       <ScrollView ref={scrollRef} showsVerticalScrollIndicator={false}>
-        {/* Discover via quiz */}
+        {/* Discover via quiz — a separate entry point from adding a custom
+            hobby above, with its own distinct wording/visual treatment so
+            the two are never confused. */}
         <View style={styles.discoverWrap}>
           <TouchableOpacity
             onPress={() => router.push("/quiz?returnTo=onboarding" as any)}
@@ -499,9 +555,9 @@ function StepInterests({ colors, contentWidth, selected, onToggle, canNext, onNe
           </TouchableOpacity>
         </View>
 
-        {/* Predefined hobby tiles */}
+        {/* Predefined hobby tiles — filtered live by the search field above */}
         <View style={styles.hobbyGrid}>
-          {HOBBY_OPTIONS.map((h) => {
+          {filteredHobbies.map((h) => {
             const active = selected.includes(h.label);
             return (
               <TouchableOpacity
@@ -526,34 +582,10 @@ function StepInterests({ colors, contentWidth, selected, onToggle, canNext, onNe
           })}
         </View>
 
-        {/* Custom hobby input */}
-        <View style={styles.customHobbySection}>
-          <Text style={[styles.fieldLabel, { color: colors.secondaryText }]}>
-            Don't see yours? Add it
-          </Text>
-          <View style={styles.customHobbyRow}>
-            <FocusableInput
-              colors={colors}
-              style={[styles.customHobbyInput, { backgroundColor: colors.card, borderColor: colors.border, color: colors.text }, onboardingCardShadow]}
-              placeholder="e.g. Skateboarding, Knitting…"
-              placeholderTextColor={colors.secondaryText}
-              value={customInput}
-              onChangeText={setCustomInput}
-              onSubmitEditing={addCustomHobby}
-              returnKeyType="done"
-              onFocus={() => setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 300)}
-            />
-            <TouchableOpacity
-              onPress={addCustomHobby}
-              style={[styles.customAddBtn, { backgroundColor: customInput.trim() ? colors.primary : colors.border }]}
-              disabled={!customInput.trim()}
-            >
-              <Ionicons name="add" size={22} color={customInput.trim() ? "#fff" : colors.secondaryText} />
-            </TouchableOpacity>
-          </View>
-
-          {/* Chips for custom hobbies */}
-          {customHobbies.length > 0 && (
+        {/* Chips for custom hobbies already added */}
+        {customHobbies.length > 0 && (
+          <View style={styles.customHobbySection}>
+            <Text style={[styles.fieldLabel, { color: colors.secondaryText }]}>Your custom hobbies</Text>
             <View style={styles.customChipsRow}>
               {customHobbies.map((h: string) => (
                 <TouchableOpacity
@@ -567,8 +599,8 @@ function StepInterests({ colors, contentWidth, selected, onToggle, canNext, onNe
                 </TouchableOpacity>
               ))}
             </View>
-          )}
-        </View>
+          </View>
+        )}
       </ScrollView>
       <View style={styles.stepFooter}>
         <TouchableOpacity
@@ -780,12 +812,16 @@ const styles = StyleSheet.create({
   discoverSub: { fontSize: 12, lineHeight: 16 },
   // Hobby grid — 3 columns so labels have room to breathe
   hobbyGrid: { flexDirection: "row", flexWrap: "wrap", padding: 16, gap: 12 },
-  // Custom hobby adder
-  customHobbySection: { paddingHorizontal: 16, paddingBottom: 16 },
-  customHobbyRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
-  customHobbyInput: { flex: 1, borderWidth: 1, borderRadius: 12, padding: 12, fontSize: 14 },
-  customAddBtn: { width: 44, height: 44, borderRadius: 12, alignItems: "center", justifyContent: "center" },
-  customChipsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  // Search/add hobby — sits above the grid, not buried below it
+  searchHobbyRow: { paddingHorizontal: 16, paddingTop: 14 },
+  searchHobbyInputWrap: { flexDirection: "row", alignItems: "center", gap: 8, borderWidth: 1, borderRadius: 14, paddingHorizontal: 14 },
+  searchHobbyInput: { flex: 1, paddingVertical: 12, fontSize: 15 },
+  noHobbyMatchBox: { borderWidth: 1, borderRadius: 12, padding: 12, marginTop: 8 },
+  noHobbyMatchText: { fontSize: 13 },
+  noHobbyMatchAction: { fontSize: 13, fontWeight: "700" },
+  // Custom hobbies already added
+  customHobbySection: { paddingHorizontal: 16, paddingBottom: 16, paddingTop: 4 },
+  customChipsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
   customChip: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20, borderWidth: 1 },
   customChipText: { fontSize: 13, fontWeight: "600" },
   hobbyTile: {

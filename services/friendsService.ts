@@ -13,6 +13,7 @@ import {
   getDocs,
   limit,
   onSnapshot,
+  orderBy,
   query,
   runTransaction,
   serverTimestamp,
@@ -343,6 +344,48 @@ export async function getUserCard(currentUid: string, targetUid: string): Promis
     return { profile, relationship, friendshipId };
   } catch (e) {
     if (e instanceof FriendServiceError) throw e;
+    throw mapFirestoreError(e);
+  }
+}
+
+/**
+ * "People you may know" — a bounded, ranked slice of real registered users
+ * (publicProfiles), never the whole collection. Candidates come from one
+ * page ordered by usernameNormalized (pageSize*4, a fixed bound — not "every
+ * user"), filtered client-side against excludeUids (self, existing friends,
+ * anyone with a pending request either direction — Firestore's `not-in` caps
+ * out at 10 values, too small for a real friends list, so this is the
+ * practical alternative for a small/medium user base), then ranked by shared
+ * hobbies (weighted higher) and same city — the only two signals actually
+ * available and real here. Mutual-friend-count ranking was deliberately left
+ * out: friendships/{pairId}'s read rule is participant-only (by design, so
+ * one user can't enumerate a stranger's friend list), so this client has no
+ * way to read a third party's friendships to compute a real mutual count
+ * without weakening that privacy rule.
+ */
+export async function fetchFriendRecommendations(
+  currentUid: string,
+  excludeUids: Set<string>,
+  myHobbies: string[],
+  myCity: string,
+  pageSize = 12
+): Promise<PublicProfile[]> {
+  try {
+    const q = query(collection(db, "publicProfiles"), orderBy("usernameNormalized"), limit(pageSize * 4));
+    const snap = await getDocs(q);
+    const candidates = snap.docs
+      .map((d) => normalizePublicProfile(d.id, d.data()))
+      .filter((p) => p.uid !== currentUid && !excludeUids.has(p.uid));
+
+    const normalizedMyHobbies = new Set(myHobbies.map((h) => h.toLowerCase()));
+    const scored = candidates.map((profile) => {
+      const sharedHobbies = profile.hobbies.filter((h) => normalizedMyHobbies.has(h.toLowerCase())).length;
+      const sameCity = myCity.trim() && profile.city.trim().toLowerCase() === myCity.trim().toLowerCase() ? 1 : 0;
+      return { profile, score: sharedHobbies * 2 + sameCity };
+    });
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, pageSize).map((s) => s.profile);
+  } catch (e) {
     throw mapFirestoreError(e);
   }
 }

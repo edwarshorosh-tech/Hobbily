@@ -12,6 +12,8 @@ import { Image, Animated, StyleSheet } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { TipsResetProvider } from "../components/TipBanner";
 import PracticeTimerModal from "../components/PracticeTimerModal";
+import AchievementUnlockToast from "../components/achievements/AchievementUnlockToast";
+import DisclaimerOverlay from "../components/DisclaimerOverlay";
 import { useEffect, useRef, useState } from "react";
 
 function AppShell() {
@@ -110,6 +112,13 @@ function AppShell() {
           banner="It's time!"
         />
       )}
+      {!showSplash && <AchievementUnlockToast colors={colors} />}
+      {/* Rendered last so it paints above the achievement toast too — see
+          DisclaimerOverlay's own doc comment for how it interacts with
+          bottom sheets (native Modal windows always paint above this
+          regardless of JS sibling order; the disclaimer reappears once the
+          sheet closes, since it's still unresolved underneath). */}
+      {!showSplash && <DisclaimerOverlay />}
     </>
   );
 }

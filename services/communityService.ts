@@ -105,6 +105,36 @@ export async function fetchMemberCount(channelId: string): Promise<number> {
   }
 }
 
+/**
+ * Live-subscribes to every joined member of one channel — the real roster,
+ * not just "am I in it" (subscribeToMyMemberships above). firestore.rules
+ * lets any signed-in user read communityMemberships/{id} docs (needed for
+ * the member count aggregation this app already had), so this is the same
+ * trust level, just returning the full documents instead of a count.
+ */
+export function subscribeToChannelMembers(
+  channelId: string,
+  onChange: (members: CommunityMembership[]) => void,
+  onError?: (e: CommunityServiceError) => void
+): Unsubscribe {
+  // channelId+status is the composite index fetchMemberCount above already
+  // relies on and firestore.indexes.json already declares — adding an
+  // orderBy("createdAt") here would need a *different*, undeployed
+  // composite index (channelId+status+createdAt), so members are sorted
+  // client-side after the fetch instead, the same avoid-a-new-index
+  // approach already used elsewhere in this app (see useAuthorPosts.ts).
+  const q = query(collection(db, MEMBERSHIPS), where("channelId", "==", channelId), where("status", "==", "joined"));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const members = snap.docs.map((d) => ({ id: d.id, ...d.data() } as CommunityMembership));
+      members.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      onChange(members);
+    },
+    (err) => onError?.(mapError(err))
+  );
+}
+
 /** Real member counts for every given channel, in parallel. A failed individual count is reported as 0 rather than failing the whole batch — the join/leave flow itself doesn't depend on this number being exact. */
 export async function fetchMemberCounts(channelIds: string[]): Promise<Record<string, number>> {
   const entries = await Promise.all(
