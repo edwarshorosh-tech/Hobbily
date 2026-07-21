@@ -3,92 +3,33 @@
  * 15 questions map to 4 hobby archetypes (Creator / Athlete-Adventurer /
  * Innovator-Techie / Performer-Connector). One question per screen, auto-advances
  * on selection. Ties are broken by the Q15 answer, then by a hybrid archetype name.
+ * Scoring logic lives in utils/quizScoring.ts (pure, unit-tested).
  */
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Animated, ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import Svg, { Circle } from "react-native-svg";
+import Reanimated, { useAnimatedStyle, useSharedValue, withTiming, interpolateColor } from "react-native-reanimated";
 import { setPendingQuizHobby } from "../services/quizBridge";
 import { onboardingTheme, onboardingCardShadow } from "../constants/colors";
+import { useAuth } from "../context/AuthContext";
+import { useProfile } from "../context/ProfileContext";
+import {
+  Letter,
+  Subject,
+  SUBJECTS,
+  QUESTIONS,
+  Result,
+  computeResult,
+  computeSubjectScores,
+} from "../utils/quizScoring";
 
-// ── Quiz data ─────────────────────────────────────────────────────────────────
+/** Bumped only if the archetype/scoring logic in utils/quizScoring.ts changes in a way that invalidates old stored results. */
+const QUIZ_VERSION = 1;
 
-type Letter = "A" | "B" | "C" | "D";
-
-/** The six finer-grained subjects the connectivity breakdown is scored against. */
-type Subject =
-  | "Creative"
-  | "Active & Sporty"
-  | "Curious & STEM"
-  | "Nature & Adventure"
-  | "Social & Leadership"
-  | "Performing Arts & Expression";
-
-const SUBJECTS: Subject[] = [
-  "Creative",
-  "Active & Sporty",
-  "Curious & STEM",
-  "Nature & Adventure",
-  "Social & Leadership",
-  "Performing Arts & Expression",
-];
-
-type SubjectWeights = Partial<Record<Subject, number>>;
-
-type Question = { prompt: string; options: { letter: Letter; label: string; subjects: SubjectWeights }[] };
-
-/**
- * Every question's options are written in fixed A/B/C/D archetype order. A and C
- * map straight to their subject; B (Athlete/Adventurer) and D (Performer/Connector)
- * each cover two of the six subjects, so their per-question flavor decides which
- * one earns the point — a question like "Sports and adventures" splits evenly.
- */
-function q(
-  prompt: string,
-  a: string,
-  b: string, bSub: Subject | [Subject, Subject],
-  c: string,
-  d: string, dSub: Subject | [Subject, Subject]
-): Question {
-  const weights = (sub: Subject | [Subject, Subject]): SubjectWeights =>
-    Array.isArray(sub) ? { [sub[0]]: 0.5, [sub[1]]: 0.5 } : { [sub]: 1 };
-
-  return {
-    prompt,
-    options: [
-      { letter: "A", label: a, subjects: { Creative: 1 } },
-      { letter: "B", label: b, subjects: weights(bSub) },
-      { letter: "C", label: c, subjects: { "Curious & STEM": 1 } },
-      { letter: "D", label: d, subjects: weights(dSub) },
-    ],
-  };
-}
-
-const QUESTIONS: Question[] = [
-  q("You have to stay in an empty room for one week. Only food and water are provided, but you can bring one item. What do you take?", "A sketchbook and pencils", "A basketball", "Active & Sporty", "A laptop with no internet", "A guitar", "Performing Arts & Expression"),
-  q("You suddenly have an entire free Saturday with no responsibilities. What are you most excited to do?", "Create something", "Go outside and explore", "Nature & Adventure", "Learn a new skill", "Meet up with friends", "Social & Leadership"),
-  q("A mysterious portal appears. Where do you hope it leads?", "A huge art studio", "A mountain adventure", "Nature & Adventure", "A futuristic science lab", "A concert stage", "Performing Arts & Expression"),
-  q("Your school announces a surprise competition. Which one do you join?", "Photography Contest", "Sports Tournament", "Active & Sporty", "Robotics Challenge", "Talent Show", "Performing Arts & Expression"),
-  q("Your phone disappears for the whole weekend. How do you spend your time?", "Drawing or creating", "Playing sports", "Active & Sporty", "Building or experimenting", "Hanging out with friends", "Social & Leadership"),
-  q("Which compliment would make you happiest?", "“You're incredibly creative.”", "“You're so determined.”", "Active & Sporty", "“You're really smart.”", "“You inspire people.”", "Social & Leadership"),
-  q("You receive $500 that you must spend on one hobby. What do you buy?", "Art supplies", "Sports equipment", "Active & Sporty", "A coding or robotics kit", "A musical instrument", "Performing Arts & Expression"),
-  q("Which challenge sounds the most exciting?", "Paint a giant mural", "Complete a difficult hiking trail", "Nature & Adventure", "Build your own app or game", "Perform on stage", "Performing Arts & Expression"),
-  q("If you could instantly master one skill, which would you choose?", "Drawing", "Any sport", "Active & Sporty", "Programming", "Singing or acting", "Performing Arts & Expression"),
-  q("Which place would you love spending every afternoon?", "An art studio", "A sports center", "Active & Sporty", "A makerspace or science lab", "A music studio", "Performing Arts & Expression"),
-  q("Your dream weekend looks like…", "Creating something amazing", "Going on an outdoor adventure", "Nature & Adventure", "Learning something fascinating", "Sharing experiences with people", "Social & Leadership"),
-  q("Your friends need help with a project. What's your role?", "The creative thinker", "The energetic motivator", "Active & Sporty", "The problem solver", "The leader", "Social & Leadership"),
-  q("Which type of videos could you watch for hours?", "Art and DIY", "Sports and adventures", ["Active & Sporty", "Nature & Adventure"], "Science and technology", "Music and performances", "Performing Arts & Expression"),
-  q("If your school let you start any club, which would you choose?", "Art & Design Club", "Adventure & Sports Club", ["Nature & Adventure", "Active & Sporty"], "Robotics & Innovation Club", "Music & Performance Club", "Performing Arts & Expression"),
-  q("One year from now, what would make you the proudest?", "I created something unique.", "I became stronger and healthier.", "Active & Sporty", "I mastered a difficult skill.", "I found a hobby I truly love.", ["Social & Leadership", "Performing Arts & Expression"]),
-];
-
-/**
- * Fixed categorical hues (validated for CVD/contrast) — always in this
- * order, never reassigned by score. The quiz is a fixed-light screen (see
- * HiddenHobbiesQuiz below), so only the light variant is used.
- */
+/** Fixed categorical hues (validated for CVD/contrast) — always in this order, never reassigned by score. The quiz is a fixed-light screen, so only the light variant is used. */
 const SUBJECT_COLORS: Record<Subject, string> = {
   "Creative": "#2a78d6",
   "Active & Sporty": "#1baf7a",
@@ -97,18 +38,6 @@ const SUBJECT_COLORS: Record<Subject, string> = {
   "Social & Leadership": "#4a3aa7",
   "Performing Arts & Expression": "#e34948",
 };
-
-/** Sums each answer's subject weights (every option's weights sum to 1, so totals sum to 15). */
-function computeSubjectScores(answers: Letter[]): Record<Subject, number> {
-  const totals = Object.fromEntries(SUBJECTS.map((s) => [s, 0])) as Record<Subject, number>;
-  answers.forEach((letter, i) => {
-    const option = QUESTIONS[i].options.find((o) => o.letter === letter)!;
-    (Object.entries(option.subjects) as [Subject, number][]).forEach(([subject, weight]) => {
-      totals[subject] += weight;
-    });
-  });
-  return totals;
-}
 
 const RING_SIZE = 64;
 const RING_STROKE = 6;
@@ -141,108 +70,114 @@ function SubjectRing({ percent, color, track }: { percent: number; color: string
   );
 }
 
-// ── Archetypes ────────────────────────────────────────────────────────────────
+// ── Answer option ─────────────────────────────────────────────────────────────
+// Own component (not an inline .map() Pressable) so each option drives its own
+// Reanimated shared values — a smooth ~180ms tint/border/radio-fill transition
+// on selection change instead of an instant style swap, plus a real pressed-
+// scale tactile response. overflow:"hidden" + android_ripple (rather than
+// leaving Android's default press feedback unconfigured) is what actually
+// fixes the "strange rectangular overlay": Android's default Pressable
+// highlight ignores borderRadius unless the ripple is explicitly themed and
+// the container clips it.
+function QuizOption({
+  label,
+  selected,
+  colors,
+  onPress,
+}: {
+  label: string;
+  selected: boolean;
+  colors: typeof onboardingTheme;
+  onPress: () => void;
+}) {
+  const pressScale = useSharedValue(1);
+  const selectProgress = useSharedValue(selected ? 1 : 0);
+  useEffect(() => {
+    selectProgress.value = withTiming(selected ? 1 : 0, { duration: 190 });
+  }, [selected, selectProgress]);
 
-type Archetype = {
-  title: string;
-  description: string;
-  icon: string;
-  color: string;
-  /** Category to pre-filter on the Explore tab. */
-  category: string;
-};
+  const containerStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: pressScale.value }],
+    backgroundColor: interpolateColor(selectProgress.value, [0, 1], [colors.card, `${colors.primary}18`]),
+    borderColor: interpolateColor(selectProgress.value, [0, 1], [colors.border, colors.primary]),
+  }));
+  const dotStyle = useAnimatedStyle(() => ({
+    backgroundColor: interpolateColor(selectProgress.value, [0, 1], ["transparent", colors.primary]),
+    borderColor: interpolateColor(selectProgress.value, [0, 1], [colors.border, colors.primary]),
+  }));
+  const checkStyle = useAnimatedStyle(() => ({
+    opacity: selectProgress.value,
+    transform: [{ scale: 0.6 + selectProgress.value * 0.4 }],
+  }));
 
-const ARCHETYPES: Record<Letter, Archetype> = {
-  A: {
-    title: "The Creator",
-    description: "You think in images, colors, and ideas nobody else has thought of yet. Whether it's sketching, photography, or DIY builds, you turn imagination into something real — keep making things only you could make.",
-    icon: "color-palette-outline",
-    color: "#F97316",
-    category: "Drawing & Art",
-  },
-  B: {
-    title: "The Athlete / Adventurer",
-    description: "You're wired for movement and momentum, always chasing the next challenge, trail, or personal best. Your energy and grit are your superpower — channel them into a sport or adventure that pushes you further.",
-    icon: "trophy-outline",
-    color: "#22C55E",
-    category: "Sports",
-  },
-  C: {
-    title: "The Innovator / Techie",
-    description: "You love figuring out how things work — and then figuring out how to make them work better. Coding, robotics, and problem-solving are your playground; every bug and puzzle is just a challenge waiting to be cracked.",
-    icon: "hardware-chip-outline",
-    color: "#3B82F6",
-    category: "Coding",
-  },
-  D: {
-    title: "The Performer / Connector",
-    description: "You light up a room and bring people together, whether it's on a stage or in a group project. Music, drama, and leadership let you turn your voice — and your energy — into something everyone can share.",
-    icon: "musical-notes-outline",
-    color: "#EC4899",
-    category: "Music",
-  },
-};
+  return (
+    <Pressable
+      onPress={onPress}
+      onPressIn={() => { pressScale.value = withTiming(0.985, { duration: 100 }); }}
+      onPressOut={() => { pressScale.value = withTiming(1, { duration: 150 }); }}
+      android_ripple={{ color: `${colors.primary}22` }}
+      accessibilityRole="radio"
+      accessibilityState={{ checked: selected }}
+      accessibilityLabel={label}
+      style={styles.optionPressable}
+    >
+      <Reanimated.View style={[styles.optionBtn, onboardingCardShadow, containerStyle]}>
+        <Reanimated.View style={[styles.optionDot, dotStyle]}>
+          <Reanimated.View style={checkStyle}>
+            <Ionicons name="checkmark" size={14} color="#fff" />
+          </Reanimated.View>
+        </Reanimated.View>
+        <Text style={[styles.optionText, { color: colors.text }]}>{label}</Text>
+      </Reanimated.View>
+    </Pressable>
+  );
+}
 
-/** Blend names for a perfect two-way tie, keyed by the tied letters sorted alphabetically. */
-const HYBRID_NAMES: Record<string, { title: string; description: string }> = {
-  AB: { title: "The Creative Adventurer", description: "Part maker, part thrill-seeker — you want to build things and get outside doing them. Look for hobbies that combine hands-on making with movement, like outdoor photography or gear design." },
-  AC: { title: "The Creative Innovator", description: "You blend imagination with logic — equally happy sketching a design or coding one. Hobbies that mix art and tech, like game design or digital art, are your sweet spot." },
-  AD: { title: "The Creative Performer", description: "You want to make things and share them with an audience. Hobbies like music production, theater design, or content creation let you create and perform at once." },
-  BC: { title: "The Adventurous Innovator", description: "You want to build and test things in the real world, not just on paper. Robotics competitions, engineering challenges, or outdoor tech projects fit you well." },
-  BD: { title: "The Dynamic Connector", description: "You bring energy and people together, on a field or in a room. Team sports, group fitness, or leadership-driven clubs let you move and lead at the same time." },
-  CD: { title: "The Innovative Performer", description: "You're sharp and expressive — happy solving a hard problem or holding a stage. Hobbies like music tech, esports commentary, or STEM leadership fit your mix." },
-};
+// ── Completion overlay ────────────────────────────────────────────────────────
+// Shown between the last answer and the result screen. Persists the result
+// (if signed in) while a checkmark animates in; never advances to the result
+// screen before that persistence actually succeeds, and shows Retry (keeping
+// every answer already given) rather than a false success if it fails.
+function CompletionOverlay({
+  colors,
+  error,
+  onRetry,
+}: {
+  colors: typeof onboardingTheme;
+  error: string | null;
+  onRetry: () => void;
+}) {
+  const scale = useSharedValue(0);
+  useEffect(() => {
+    scale.value = withTiming(error ? 0 : 1, { duration: 260 });
+  }, [error, scale]);
+  const style = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
 
-type Result = {
-  hybrid: boolean;
-  title: string;
-  description: string;
-  icon: string;
-  color: string;
-  category: string;
-};
-
-const ALL_LETTERS: Letter[] = ["A", "B", "C", "D"];
-
-/**
- * Tally A/B/C/D points 1-for-1 per answer. A single top score wins outright.
- * A perfect tie is broken by the Q15 answer if it's one of the tied categories;
- * otherwise a two-way tie gets a hybrid archetype name, and 3+-way ties fall
- * back to a generic "renaissance" result.
- */
-function computeResult(answers: Letter[]): Result {
-  const scores: Record<Letter, number> = { A: 0, B: 0, C: 0, D: 0 };
-  answers.forEach((letter) => { scores[letter] += 1; });
-
-  const maxScore = Math.max(...ALL_LETTERS.map((l) => scores[l]));
-  const tied = ALL_LETTERS.filter((l) => scores[l] === maxScore);
-
-  if (tied.length === 1) {
-    const a = ARCHETYPES[tied[0]];
-    return { hybrid: false, title: a.title, description: a.description, icon: a.icon, color: a.color, category: a.category };
-  }
-
-  const q15Answer = answers[14];
-  if (tied.includes(q15Answer)) {
-    const a = ARCHETYPES[q15Answer];
-    return { hybrid: false, title: a.title, description: a.description, icon: a.icon, color: a.color, category: a.category };
-  }
-
-  if (tied.length === 2) {
-    const key = [...tied].sort().join("");
-    const hybrid = HYBRID_NAMES[key];
-    const primary = ARCHETYPES[tied[0]];
-    return { hybrid: true, title: hybrid.title, description: hybrid.description, icon: "shuffle-outline", color: primary.color, category: primary.category };
-  }
-
-  return {
-    hybrid: true,
-    title: "The Renaissance Explorer",
-    description: "You've got creativity, drive, curiosity, and charisma all at once. You haven't landed on one lane yet — and that's exactly what this quiz is for. Try something from a few different worlds and see what sticks.",
-    icon: "planet-outline",
-    color: "#8B5CF6",
-    category: ARCHETYPES[tied[0]].category,
-  };
+  return (
+    <View style={styles.completionWrap}>
+      {error ? (
+        <>
+          <View style={[styles.completionIcon, { backgroundColor: `${colors.danger}18`, borderColor: colors.danger }]}>
+            <Ionicons name="alert-circle-outline" size={40} color={colors.danger} />
+          </View>
+          <Text style={[styles.completionTitle, { color: colors.text }]}>Couldn&apos;t save your result</Text>
+          <Text style={[styles.completionSub, { color: colors.secondaryText }]}>{error}</Text>
+          <Pressable onPress={onRetry} style={[styles.primaryBtn, { backgroundColor: colors.primary, marginTop: 20 }]}>
+            <Ionicons name="refresh-outline" size={18} color="#fff" style={{ marginRight: 8 }} />
+            <Text style={styles.primaryBtnText}>Retry</Text>
+          </Pressable>
+        </>
+      ) : (
+        <>
+          <Reanimated.View style={[styles.completionIcon, { backgroundColor: `${colors.primary}18`, borderColor: colors.primary }, style]}>
+            <Ionicons name="checkmark-circle" size={44} color={colors.primary} />
+          </Reanimated.View>
+          <Text style={[styles.completionTitle, { color: colors.text }]}>Quiz complete!</Text>
+          <Text style={[styles.completionSub, { color: colors.secondaryText }]}>Calculating your hobby archetype…</Text>
+        </>
+      )}
+    </View>
+  );
 }
 
 // ── Screen ────────────────────────────────────────────────────────────────────
@@ -254,9 +189,13 @@ export default function HiddenHobbiesQuiz() {
   // either way, not meant to follow the app-wide dark mode toggle.
   const colors = onboardingTheme;
   const { returnTo } = useLocalSearchParams<{ returnTo?: string }>();
+  const { user } = useAuth();
+  const { saveQuizResult } = useProfile();
   const [index, setIndex] = useState(0);
   const [answers, setAnswers] = useState<(Letter | null)[]>(Array(QUESTIONS.length).fill(null));
-  const [showResult, setShowResult] = useState(false);
+  const [phase, setPhase] = useState<"quiz" | "completing" | "result">("quiz");
+  const [completionError, setCompletionError] = useState<string | null>(null);
+  const [result, setResult] = useState<Result | null>(null);
   const [transitioning, setTransitioning] = useState(false);
   const fadeAnim = useRef(new Animated.Value(1)).current;
 
@@ -268,6 +207,27 @@ export default function HiddenHobbiesQuiz() {
       next();
       Animated.timing(fadeAnim, { toValue: 1, duration: 200, useNativeDriver: true }).start();
     });
+  }
+
+  async function attemptComplete(finalAnswers: Letter[]) {
+    setPhase("completing");
+    setCompletionError(null);
+    const computed = computeResult(finalAnswers);
+    setResult(computed);
+    // Minimum visible time for the "Quiz complete" checkmark — long enough to
+    // read, short enough not to feel like a blocking spinner (spec: ~600-1000ms).
+    const minHold = new Promise((res) => setTimeout(res, 700));
+    try {
+      if (user) {
+        await Promise.all([saveQuizResult({ typeId: computed.typeId, typeName: computed.title, quizVersion: QUIZ_VERSION }), minHold]);
+      } else {
+        await minHold;
+      }
+      setPhase("result");
+    } catch (e) {
+      if (__DEV__) console.warn("[Quiz] failed to save result", e);
+      setCompletionError("Please check your connection and try again — your answers are still here.");
+    }
   }
 
   function selectOption(letter: Letter) {
@@ -282,7 +242,7 @@ export default function HiddenHobbiesQuiz() {
       if (index < QUESTIONS.length - 1) {
         crossfade(() => setIndex(index + 1));
       } else {
-        crossfade(() => setShowResult(true));
+        crossfade(() => attemptComplete(next as Letter[]));
       }
     }, 280);
   }
@@ -299,12 +259,25 @@ export default function HiddenHobbiesQuiz() {
   function retake() {
     setAnswers(Array(QUESTIONS.length).fill(null));
     setIndex(0);
-    setShowResult(false);
+    setPhase("quiz");
+    setCompletionError(null);
+    setResult(null);
   }
 
-  if (showResult) {
+  if (phase === "completing") {
+    return (
+      <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+        <CompletionOverlay
+          colors={colors}
+          error={completionError}
+          onRetry={() => attemptComplete(answers as Letter[])}
+        />
+      </SafeAreaView>
+    );
+  }
+
+  if (phase === "result" && result) {
     const finalAnswers = answers as Letter[];
-    const result = computeResult(finalAnswers);
     const subjectScores = computeSubjectScores(finalAnswers);
     return <ResultScreen result={result} subjectScores={subjectScores} colors={colors} onRetake={retake} returnTo={returnTo} />;
   }
@@ -328,35 +301,15 @@ export default function HiddenHobbiesQuiz() {
         </View>
 
         <View style={styles.options}>
-          {question.options.map((opt) => {
-            const isSelected = selected === opt.letter;
-            return (
-              <Pressable
-                key={opt.letter}
-                onPress={() => selectOption(opt.letter)}
-                style={({ pressed }) => [
-                  styles.optionBtn,
-                  onboardingCardShadow,
-                  {
-                    backgroundColor: isSelected ? colors.primary + "18" : colors.card,
-                    borderColor: isSelected ? colors.primary : colors.border,
-                    opacity: pressed ? 0.85 : 1,
-                    transform: [{ scale: pressed ? 0.98 : 1 }],
-                  },
-                ]}
-              >
-                <View
-                  style={[
-                    styles.optionDot,
-                    { borderColor: isSelected ? colors.primary : colors.border, backgroundColor: isSelected ? colors.primary : "transparent" },
-                  ]}
-                >
-                  {isSelected && <Ionicons name="checkmark" size={14} color="#fff" />}
-                </View>
-                <Text style={[styles.optionText, { color: colors.text }]}>{opt.label}</Text>
-              </Pressable>
-            );
-          })}
+          {question.options.map((opt) => (
+            <QuizOption
+              key={opt.letter}
+              label={opt.label}
+              selected={selected === opt.letter}
+              colors={colors}
+              onPress={() => selectOption(opt.letter)}
+            />
+          ))}
         </View>
       </Animated.View>
     </SafeAreaView>
@@ -471,9 +424,15 @@ const styles = StyleSheet.create({
   questionText: { fontSize: 22, fontWeight: "800", lineHeight: 30, marginTop: 10, letterSpacing: -0.3 },
 
   options: { gap: 12 },
+  optionPressable: { borderRadius: 16, overflow: "hidden" },
   optionBtn: { flexDirection: "row", alignItems: "center", borderWidth: 1.5, borderRadius: 16, paddingVertical: 16, paddingHorizontal: 16, gap: 12 },
   optionDot: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, alignItems: "center", justifyContent: "center" },
   optionText: { flex: 1, fontSize: 15, fontWeight: "600", lineHeight: 20 },
+
+  completionWrap: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 32 },
+  completionIcon: { width: 88, height: 88, borderRadius: 44, borderWidth: 2, alignItems: "center", justifyContent: "center", marginBottom: 18 },
+  completionTitle: { fontSize: 20, fontWeight: "800", textAlign: "center" },
+  completionSub: { fontSize: 14, textAlign: "center", marginTop: 6 },
 
   resultScroll: { flexGrow: 1, alignItems: "center", paddingHorizontal: 28, paddingTop: 36, paddingBottom: 40 },
   resultBadge: { width: 72, height: 72, borderRadius: 36, borderWidth: 2, alignItems: "center", justifyContent: "center", marginBottom: 14 },

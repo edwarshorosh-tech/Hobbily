@@ -3,7 +3,24 @@
  * Firebase Storage CRUD for the user's profile picture and post photos.
  * Files live at a UID-scoped path (never the username, which can change) so
  * ownership is enforceable purely from request.auth.uid in storage.rules.
+ *
+ * Reads the local file via expo-file-system's File (real native byte read)
+ * rather than fetch(localUri).blob() + uploadBytes(Blob). The fetch/Blob
+ * route is a well-documented weak spot for the plain `firebase` npm package
+ * on React Native: the RN Blob polyfill it hands to the Storage SDK doesn't
+ * always support the internal slicing the SDK does when preparing an
+ * upload, which surfaces as storage/cannot-slice-blob (or a wrong reported
+ * file size) — and, critically, whatever the *real* cause, this service
+ * used to fall every one of those into the same "upload-failed" bucket,
+ * whose copy says "check your connection" regardless of what actually went
+ * wrong. Reading real bytes up front sidesteps that whole class of bug, and
+ * classifyStorageRawCode() below gives the genuinely-network-unrelated
+ * Storage error codes (unauthenticated, quota-exceeded, invalid-argument,
+ * cannot-slice-blob, ...) their own accurate messages instead of collapsing
+ * everything unclassified into a connectivity story.
  */
+import { Platform } from "react-native";
+import { File } from "expo-file-system";
 import { storage } from "../lib/firebase";
 import { deleteObject, getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import { mapFirebaseError, rawErrorCode } from "./firebaseErrors";
@@ -24,6 +41,7 @@ export type AvatarServiceErrorCode =
   | "blob-conversion-failed"
   | "upload-failed"
   | "storage-permission-denied"
+  | "storage-unavailable"
   | "download-url-failed"
   | "profile-update-failed"
   | "delete-failed"
@@ -56,13 +74,19 @@ export function avatarErrorMessage(code: AvatarServiceErrorCode): string {
       return "Couldn't process that photo. Please try a different one.";
     case "storage-permission-denied":
       return "You don't have permission to update this photo.";
+    case "storage-unavailable":
+      return "Photo storage is temporarily unavailable. Please try again in a bit.";
     case "upload-failed":
     case "download-url-failed":
-      return "The upload didn't finish. Please check your connection and try again.";
+      // Deliberately doesn't claim this is a network problem — by the time
+      // execution reaches this fallback, every raw Storage error code we
+      // actually recognize (see classifyStorageRawCode) has already been
+      // routed to a more specific, accurate message above.
+      return "The upload didn't finish. Please try again.";
     case "profile-update-failed":
       return "Your photo uploaded, but saving it to your profile failed. Please try again.";
     case "delete-failed":
-      return "Couldn't remove your photo. Please check your connection and try again.";
+      return "Couldn't remove your photo. Please try again.";
     case "network-error":
       return "Network error — please check your connection and try again.";
     case "selection-cancelled":
@@ -75,44 +99,82 @@ export function avatarErrorMessage(code: AvatarServiceErrorCode): string {
 /** Matches storage.rules' `request.resource.size < 5 * 1024 * 1024` for the avatar path. */
 export const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
 
+/**
+ * Firebase Storage SDK error codes (storage/...) that mean something more
+ * specific than "network problem" or "no permission" — see
+ * https://firebase.google.com/docs/storage/web/handle-errors. Checked before
+ * falling back to the generic 3-bucket mapFirebaseError() classifier.
+ */
+function classifyStorageRawCode(rawCode: string): AvatarServiceErrorCode | null {
+  if (rawCode.includes("unauthenticated")) return "not-authenticated";
+  if (rawCode.includes("quota-exceeded") || rawCode.includes("no-default-bucket")) return "storage-unavailable";
+  if (rawCode.includes("cannot-slice-blob") || rawCode.includes("invalid-checksum") || rawCode.includes("server-file-wrong-size")) {
+    return "blob-conversion-failed";
+  }
+  if (
+    rawCode.includes("invalid-argument") ||
+    rawCode.includes("invalid-url") ||
+    rawCode.includes("invalid-root-operation") ||
+    rawCode.includes("invalid-event-name")
+  ) {
+    return "unsupported-file";
+  }
+  return null;
+}
+
 function mapStorageError(e: unknown, fallback: AvatarServiceErrorCode = "unknown"): AvatarServiceError {
+  const rawMessage = e instanceof Error ? e.message : undefined;
+  const specific = classifyStorageRawCode(rawErrorCode(e));
+  if (specific) return new AvatarServiceError(specific, rawMessage);
   const { code, message } = mapFirebaseError(e, "storageService");
   if (code === "permission-denied") return new AvatarServiceError("storage-permission-denied", message);
   if (code === "network-error") return new AvatarServiceError("network-error", message);
-  return new AvatarServiceError(fallback, message);
+  return new AvatarServiceError(fallback, rawMessage ?? message);
 }
 
 function avatarRef(uid: string) {
   return ref(storage, `users/${uid}/avatar/profile.jpg`);
 }
 
+/** Reads a local file (expo-image-picker's content:///file:// asset URI, or a blob: URI on web) into raw bytes for upload, without going through fetch().blob(). */
+async function readLocalFileBytes(localUri: string): Promise<Uint8Array> {
+  if (Platform.OS === "web") {
+    const response = await fetch(localUri);
+    return new Uint8Array(await response.arrayBuffer());
+  }
+  const file = new File(localUri);
+  if (!file.exists) throw new AvatarServiceError("invalid-uri");
+  return await file.bytes();
+}
+
 /**
- * Uploads the image at `localUri` (an expo-image-picker asset URI — a
- * content:// or file:// URI on native, a blob: URI on web) and returns its
- * download URL. Each stage (read, validate, upload, resolve URL) is
- * classified separately so a failure's real cause survives to the caller
- * instead of collapsing into one generic error.
+ * Uploads the image at `localUri` (an expo-image-picker asset URI) and
+ * returns its download URL. `mimeType` should come from the picker asset's
+ * own `mimeType` field when available (more reliable than sniffing) —
+ * falls back to image/jpeg, which is what expo-image-picker's `allowsEditing`
+ * crop step re-encodes to on both platforms. Each stage (read, validate,
+ * upload, resolve URL) is classified separately so a failure's real cause
+ * survives to the caller instead of collapsing into one generic error.
  */
-export async function uploadAvatar(uid: string, localUri: string): Promise<string> {
+export async function uploadAvatar(uid: string, localUri: string, mimeType?: string): Promise<string> {
   if (!uid) throw new AvatarServiceError("not-authenticated");
   if (!localUri) throw new AvatarServiceError("invalid-uri");
 
-  let blob: Blob;
+  let bytes: Uint8Array;
   try {
-    const response = await fetch(localUri);
-    if (!response.ok) throw new AvatarServiceError("invalid-uri");
-    blob = await response.blob();
+    bytes = await readLocalFileBytes(localUri);
   } catch (e) {
     if (e instanceof AvatarServiceError) throw e;
     throw new AvatarServiceError("blob-conversion-failed", e instanceof Error ? e.message : undefined);
   }
 
-  if (!blob.type.startsWith("image/")) throw new AvatarServiceError("unsupported-file");
-  if (blob.size > MAX_AVATAR_BYTES) throw new AvatarServiceError("file-too-large");
+  const contentType = mimeType && mimeType.startsWith("image/") ? mimeType : "image/jpeg";
+  if (bytes.byteLength === 0) throw new AvatarServiceError("blob-conversion-failed");
+  if (bytes.byteLength > MAX_AVATAR_BYTES) throw new AvatarServiceError("file-too-large");
 
   const destination = avatarRef(uid);
   try {
-    await uploadBytes(destination, blob, { contentType: blob.type });
+    await uploadBytes(destination, bytes, { contentType });
   } catch (e) {
     throw mapStorageError(e, "upload-failed");
   }
@@ -150,12 +212,11 @@ function postImageRef(uid: string) {
 }
 
 /** Uploads a post photo at `localUri` (from expo-image-picker) and returns its download URL. */
-export async function uploadPostImage(uid: string, localUri: string): Promise<string> {
+export async function uploadPostImage(uid: string, localUri: string, mimeType?: string): Promise<string> {
   try {
-    const response = await fetch(localUri);
-    const blob = await response.blob();
+    const bytes = await readLocalFileBytes(localUri);
     const destination = postImageRef(uid);
-    await uploadBytes(destination, blob, { contentType: "image/jpeg" });
+    await uploadBytes(destination, bytes, { contentType: mimeType && mimeType.startsWith("image/") ? mimeType : "image/jpeg" });
     return await getDownloadURL(destination);
   } catch (e) {
     throw mapStorageError(e);
@@ -169,5 +230,32 @@ export async function deletePostImage(imageUrl: string): Promise<void> {
   } catch (e) {
     if (rawErrorCode(e).includes("object-not-found")) return;
     throw mapStorageError(e);
+  }
+}
+
+/** Path includes the channel and the uploader's own uid — matches storage.rules' channels/{channelId}/{uid}/{fileName} ownership check. */
+function channelImageRef(channelId: string, uid: string) {
+  return ref(storage, `channels/${channelId}/${uid}/${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`);
+}
+
+/** Uploads a community chat image attachment and returns its {url, storagePath} — the path is stored on the message doc so it (and it alone) can be deleted later. */
+export async function uploadChannelImage(
+  channelId: string,
+  uid: string,
+  localUri: string,
+  mimeType?: string
+): Promise<{ url: string; storagePath: string }> {
+  const bytes = await readLocalFileBytes(localUri);
+  const destination = channelImageRef(channelId, uid);
+  try {
+    await uploadBytes(destination, bytes, { contentType: mimeType && mimeType.startsWith("image/") ? mimeType : "image/jpeg" });
+  } catch (e) {
+    throw mapStorageError(e, "upload-failed");
+  }
+  try {
+    const url = await getDownloadURL(destination);
+    return { url, storagePath: destination.fullPath };
+  } catch (e) {
+    throw mapStorageError(e, "download-url-failed");
   }
 }

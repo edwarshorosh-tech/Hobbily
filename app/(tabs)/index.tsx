@@ -365,7 +365,14 @@ export default function HomeScreen() {
                 {[
                   { icon: "add-circle-outline" as const, label: "Post", action: () => router.push("/create-post" as any), color: colors.primary },
                   { icon: "newspaper-outline" as const, label: "Feed", action: () => router.push("/feed" as any), color: "#F59E0B" },
-                  { icon: "help-circle-outline" as const, label: "Quiz", action: () => router.push("/quiz" as any), color: "#8B5CF6" },
+                  // Once the quiz is completed (a persisted profile field, not
+                  // local/component state — see types/Profile.ts
+                  // quizCompletedAt), this slot switches from "take the quiz"
+                  // to "Explore", since retaking it lives in Profile/Settings
+                  // now rather than being a primary Quick Action.
+                  profile.quizCompletedAt
+                    ? { icon: "compass-outline" as const, label: "Explore", action: () => router.push("/(tabs)/opportunities" as any), color: "#8B5CF6" }
+                    : { icon: "help-circle-outline" as const, label: "Quiz", action: () => router.push("/quiz" as any), color: "#8B5CF6" },
                 ].map((a) => (
                   <TouchableOpacity key={a.label} onPress={a.action} style={[styles.quickAction, { backgroundColor: colors.card, borderColor: colors.border }]}>
                     <View style={[styles.quickActionIcon, { backgroundColor: a.color + "18" }]}>

@@ -208,6 +208,114 @@ async function main() {
     );
   });
 
+  console.log("Progress / achievements:");
+
+  // Seed alice's progress doc with two unlocked achievements, bypassing rules.
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await setDoc(doc(db, "progress", uidA), {
+      state: {
+        streakDays: [],
+        totalSessions: 5,
+        totalMinutes: 50,
+        longestStreak: 2,
+        achievements: [
+          { id: "first_session", title: "First Step", description: "d", icon: "footsteps-outline", earnedAt: "2026-01-01" },
+          { id: "streak_3", title: "3-Day Streak", description: "d", icon: "flame-outline", earnedAt: "2026-01-03" },
+        ],
+        achievementIds: ["first_session", "streak_3"],
+        streakFreezeAvailable: true,
+        streakFreezeLastGranted: "",
+      },
+      freezeUsedDate: null,
+    });
+  });
+
+  await check("owner can read their own progress doc", async () => {
+    await assertSucceeds(getDoc(doc(aliceDb, "progress", uidA)));
+  });
+
+  await check("another user cannot read someone else's progress doc", async () => {
+    await assertFails(getDoc(doc(bobDb, "progress", uidA)));
+  });
+
+  await check("owner can grow their own achievements list", async () => {
+    await assertSucceeds(
+      updateDoc(doc(aliceDb, "progress", uidA), {
+        "state.achievements": [
+          { id: "first_session", title: "First Step", description: "d", icon: "footsteps-outline", earnedAt: "2026-01-01" },
+          { id: "streak_3", title: "3-Day Streak", description: "d", icon: "flame-outline", earnedAt: "2026-01-03" },
+          { id: "sessions_10", title: "Dedicated", description: "d", icon: "star-outline", earnedAt: "2026-01-10" },
+        ],
+        "state.achievementIds": ["first_session", "streak_3", "sessions_10"],
+      })
+    );
+  });
+
+  await check("owner cannot shrink their own achievements list", async () => {
+    await assertFails(
+      updateDoc(doc(aliceDb, "progress", uidA), {
+        "state.achievements": [
+          { id: "first_session", title: "First Step", description: "d", icon: "footsteps-outline", earnedAt: "2026-01-01" },
+        ],
+        "state.achievementIds": ["first_session"],
+      })
+    );
+  });
+
+  console.log("Featured achievements:");
+
+  await check("owner can feature an achievement id they've actually unlocked", async () => {
+    await assertSucceeds(
+      setDoc(doc(aliceDb, "publicProfiles", uidA), {
+        uid: uidA,
+        username: "alice",
+        usernameNormalized: "alice",
+        city: "",
+        avatarUrl: null,
+        currentStreak: 0,
+        bio: "",
+        hobbies: [],
+        featuredAchievementIds: ["first_session"],
+        updatedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  await check("owner cannot feature an achievement id they haven't unlocked", async () => {
+    await assertFails(
+      setDoc(doc(aliceDb, "publicProfiles", uidA), {
+        uid: uidA,
+        username: "alice",
+        usernameNormalized: "alice",
+        city: "",
+        avatarUrl: null,
+        currentStreak: 0,
+        bio: "",
+        hobbies: [],
+        featuredAchievementIds: ["sessions_50"],
+        updatedAt: serverTimestamp(),
+      })
+    );
+  });
+
+  await check("owner cannot feature more than 3 achievement ids", async () => {
+    await assertFails(
+      setDoc(doc(aliceDb, "publicProfiles", uidA), {
+        uid: uidA,
+        username: "alice",
+        usernameNormalized: "alice",
+        city: "",
+        avatarUrl: null,
+        currentStreak: 0,
+        bio: "",
+        hobbies: [],
+        featuredAchievementIds: ["first_session", "streak_3", "first_session", "streak_3"],
+        updatedAt: serverTimestamp(),
+      })
+    );
+  });
+
   await testEnv.cleanup();
 
   console.log(`\n${passed} passed, ${failed} failed`);

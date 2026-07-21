@@ -2,7 +2,7 @@
  * UserCardSheet — the one reusable "who is this person" bottom sheet, opened
  * from every place a username/avatar is tappable: community chat, the
  * friends leaderboard, the friends list, incoming/outgoing requests, post
- * authors, and comment authors.
+ * authors, comment authors, and community member lists.
  *
  * Callers only ever need to know a uid — this looks up the public profile
  * and the friendship relationship itself (services/friendsService.ts's
@@ -10,7 +10,8 @@
  * message's author uid, or an already-resolved friend/request entry.
  *
  * Only ever shows publicProfiles data (username, city, bio, hobbies,
- * avatar, streak) — never age, email, or anything from the private
+ * avatar, streak, featured achievements, personality type when the owner
+ * has chosen to show it) — never age, email, or anything from the private
  * users/{uid} document.
  *
  * Design: a compact social-profile preview, not a full-screen page. There's
@@ -22,11 +23,18 @@
  * "action" surface is the actual next step available (send/accept a
  * request) or, for an existing friend, a small de-emphasized "Remove
  * Friend" link, never the visually dominant element on the sheet. Height is
- * capped, not fixed — a short profile (no bio, no hobbies) renders short;
- * a fuller one scrolls within the cap.
+ * capped, not fixed — a short profile (no bio, no hobbies, no featured
+ * achievements) renders short; a fuller one scrolls within the cap.
+ *
+ * Featured achievement icons shown here are always rendered as "unlocked" —
+ * firestore.rules only allows featuredAchievementIds to contain ids this
+ * user's own progress doc actually lists as unlocked (see
+ * isValidFeaturedAchievements in firestore.rules), so there's no locked/
+ * progress state to compute for someone else's card, and no need to read
+ * their private progress/{uid} doc (which this viewer can't read anyway).
  */
 import { useEffect, useState } from "react";
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, Image, Modal, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { ColorTokens } from "../../context/ThemeContext";
 import { useAuth } from "../../context/AuthContext";
@@ -37,6 +45,9 @@ import BottomSheet from "../BottomSheet";
 import ConfirmModal from "../ConfirmModal";
 import FriendAvatar from "../friends/FriendAvatar";
 import TagChip from "../TagChip";
+import PersonalityBadge from "../PersonalityBadge";
+import AchievementDetailSheet from "../achievements/AchievementDetailSheet";
+import { achievementDefById } from "../../constants/achievements";
 import { actionFor } from "../../utils/friendCardAction";
 
 type Props = {
@@ -45,6 +56,8 @@ type Props = {
   onClose: () => void;
   colors: ColorTokens;
 };
+
+const AVATAR_SIZE = 96;
 
 export default function UserCardSheet({ uid, onClose, colors }: Props) {
   const { user } = useAuth();
@@ -55,6 +68,8 @@ export default function UserCardSheet({ uid, onClose, colors }: Props) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [removeConfirmVisible, setRemoveConfirmVisible] = useState(false);
+  const [avatarPreviewVisible, setAvatarPreviewVisible] = useState(false);
+  const [openAchievementId, setOpenAchievementId] = useState<string | null>(null);
 
   const visible = uid !== null;
 
@@ -119,7 +134,7 @@ export default function UserCardSheet({ uid, onClose, colors }: Props) {
 
   return (
     <>
-      <BottomSheet visible={visible} onClose={onClose} colors={colors} maxHeight="80%">
+      <BottomSheet visible={visible} onClose={onClose} colors={colors} maxHeight="82%">
         {loading ? (
           <View style={styles.centerState}>
             <ActivityIndicator size="small" color={colors.secondaryText} />
@@ -137,7 +152,14 @@ export default function UserCardSheet({ uid, onClose, colors }: Props) {
         ) : (
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
             <View style={styles.header}>
-              <FriendAvatar username={profile.username} avatarUrl={profile.avatarUrl} size={72} colors={colors} />
+              <TouchableOpacity
+                onPress={() => profile.avatarUrl && setAvatarPreviewVisible(true)}
+                disabled={!profile.avatarUrl}
+                accessibilityRole={profile.avatarUrl ? "button" : undefined}
+                accessibilityLabel={profile.avatarUrl ? "View full-size photo" : undefined}
+              >
+                <FriendAvatar username={profile.username} avatarUrl={profile.avatarUrl} size={AVATAR_SIZE} colors={colors} />
+              </TouchableOpacity>
               {/* Full value, never clipped — may wrap to a second line for a long username. */}
               <Text style={[styles.name, { color: colors.text }]}>{profile.username || "User"}</Text>
               <Text style={[styles.username, { color: colors.secondaryText }]}>@{profile.username || "user"}</Text>
@@ -156,6 +178,12 @@ export default function UserCardSheet({ uid, onClose, colors }: Props) {
                   <Text style={[styles.statusBadgeText, { color: colors.secondaryText }]}>This is you</Text>
                 </View>
               )}
+
+              {profile.personalityTypeName ? (
+                <View style={{ marginTop: 8 }}>
+                  <PersonalityBadge personalityTypeName={profile.personalityTypeName} colors={colors} />
+                </View>
+              ) : null}
 
               <View style={styles.metaRow}>
                 {profile.city ? (
@@ -187,6 +215,30 @@ export default function UserCardSheet({ uid, onClose, colors }: Props) {
                   {profile.hobbies.map((tag) => (
                     <TagChip key={tag} label={tag} textColor="#fff" backgroundColor={colors.primary} />
                   ))}
+                </View>
+              </View>
+            )}
+
+            {profile.featuredAchievementIds.length > 0 && (
+              <View style={styles.section}>
+                <Text style={[styles.sectionLabel, { color: colors.secondaryText }]}>Achievements</Text>
+                <View style={styles.achievementRow}>
+                  {profile.featuredAchievementIds.map((id) => {
+                    const def = achievementDefById(id);
+                    if (!def) return null;
+                    return (
+                      <TouchableOpacity
+                        key={id}
+                        onPress={() => setOpenAchievementId(id)}
+                        style={[styles.achievementChip, { backgroundColor: colors.primary }]}
+                        accessibilityRole="button"
+                        accessibilityLabel={`${def.title} — view details`}
+                      >
+                        <Ionicons name={def.icon as any} size={20} color="#fff" />
+                        <Text style={styles.achievementChipText} numberOfLines={1}>{def.title}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
                 </View>
               </View>
             )}
@@ -258,6 +310,27 @@ export default function UserCardSheet({ uid, onClose, colors }: Props) {
         onConfirm={handleConfirmRemove}
         onCancel={() => setRemoveConfirmVisible(false)}
       />
+
+      {/* Full-size photo preview — plain centered image, tap anywhere to
+          dismiss. Not a full lightbox (no pinch-zoom/pan) — this is a quick
+          "see it bigger" preview, not a photo gallery. */}
+      <Modal visible={avatarPreviewVisible} transparent animationType="fade" onRequestClose={() => setAvatarPreviewVisible(false)}>
+        <Pressable style={styles.avatarPreviewBackdrop} onPress={() => setAvatarPreviewVisible(false)} accessibilityLabel="Close photo preview">
+          {profile?.avatarUrl ? (
+            <Image source={{ uri: profile.avatarUrl }} style={styles.avatarPreviewImage} resizeMode="cover" />
+          ) : null}
+        </Pressable>
+      </Modal>
+
+      <AchievementDetailSheet
+        achievementId={openAchievementId}
+        onClose={() => setOpenAchievementId(null)}
+        colors={colors}
+        unlockedAchievements={
+          openAchievementId ? [{ id: openAchievementId, title: "", description: "", icon: "", earnedAt: "" }] : []
+        }
+        currentStats={{ totalSessions: 0, totalMinutes: 0, currentStreak: 0 }}
+      />
     </>
   );
 }
@@ -269,7 +342,7 @@ const styles = StyleSheet.create({
   header: { alignItems: "center", gap: 4, marginBottom: 14, paddingHorizontal: 8 },
   // No maxWidth/numberOfLines here — the full username must always be
   // visible; it wraps to a second line instead of being clipped.
-  name: { fontSize: 20, fontWeight: "800", textAlign: "center", marginTop: 8 },
+  name: { fontSize: 20, fontWeight: "800", textAlign: "center", marginTop: 10 },
   username: { fontSize: 14, textAlign: "center" },
   statusBadge: {
     flexDirection: "row",
@@ -289,8 +362,13 @@ const styles = StyleSheet.create({
   sectionLabel: { fontSize: 12, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 8 },
   bio: { fontSize: 14, lineHeight: 20 },
   tagWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  achievementRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  achievementChip: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 14, maxWidth: "100%" },
+  achievementChipText: { color: "#fff", fontSize: 13, fontWeight: "700", flexShrink: 1 },
   actionError: { fontSize: 12, textAlign: "center", marginBottom: 8 },
   primaryAction: { flexDirection: "row", paddingVertical: 14, borderRadius: 14, alignItems: "center", justifyContent: "center" },
   removeAction: { flexDirection: "row", alignItems: "center", justifyContent: "center", paddingVertical: 10, marginTop: 2 },
   removeActionText: { fontSize: 13, fontWeight: "600" },
+  avatarPreviewBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.9)", alignItems: "center", justifyContent: "center" },
+  avatarPreviewImage: { width: "88%", aspectRatio: 1, borderRadius: 16 },
 });

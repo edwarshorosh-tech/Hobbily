@@ -3,29 +3,14 @@
  * Tracks streaks, total sessions, total practice minutes, and achievements.
  * All data persisted to Firestore at progress/{uid}.
  */
-import { createContext, useContext, useState, useEffect, useCallback, useMemo } from "react";
+import { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { doc, getDoc, serverTimestamp, setDoc, writeBatch } from "firebase/firestore";
 import { Achievement, ProgressState } from "../types/Progress";
+import { ACHIEVEMENT_DEFS } from "../constants/achievements";
 import { useAuth } from "./AuthContext";
 import { db } from "../lib/firebase";
 import { buildNotificationPayload, notificationsCollection } from "../services/notificationsService";
 import { addDaysISO, localDateISO, startOfWeekISO } from "../utils/dateUtils";
-
-// ── Achievement definitions ───────────────────────────────────────────────────
-
-type AchievementDef = Omit<Achievement, "earnedAt"> & {
-  check: (state: ProgressState & { currentStreak: number }) => boolean;
-};
-
-const ACHIEVEMENT_DEFS: AchievementDef[] = [
-  { id: "first_session",  title: "First Step",   description: "Complete your first session",    icon: "footsteps-outline", check: (s) => s.totalSessions >= 1 },
-  { id: "streak_3",       title: "3-Day Streak", description: "Practice 3 days in a row",       icon: "flame-outline",     check: (s) => s.currentStreak >= 3 },
-  { id: "streak_7",       title: "Week Warrior", description: "7-day streak!",                  icon: "trophy-outline",    check: (s) => s.currentStreak >= 7 },
-  { id: "sessions_10",    title: "Dedicated",    description: "Complete 10 sessions",           icon: "star-outline",      check: (s) => s.totalSessions >= 10 },
-  { id: "minutes_300",    title: "Five Hours",   description: "5+ hours of practice total",     icon: "time-outline",      check: (s) => s.totalMinutes >= 300 },
-  { id: "streak_30",      title: "Month Master", description: "30-day streak!",                 icon: "medal-outline",     check: (s) => s.currentStreak >= 30 },
-  { id: "sessions_50",    title: "Committed",    description: "Complete 50 sessions",           icon: "ribbon-outline",    check: (s) => s.totalSessions >= 50 },
-];
 
 // ── Streak computation ────────────────────────────────────────────────────────
 // Local-calendar-day based (see utils/dateUtils.ts) — never UTC-shifted, so an
@@ -78,6 +63,9 @@ type ProgressContextType = {
   loadError: string | null;
   recordSession: (minutes: number) => Promise<void>;
   useStreakFreeze: () => Promise<void>;
+  /** Achievements unlocked since this provider mounted (not on cold-start load) — drives a one-time celebration toast. Consume via clearJustUnlocked(). */
+  justUnlocked: Achievement[];
+  clearJustUnlocked: () => void;
 };
 
 const ProgressContext = createContext<ProgressContextType | undefined>(undefined);
@@ -100,6 +88,8 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
   const [freezeUsedDate, setFreezeUsedDate] = useState<string | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [justUnlocked, setJustUnlocked] = useState<Achievement[]>([]);
+  const reconciledRef = useRef(false);
 
   useEffect(() => {
     if (!isAuthLoaded || !user) {
@@ -107,11 +97,13 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
       setFreezeUsedDate(null);
       setIsLoaded(!!isAuthLoaded);
       setLoadError(null);
+      reconciledRef.current = false;
       return;
     }
     let cancelled = false;
     setIsLoaded(false);
     setLoadError(null);
+    reconciledRef.current = false;
     (async () => {
       try {
         const snap = await getDoc(doc(db, "progress", user.uid));
@@ -145,12 +137,21 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
   async function persist(newState: ProgressState, newFreeze: string | null, newlyEarned: Achievement[] = []) {
     setState(newState);
     setFreezeUsedDate(newFreeze);
+    if (newlyEarned.length > 0) setJustUnlocked((prev) => [...prev, ...newlyEarned]);
     if (!user) return;
 
     const batch = writeBatch(db);
     batch.set(
       doc(db, "progress", user.uid),
-      { state: newState, freezeUsedDate: newFreeze },
+      {
+        // achievementIds mirrors achievements' ids as a flat string list —
+        // Firestore security rules can't easily project ".id" out of a list
+        // of maps, so this flat mirror is what lets firestore.rules verify a
+        // publicProfiles.featuredAchievementIds selection is actually a
+        // subset of what this user has really unlocked.
+        state: { ...newState, achievementIds: newState.achievements.map((a) => a.id) },
+        freezeUsedDate: newFreeze,
+      },
       { merge: true }
     );
     newlyEarned.forEach((achievement) => {
@@ -209,6 +210,30 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
     return newOnes;
   }
 
+  // Reconciliation: recordSession() re-checks every achievement def, not just
+  // the one that changed, so a user who crosses several thresholds in one
+  // session already gets all of them at once. The gap that leaves is anyone
+  // who qualifies *without* a new recordSession call happening — e.g. a
+  // streak achievement whose window advanced purely by calendar time, or an
+  // achievement def that didn't exist yet when they first crossed its
+  // threshold. Running the same check once per load (against the freshly
+  // loaded state, not tied to any user action) closes that gap without a
+  // database scan — it's a single doc this user already owns.
+  useEffect(() => {
+    if (!isLoaded || !user || reconciledRef.current) return;
+    reconciledRef.current = true;
+    const newlyEarned = checkAchievements(state, currentStreak);
+    const updatedAchievements = newlyEarned.length > 0 ? [...state.achievements, ...newlyEarned] : state.achievements;
+    // Always re-persists (even with zero newly-earned) so state.achievementIds
+    // — the flat mirror firestore.rules uses to verify featuredAchievementIds
+    // — gets backfilled for every existing account on their first load after
+    // this field was introduced, not only for users who unlock something new.
+    persist({ ...state, achievements: updatedAchievements }, freezeUsedDate, newlyEarned).catch((e) => {
+      if (__DEV__) console.warn("[ProgressContext] achievement reconciliation failed", e);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoaded, user]);
+
   const recordSession = useCallback(async (minutes: number) => {
     const today = todayISO();
     const newDays = state.streakDays.includes(today)
@@ -248,6 +273,8 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
     await persist(updated, todayISO());
   }, [state]);
 
+  const clearJustUnlocked = useCallback(() => setJustUnlocked([]), []);
+
   const value = useMemo(
     () => ({
       currentStreak,
@@ -261,6 +288,8 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
       loadError,
       recordSession,
       useStreakFreeze,
+      justUnlocked,
+      clearJustUnlocked,
     }),
     [
       currentStreak,
@@ -268,6 +297,8 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
       state.totalSessions,
       state.totalMinutes,
       state.achievements,
+      justUnlocked,
+      clearJustUnlocked,
       state.streakFreezeAvailable,
       recentActivity,
       isLoaded,
