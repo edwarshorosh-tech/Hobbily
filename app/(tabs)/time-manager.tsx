@@ -25,19 +25,21 @@ import SwipeableTab from "../../components/SwipeableTab";
 import PracticeTimerModal from "../../components/PracticeTimerModal";
 import BottomSheet from "../../components/BottomSheet";
 import TimeWheelPicker from "../../components/time-picker/TimeWheelPicker";
-import DurationSlider from "../../components/duration-slider/DurationSlider";
 import ConfirmModal from "../../components/ConfirmModal";
 import { Task } from "../../types/Task";
 import { addDaysISO, localDateISO, parseLocalISO, startOfWeekISO } from "../../utils/dateUtils";
 import {
   NormalizedTime,
   computeDefaultStart,
+  formatTime12h,
   formatTimeLabel,
   formatTimeString,
+  minutesToNormalizedTime,
+  normalizedTimeToMinutes,
   parseTimeString,
   timeStringToMinutes,
 } from "../../utils/time";
-import { DEFAULT_DURATION_MINUTES, isValidDurationMinutes } from "../../utils/duration";
+import { DEFAULT_DURATION_MINUTES, formatDuration } from "../../utils/duration";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 // All date math below is local-calendar-day based (utils/dateUtils.ts) and
@@ -81,6 +83,15 @@ type TaskRowProps = {
 function TaskRow({ task, colors, onToggle, onEdit, onDelete }: TaskRowProps) {
   const isHobby = task.type === "hobby";
   const timeResult = formatTimeLabel(task.time, { taskId: task.id });
+  // Shown as a "start – end" range (e.g. "11:20 AM – 12:00 PM") rather than
+  // start time + a separate duration figure. Falls back to just the start
+  // label (including its "Time not set" fallback) when there's no valid
+  // start to compute an end from.
+  const startMinutes = timeStringToMinutes(task.time);
+  const endTime = startMinutes !== null
+    ? minutesToNormalizedTime(Math.min(LAST_MINUTE_OF_DAY, startMinutes + task.duration))
+    : null;
+  const timeRangeLabel = timeResult.ok && endTime ? `${timeResult.label} – ${formatTime12h(endTime)}` : timeResult.label;
   return (
     <View
       style={[
@@ -140,11 +151,7 @@ function TaskRow({ task, colors, onToggle, onEdit, onDelete }: TaskRowProps) {
           </View>
           <Ionicons name="time-outline" size={12} color={colors.secondaryText} style={{ marginRight: 2 }} />
           <Text style={[styles.taskTime, { color: timeResult.ok ? colors.secondaryText : colors.danger }]}>
-            {timeResult.label}
-          </Text>
-          <Text style={[styles.taskDot, { color: colors.secondaryText }]}>·</Text>
-          <Text style={[styles.taskDuration, { color: colors.secondaryText }]}>
-            {task.duration} min
+            {timeRangeLabel}
           </Text>
         </View>
       </View>
@@ -398,8 +405,17 @@ type TaskFormSnapshot = {
   type: "task" | "hobby";
   date: string;
   time: NormalizedTime;
-  duration: number;
+  endTime: NormalizedTime;
 };
+
+/** End-of-day clock, one minute before midnight — a same-day activity can never extend past this. */
+const LAST_MINUTE_OF_DAY = 23 * 60 + 59;
+
+/** Start + a duration, clamped to the same calendar day (activities never span midnight here). */
+function deriveEndTime(start: NormalizedTime, durationMinutes: number): NormalizedTime {
+  const endMinutes = Math.min(LAST_MINUTE_OF_DAY, normalizedTimeToMinutes(start) + durationMinutes);
+  return minutesToNormalizedTime(endMinutes) ?? start;
+}
 
 /**
  * The default start date+time for a brand-new activity: "now + 1 minute",
@@ -416,7 +432,7 @@ function buildDefaultSnapshot(defaultDate: string): TaskFormSnapshot {
   const computed = computeDefaultStart();
   const date = defaultDate === todayISO() ? computed.date : defaultDate;
   const time = parseTimeString(computed.time) ?? { hour: 9, minute: 0 };
-  return { title: "", type: "task", date, time, duration: DEFAULT_DURATION_MINUTES };
+  return { title: "", type: "task", date, time, endTime: deriveEndTime(time, DEFAULT_DURATION_MINUTES) };
 }
 
 function snapshotFromTask(task: Task): TaskFormSnapshot {
@@ -425,7 +441,7 @@ function snapshotFromTask(task: Task): TaskFormSnapshot {
   // also how editing naturally repairs a malformed legacy record going
   // forward, since the save path can only ever write a validated time.
   const time = parseTimeString(task.time) ?? { hour: 9, minute: 0 };
-  return { title: task.title, type: task.type, date: task.date, time, duration: task.duration };
+  return { title: task.title, type: task.type, date: task.date, time, endTime: deriveEndTime(time, task.duration) };
 }
 
 function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, editingTask, taskCounts, onDateCommitted }: TaskModalProps) {
@@ -435,13 +451,15 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
   const [type, setType] = useState<"task" | "hobby">("task");
   const [date, setDate] = useState(defaultDate);
   const [time, setTime] = useState<NormalizedTime>({ hour: 9, minute: 0 });
-  const [duration, setDuration] = useState(DEFAULT_DURATION_MINUTES);
+  const [endTime, setEndTime] = useState<NormalizedTime>({ hour: 9, minute: 30 });
   const [conflict, setConflict] = useState<Task | null>(null);
   const [pastError, setPastError] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [discardConfirmVisible, setDiscardConfirmVisible] = useState(false);
   const [datePickerOpen, setDatePickerOpen] = useState(false);
+  const [startPickerOpen, setStartPickerOpen] = useState(false);
+  const [endPickerOpen, setEndPickerOpen] = useState(false);
   const titleInputRef = useRef<TextInput>(null);
   const initialSnapshot = useRef<TaskFormSnapshot | null>(null);
 
@@ -449,6 +467,10 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
   // Pure, re-derived every render — never cached in state — so it can never
   // go stale or need its own reset/sync logic (see isDateTimeInPast).
   const isPastSelection = isPastDateTime(date, timeString);
+  // Duration is never its own state — it's always start/end re-derived, so
+  // the two wheels can never disagree with what actually gets saved.
+  const duration = normalizedTimeToMinutes(endTime) - normalizedTimeToMinutes(time);
+  const isEndBeforeOrEqualStart = duration <= 0;
 
   // isPastSelection is only ever recomputed when this component re-renders.
   // Without this, a value that was valid when the sheet opened would stay
@@ -473,13 +495,15 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
     setType(snapshot.type);
     setDate(snapshot.date);
     setTime(snapshot.time);
-    setDuration(snapshot.duration);
+    setEndTime(snapshot.endTime);
     setConflict(null);
     setPastError(false);
     setSaveError(null);
     setSaving(false);
     setDiscardConfirmVisible(false);
     setDatePickerOpen(false);
+    setStartPickerOpen(false);
+    setEndPickerOpen(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, editingTask?.id]);
 
@@ -490,7 +514,8 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
       date !== initialSnapshot.current.date ||
       time.hour !== initialSnapshot.current.time.hour ||
       time.minute !== initialSnapshot.current.time.minute ||
-      duration !== initialSnapshot.current.duration);
+      endTime.hour !== initialSnapshot.current.endTime.hour ||
+      endTime.minute !== initialSnapshot.current.endTime.minute);
 
   /** Every dismissal path (Cancel, close icon, backdrop, swipe, Escape, Android back) funnels through here so unsaved input is never discarded silently. */
   function requestClose() {
@@ -512,7 +537,7 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
       titleInputRef.current?.focus();
       return;
     }
-    if (isPastSelection || !isValidDurationMinutes(duration)) return;
+    if (isPastSelection || isEndBeforeOrEqualStart) return;
 
     setSaving(true);
     setConflict(null);
@@ -652,27 +677,72 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
             </View>
           )}
 
-          {/* Time — structured wheel picker only; no free-text entry, so an
-              impossible time (12:66, 90:00, 24:00) can never be selected. */}
-          <Text style={[styles.fieldLabel, { color: colors.secondaryText, marginTop: 10 }]}>Time</Text>
-          <View style={[styles.wheelWrapOuter, { borderColor: (conflict || pastError || isPastSelection) ? colors.danger : colors.border }]}>
-            <TimeWheelPicker
-              value={time}
-              onChange={(next) => { setTime(next); setConflict(null); setPastError(false); }}
-              colors={colors}
-              disabled={saving}
-            />
-          </View>
+          {/* Start/End time — collapsed to a tappable row by default (like Date
+              above) and only mounts the wheel picker while actually expanded.
+              Keeping both wheels permanently mounted (six live ScrollViews)
+              was what made this sheet feel laggy; collapsed, only one wheel
+              is ever animating at a time. No free-text entry either way, so
+              an impossible time (12:66, 90:00, 24:00) can never be selected.
+              Duration is always re-derived from the two, never its own input. */}
+          <Text style={[styles.fieldLabel, { color: colors.secondaryText, marginTop: 10 }]}>Start Time</Text>
+          <TouchableOpacity
+            onPress={() => setStartPickerOpen((v) => !v)}
+            disabled={saving}
+            style={[
+              styles.modalInput,
+              styles.dateDisplay,
+              { backgroundColor: colors.inputBackground, borderColor: startPickerOpen ? colors.primary : (conflict || pastError || isPastSelection) ? colors.danger : colors.border },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={`Start time, ${formatTime12h(time)}. Double tap to change.`}
+            accessibilityState={{ expanded: startPickerOpen }}
+          >
+            <Ionicons name="time-outline" size={16} color={colors.secondaryText} style={{ marginRight: 8 }} />
+            <Text style={{ color: colors.text, fontSize: 15, fontWeight: "600", flex: 1 }}>{formatTime12h(time)}</Text>
+            <Ionicons name={startPickerOpen ? "chevron-up" : "chevron-down"} size={16} color={colors.secondaryText} />
+          </TouchableOpacity>
+          {startPickerOpen && (
+            <View style={styles.inlineDatePicker}>
+              <TimeWheelPicker
+                value={time}
+                onChange={(next) => { setTime(next); setConflict(null); setPastError(false); }}
+                colors={colors}
+                disabled={saving}
+              />
+            </View>
+          )}
 
-          {/* Duration — one slider, no competing text field or preset buttons. */}
-          <View style={{ marginTop: 14 }}>
-            <DurationSlider
-              value={duration}
-              onChange={(next) => { setDuration(next); setConflict(null); }}
-              colors={colors}
-              disabled={saving}
-            />
-          </View>
+          <Text style={[styles.fieldLabel, { color: colors.secondaryText, marginTop: 14 }]}>End Time</Text>
+          <TouchableOpacity
+            onPress={() => setEndPickerOpen((v) => !v)}
+            disabled={saving}
+            style={[
+              styles.modalInput,
+              styles.dateDisplay,
+              { backgroundColor: colors.inputBackground, borderColor: endPickerOpen ? colors.primary : (conflict || isEndBeforeOrEqualStart) ? colors.danger : colors.border },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={`End time, ${formatTime12h(endTime)}. Double tap to change.`}
+            accessibilityState={{ expanded: endPickerOpen }}
+          >
+            <Ionicons name="time-outline" size={16} color={colors.secondaryText} style={{ marginRight: 8 }} />
+            <Text style={{ color: colors.text, fontSize: 15, fontWeight: "600", flex: 1 }}>{formatTime12h(endTime)}</Text>
+            <Ionicons name={endPickerOpen ? "chevron-up" : "chevron-down"} size={16} color={colors.secondaryText} />
+          </TouchableOpacity>
+          {endPickerOpen && (
+            <View style={styles.inlineDatePicker}>
+              <TimeWheelPicker
+                value={endTime}
+                onChange={(next) => { setEndTime(next); setConflict(null); }}
+                colors={colors}
+                disabled={saving}
+              />
+            </View>
+          )}
+
+          <Text style={[styles.fieldLabel, { color: isEndBeforeOrEqualStart ? colors.danger : colors.secondaryText, marginTop: 6 }]}>
+            {isEndBeforeOrEqualStart ? "End time must be after start time." : `Duration: ${formatDuration(duration)}`}
+          </Text>
 
           {/* Past-time warning — includes a one-tap fix so recovering from an
               invalid past time never depends on precisely re-dragging the
@@ -691,8 +761,13 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
               <TouchableOpacity
                 onPress={() => {
                   const next = computeDefaultStart();
+                  const nextTime = parseTimeString(next.time) ?? { hour: 9, minute: 0 };
                   setDate(next.date);
-                  setTime(parseTimeString(next.time) ?? { hour: 9, minute: 0 });
+                  setTime(nextTime);
+                  // Keep whatever duration was already dialed in rather than
+                  // resetting it — only fall back to the default when the
+                  // current end time wasn't even valid to begin with.
+                  setEndTime(deriveEndTime(nextTime, duration > 0 ? duration : DEFAULT_DURATION_MINUTES));
                   setPastError(false);
                   setConflict(null);
                 }}
@@ -742,8 +817,8 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
             </TouchableOpacity>
             <TouchableOpacity
               onPress={handleSave}
-              style={[styles.modalSaveBtn, { backgroundColor: colors.primary }, (!title.trim() || saving || isPastSelection) && { opacity: 0.4 }]}
-              disabled={!title.trim() || saving || isPastSelection}
+              style={[styles.modalSaveBtn, { backgroundColor: colors.primary }, (!title.trim() || saving || isPastSelection || isEndBeforeOrEqualStart) && { opacity: 0.4 }]}
+              disabled={!title.trim() || saving || isPastSelection || isEndBeforeOrEqualStart}
               accessibilityRole="button"
               accessibilityLabel={isEdit ? "Save changes" : "Add activity"}
             >
@@ -1074,8 +1149,6 @@ const styles = StyleSheet.create({
   typeBadge: { flexDirection: "row", alignItems: "center", paddingHorizontal: 7, paddingVertical: 2, borderRadius: 8 },
   typeBadgeText: { fontSize: 11, fontWeight: "700" },
   taskTime: { fontSize: 12 },
-  taskDot: { fontSize: 12 },
-  taskDuration: { fontSize: 12 },
   taskActions: { flexDirection: "row", alignItems: "center", paddingRight: 8 },
   actionBtn: { padding: 8 },
   emptyCard: {
@@ -1176,7 +1249,6 @@ const styles = StyleSheet.create({
   },
   dateDisplay: { flexDirection: "row", alignItems: "center" },
   inlineDatePicker: { marginTop: 10 },
-  wheelWrapOuter: { borderWidth: 1, borderRadius: 14, paddingVertical: 8 },
   conflictWarning: {
     padding: 12,
     borderRadius: 12,

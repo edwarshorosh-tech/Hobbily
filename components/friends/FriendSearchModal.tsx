@@ -21,7 +21,10 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { ColorTokens } from "../../context/ThemeContext";
 import { friendlyMessage, FriendRequestViewModel, useFriends } from "../../context/FriendsContext";
-import { FriendRelationshipStatus, FriendSearchResult } from "../../services/friendsService";
+import { useAuth } from "../../context/AuthContext";
+import { useProfile } from "../../context/ProfileContext";
+import { FriendRelationshipStatus, FriendSearchResult, fetchFriendRecommendations } from "../../services/friendsService";
+import { PublicProfile } from "../../types/PublicProfile";
 import BottomSheet from "../BottomSheet";
 import FriendAvatar from "./FriendAvatar";
 import UserCardSheet from "../user-card/UserCardSheet";
@@ -170,6 +173,153 @@ function SearchResultCard({
   );
 }
 
+// ── People you may know ──────────────────────────────────────────────────────
+// Shown under the search box only while it's empty — search takes over once
+// the user starts typing, rather than the two competing for the same space.
+
+function RecommendationRow({
+  profile,
+  colors,
+  onOpenCard,
+  onSent,
+}: {
+  profile: PublicProfile;
+  colors: ColorTokens;
+  onOpenCard: (uid: string) => void;
+  onSent: (uid: string) => void;
+}) {
+  const { sendRequest, actionState } = useFriends();
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [sent, setSent] = useState(false);
+  const sendKey = `send:${profile.uid}`;
+  const loading = actionState[sendKey] === "loading";
+
+  async function handleAdd() {
+    if (loading || sent) return;
+    setLocalError(null);
+    const res = await sendRequest(profile.uid);
+    if (res.ok) {
+      setSent(true);
+      onSent(profile.uid);
+    } else {
+      setLocalError(res.message);
+    }
+  }
+
+  return (
+    <View style={[styles.recRow, { borderColor: colors.border }]}>
+      <TouchableOpacity
+        style={styles.requestIdentity}
+        onPress={() => onOpenCard(profile.uid)}
+        accessibilityRole="button"
+        accessibilityLabel={`View ${profile.username || "User"}'s profile`}
+      >
+        <FriendAvatar username={profile.username} avatarUrl={profile.avatarUrl} size={40} colors={colors} />
+        <View style={styles.requestInfo}>
+          <Text style={[styles.requestName, { color: colors.text }]} numberOfLines={1}>
+            {profile.username || "User"}
+          </Text>
+          {profile.city ? (
+            <Text style={[styles.requestCity, { color: colors.secondaryText }]} numberOfLines={1}>
+              {profile.city}
+            </Text>
+          ) : null}
+          {profile.hobbies.length > 0 ? (
+            <Text style={[styles.recHobbies, { color: colors.secondaryText }]} numberOfLines={1}>
+              {profile.hobbies.slice(0, 3).join(" · ")}
+            </Text>
+          ) : null}
+          {localError ? <Text style={[styles.resultError, { color: colors.danger }]}>{localError}</Text> : null}
+        </View>
+      </TouchableOpacity>
+      <TouchableOpacity
+        onPress={handleAdd}
+        disabled={loading || sent}
+        style={[
+          styles.resultAction,
+          sent ? { backgroundColor: "transparent", borderWidth: 1, borderColor: colors.border } : { backgroundColor: colors.primary },
+          { minWidth: 0, paddingHorizontal: 12 },
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel={sent ? "Request sent" : `Send friend request to ${profile.username || "User"}`}
+      >
+        {loading ? (
+          <ActivityIndicator size="small" color="#fff" />
+        ) : (
+          <Text style={[styles.resultActionText, { color: sent ? colors.secondaryText : "#fff" }]}>
+            {sent ? "Sent" : "Add"}
+          </Text>
+        )}
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+function PeopleYouMayKnow({ colors, onOpenCard }: { colors: ColorTokens; onOpenCard: (uid: string) => void }) {
+  const { user } = useAuth();
+  const { profile } = useProfile();
+  const { acceptedFriends, incomingRequests, outgoingRequests } = useFriends();
+  const [recs, setRecs] = useState<PublicProfile[] | null>(null);
+  const [recError, setRecError] = useState<string | null>(null);
+  const [sentUids, setSentUids] = useState<Set<string>>(new Set());
+
+  const excludeKey = [
+    user?.uid,
+    ...acceptedFriends.map((p) => p.uid),
+    ...incomingRequests.map((r) => r.otherUid),
+    ...outgoingRequests.map((r) => r.otherUid),
+  ].sort().join(",");
+
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    const excludeUids = new Set<string>([
+      user.uid,
+      ...acceptedFriends.map((p) => p.uid),
+      ...incomingRequests.map((r) => r.otherUid),
+      ...outgoingRequests.map((r) => r.otherUid),
+    ]);
+    fetchFriendRecommendations(user.uid, excludeUids, profile.hobbies, profile.city)
+      .then((list) => { if (!cancelled) setRecs(list); })
+      .catch((e) => { if (!cancelled) setRecError(friendlyMessage(e)); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, excludeKey]);
+
+  if (!user) return null;
+  const visibleRecs = (recs ?? []).filter((p) => !sentUids.has(p.uid));
+
+  return (
+    <View style={styles.recSection}>
+      <Text style={[styles.paneSectionLabel, { color: colors.secondaryText }]}>People you may know</Text>
+      {recs === null && !recError ? (
+        <View style={styles.paneState}>
+          <ActivityIndicator size="small" color={colors.secondaryText} />
+        </View>
+      ) : recError ? (
+        <View style={styles.paneState}>
+          <Ionicons name="cloud-offline-outline" size={20} color={colors.secondaryText} />
+          <Text style={[styles.paneStateText, { color: colors.secondaryText }]}>{recError}</Text>
+        </View>
+      ) : visibleRecs.length === 0 ? (
+        <Text style={[styles.paneStateText, { color: colors.secondaryText, textAlign: "left" }]}>
+          No new people to suggest right now — check back later.
+        </Text>
+      ) : (
+        visibleRecs.map((p) => (
+          <RecommendationRow
+            key={p.uid}
+            profile={p}
+            colors={colors}
+            onOpenCard={onOpenCard}
+            onSent={(uid) => setSentUids((prev) => new Set(prev).add(uid))}
+          />
+        ))
+      )}
+    </View>
+  );
+}
+
 // ── Find Friends pane ────────────────────────────────────────────────────────
 
 function FindFriendsPane({ colors, onOpenCard }: { colors: ColorTokens; onOpenCard: (uid: string) => void }) {
@@ -267,6 +417,7 @@ function FindFriendsPane({ colors, onOpenCard }: { colors: ColorTokens; onOpenCa
       {state === "found" && result && (
         <SearchResultCard result={result} colors={colors} onResultChange={setResult} onOpenCard={onOpenCard} />
       )}
+      {state === "idle" && query.trim() === "" && <PeopleYouMayKnow colors={colors} onOpenCard={onOpenCard} />}
     </View>
   );
 }
@@ -533,6 +684,9 @@ const styles = StyleSheet.create({
   resultError: { fontSize: 11, width: "100%", marginTop: 2 },
   resultSuccess: { fontSize: 11, width: "100%", marginTop: 2, fontWeight: "600" },
 
+  recSection: { marginTop: 18 },
+  recRow: { flexDirection: "row", alignItems: "center", paddingVertical: 10, borderBottomWidth: 1 },
+  recHobbies: { fontSize: 11, marginTop: 1 },
   requestRow: { flexDirection: "row", alignItems: "center", paddingVertical: 10, borderBottomWidth: 1 },
   requestIdentity: { flexDirection: "row", alignItems: "center", flex: 1, minWidth: 0 },
   requestInfo: { flex: 1, marginLeft: 10, minWidth: 0 },

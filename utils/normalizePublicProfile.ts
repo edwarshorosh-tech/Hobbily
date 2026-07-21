@@ -29,6 +29,11 @@ export function normalizePublicProfile(uid: string, data: Record<string, unknown
     currentStreak: typeof d.currentStreak === "number" && Number.isFinite(d.currentStreak) ? d.currentStreak : 0,
     bio: typeof d.bio === "string" ? d.bio : "",
     hobbies: Array.isArray(d.hobbies) ? d.hobbies.filter((h): h is string => typeof h === "string") : [],
+    featuredAchievementIds: Array.isArray(d.featuredAchievementIds)
+      ? d.featuredAchievementIds.filter((h): h is string => typeof h === "string")
+      : [],
+    personalityTypeId: typeof d.personalityTypeId === "string" ? d.personalityTypeId : null,
+    personalityTypeName: typeof d.personalityTypeName === "string" ? d.personalityTypeName : null,
     updatedAt: (d.updatedAt as PublicProfile["updatedAt"]) ?? null,
   };
 }

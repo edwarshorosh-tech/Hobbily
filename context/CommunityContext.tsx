@@ -38,6 +38,11 @@ export const DEFAULT_CHANNELS: Channel[] = [
 
 export type JoinChannelResult = { ok: true } | { ok: false; message: string };
 
+export type SendMessagePayload =
+  | { type: "text"; text: string }
+  | { type: "image"; imageUrl: string; imageStoragePath: string; caption?: string }
+  | { type: "sticker"; stickerId: string };
+
 type CommunityContextType = {
   channels: Channel[];
   messages: Record<string, CommunityMessage[]>;
@@ -50,7 +55,7 @@ type CommunityContextType = {
   pendingChannelIds: Set<string>;
   joinChannel: (id: string) => Promise<JoinChannelResult>;
   leaveChannel: (id: string) => Promise<JoinChannelResult>;
-  sendMessage: (channelId: string, text: string) => Promise<void>;
+  sendMessage: (channelId: string, payload: SendMessagePayload) => Promise<void>;
   deleteMessage: (channelId: string, messageId: string) => Promise<void>;
 };
 
@@ -131,10 +136,15 @@ export function CommunityProvider({ children }: { children: React.ReactNode }) {
         orderBy("createdAt", "asc"),
         limit(200)
       );
+      // includeMetadataChanges + hasPendingWrites is the real "sending..."
+      // signal (Firestore's own local-write-not-yet-acked flag) — not a
+      // second, hand-rolled optimistic-message system that could drift from
+      // what's actually saved.
       channelUnsubs.current[channelId] = onSnapshot(
         q,
+        { includeMetadataChanges: true },
         (snap) => {
-          const msgs = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as CommunityMessage[];
+          const msgs = snap.docs.map((d) => ({ id: d.id, ...d.data(), pending: d.metadata.hasPendingWrites })) as CommunityMessage[];
           setMessages((prev) => ({ ...prev, [channelId]: msgs }));
         },
         (error) => {
@@ -193,15 +203,21 @@ export function CommunityProvider({ children }: { children: React.ReactNode }) {
     return withPendingGuard(id, () => persistLeave(id, user!.uid));
   }
 
-  async function sendMessage(channelId: string, text: string) {
+  async function sendMessage(channelId: string, payload: SendMessagePayload) {
     if (!user) return;
-    await addDoc(collection(db, "channels", channelId, "messages"), {
+    const base = {
       channelId,
       authorId: user.uid,
       author: profile.username || "You",
-      text,
       createdAt: new Date().toISOString(),
-    });
+    };
+    const doc =
+      payload.type === "text"
+        ? { ...base, type: "text" as const, text: payload.text }
+        : payload.type === "image"
+        ? { ...base, type: "image" as const, text: payload.caption ?? "", imageUrl: payload.imageUrl, imageStoragePath: payload.imageStoragePath }
+        : { ...base, type: "sticker" as const, text: "", stickerId: payload.stickerId };
+    await addDoc(collection(db, "channels", channelId, "messages"), doc);
     // Real-time listener updates state automatically
   }
 

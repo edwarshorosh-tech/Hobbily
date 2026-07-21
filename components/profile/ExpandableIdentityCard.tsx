@@ -18,6 +18,7 @@ import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from "
 import { Ionicons } from "@expo/vector-icons";
 import { ColorTokens } from "../../context/ThemeContext";
 import FriendAvatar from "../friends/FriendAvatar";
+import PersonalityBadge from "../PersonalityBadge";
 
 type Props = {
   username: string;
@@ -26,11 +27,13 @@ type Props = {
   bio: string;
   avatarUrl?: string | null;
   colors: ColorTokens;
+  /** Only rendered when both a result exists and the user has chosen to show it — see Settings' "Show my personality type" toggle. */
+  personalityTypeName?: string | null;
   /** Optional compact "Edit profile" action shown when expanded — switches the parent to the Settings tab. */
   onEditProfile?: () => void;
 };
 
-export default function ExpandableIdentityCard({ username, city, age, bio, avatarUrl, colors, onEditProfile }: Props) {
+export default function ExpandableIdentityCard({ username, city, age, bio, avatarUrl, colors, personalityTypeName, onEditProfile }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [contentHeight, setContentHeight] = useState(0);
   const [reduceMotion, setReduceMotion] = useState(false);
@@ -107,6 +110,9 @@ export default function ExpandableIdentityCard({ username, city, age, bio, avata
               <Ionicons name="calendar-outline" size={15} color={colors.secondaryText} />
               <Text style={[styles.metaText, { color: colors.text }]}>{age} years old</Text>
             </View>
+          ) : null}
+          {personalityTypeName ? (
+            <PersonalityBadge personalityTypeName={personalityTypeName} colors={colors} />
           ) : null}
           <Text style={[styles.bio, { color: bio ? colors.text : colors.secondaryText }]}>
             {bio || "No bio added yet."}

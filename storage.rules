@@ -1,11 +1,20 @@
 rules_version = '2';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Firebase Storage rules for user profile pictures and post photos.
-// Paths are UID-scoped (never username-scoped, since usernames can change),
-// matching services/storageService.ts:
-//   users/{uid}/avatar/{fileName} — profile picture (one per user)
-//   posts/{uid}/{fileName}        — post photos (many per user)
+// Firebase Storage rules for user profile pictures, post photos, and
+// community chat image attachments. Paths are UID-scoped (never
+// username-scoped, since usernames can change), matching
+// services/storageService.ts:
+//   users/{uid}/avatar/{fileName}         — profile picture (one per user)
+//   posts/{uid}/{fileName}                — post photos (many per user)
+//   channels/{channelId}/{uid}/{fileName} — chat image attachments
+//
+// The channels path intentionally checks the same "uploader owns this path"
+// condition as posts/avatars, not channel membership — the corresponding
+// Firestore rule for channels/{channelId}/messages doesn't check membership
+// either (any signed-in user may post a message to any channel today; see
+// firestore.rules), so this preserves that same existing trust level rather
+// than introducing a stricter, untested check for images only.
 // ─────────────────────────────────────────────────────────────────────────────
 
 service firebase.storage {
@@ -38,6 +47,23 @@ service firebase.storage {
         && request.resource.contentType.matches('image/.*');
 
       // Only the owner may remove their own post photos.
+      allow delete: if request.auth != null && request.auth.uid == uid;
+    }
+
+    match /channels/{channelId}/{uid}/{fileName} {
+      // Any signed-in user can view chat image attachments (needed to render
+      // the channel's message list).
+      allow read: if request.auth != null;
+
+      // Only the uploader may write to their own path within a channel, and
+      // only an image under 8MB (a little more headroom than avatars/post
+      // photos since chat photos aren't pre-cropped to a square).
+      allow write: if request.auth != null
+        && request.auth.uid == uid
+        && request.resource.size < 8 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+
+      // Only the uploader may remove their own attachment.
       allow delete: if request.auth != null && request.auth.uid == uid;
     }
   }

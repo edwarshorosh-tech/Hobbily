@@ -1,10 +1,10 @@
 /**
- * validation — the last line of defense before an LLM-derived result is
- * handed back to the client and written into Firestore via the existing
- * addTask() flow. Every field is re-checked against a strict shape; nothing
- * from the model is trusted as-is.
+ * validation — the last line of defense before a Gemini tool call is handed
+ * back to the client and written into Firestore via the existing addTask()
+ * flow. Every field is re-checked against a strict shape; nothing from the
+ * model is trusted as-is.
  */
-import { RawParsedActivity } from "./calendarParser";
+import { RawToolArgs } from "./prompt";
 import { WorkerError } from "./errors";
 
 export type ValidatedActivity = {
@@ -20,14 +20,7 @@ const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const MIN_DURATION = 5;
 const MAX_DURATION = 480;
 
-export function validateActivity(raw: RawParsedActivity | null, todayISO: string): ValidatedActivity {
-  if (!raw) {
-    throw new WorkerError(
-      "no_activity_found",
-      'I couldn\'t find a clear activity to schedule in that. Try including a date and time, e.g. "Soccer practice tomorrow at 6pm".'
-    );
-  }
-
+export function validateActivity(raw: RawToolArgs, todayISO: string): ValidatedActivity {
   const title = typeof raw.title === "string" ? raw.title.trim().slice(0, 100) : "";
   if (!title) {
     throw new WorkerError("invalid_result", "Couldn't determine a title for that activity.");

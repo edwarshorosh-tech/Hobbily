@@ -40,35 +40,33 @@ import FriendAvatar from "../../components/friends/FriendAvatar";
 import * as ImagePicker from "expo-image-picker";
 import { uploadAvatar, removeAvatar, avatarErrorMessage, AvatarServiceError } from "../../services/storageService";
 import { Achievement } from "../../types/Progress";
+import { ACHIEVEMENT_DEFS, AchievementDef, MAX_FEATURED_ACHIEVEMENTS } from "../../constants/achievements";
+import AchievementDetailSheet from "../../components/achievements/AchievementDetailSheet";
+import LocalitySearchInput from "../../components/LocalitySearchInput";
 import { brand } from "../../constants/colors";
 import { shouldFocusFriendsWidget } from "../../utils/profileNavigation";
 
 // Overview hobbies: how many chips to show before collapsing behind "Show all".
 const HOBBIES_PREVIEW_COUNT = 8;
 
-// ── Achievement definitions (mirrors ProgressContext) ─────────────────────────
-const ALL_ACHIEVEMENT_DEFS = [
-  { id: "first_session",  title: "First Step",     description: "Complete your first session",    icon: "footsteps-outline" },
-  { id: "streak_3",       title: "3-Day Streak",   description: "Practice 3 days in a row",       icon: "flame-outline" },
-  { id: "streak_7",       title: "Week Warrior",   description: "7-day streak!",                  icon: "trophy-outline" },
-  { id: "sessions_10",    title: "Dedicated",      description: "Complete 10 sessions",           icon: "star-outline" },
-  { id: "minutes_300",    title: "Five Hours",     description: "5+ hours of practice total",     icon: "time-outline" },
-  { id: "streak_30",      title: "Month Master",   description: "30-day streak!",                 icon: "medal-outline" },
-  { id: "sessions_50",    title: "Committed",      description: "Complete 50 sessions",           icon: "ribbon-outline" },
-];
-
 // ── AchievementTile ───────────────────────────────────────────────────────────
 function AchievementTile({
   def,
   earned,
   colors,
+  onPress,
 }: {
-  def: typeof ALL_ACHIEVEMENT_DEFS[0];
+  def: AchievementDef;
   earned: Achievement | undefined;
   colors: any;
+  onPress: () => void;
 }) {
   return (
-    <View
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.75}
+      accessibilityRole="button"
+      accessibilityLabel={`${def.title}${earned ? ", unlocked" : ", locked"} — view details`}
       style={[
         styles.achieveTile,
         {
@@ -98,7 +96,7 @@ function AchievementTile({
       {earned && (
         <Text style={styles.achieveDate}>{earned.earnedAt}</Text>
       )}
-    </View>
+    </TouchableOpacity>
   );
 }
 
@@ -372,8 +370,10 @@ type TabId = "overview" | "posts" | "badges" | "settings";
 
 export default function ProfileScreen() {
   const { colors, isDark, toggleTheme } = useTheme();
-  const { profile, saveProfile, updateAvatar } = useProfile();
-  const { achievements, currentStreak } = useProgress();
+  const { profile, saveProfile, updateAvatar, updatePersonalityVisibility } = useProfile();
+  const [personalityVisibilitySaving, setPersonalityVisibilitySaving] = useState(false);
+  const { achievements, currentStreak, totalSessions, totalMinutes } = useProgress();
+  const [selectedAchievementId, setSelectedAchievementId] = useState<string | null>(null);
   const { dailyReminderEnabled, setDailyReminderEnabled, resetDailyBanner } = useTime();
   const { signOut, deleteAccount, user } = useAuth();
   const { deletePost } = usePosts();
@@ -415,6 +415,8 @@ export default function ProfileScreen() {
   const scrollViewRef = useRef<ScrollView>(null);
   const friendsAnchorRef = useRef<View>(null);
   const pendingFocusFriendsRef = useRef(false);
+  const scrollOffsetRef = useRef(0);
+  const friendsFocusRetryRef = useRef(0);
   const [highlightFriends, setHighlightFriends] = useState(false);
   const highlightProgress = useRef(new Animated.Value(0)).current;
 
@@ -460,7 +462,7 @@ export default function ProfileScreen() {
       setAvatarUploading(true);
       // Old avatar stays on screen (avatarUrl only changes on success below)
       // — a failed upload never leaves the user with a broken image.
-      const url = await uploadAvatar(user.uid, result.assets[0].uri);
+      const url = await uploadAvatar(user.uid, result.assets[0].uri, result.assets[0].mimeType);
       try {
         await updateAvatar(url);
       } catch (e) {
@@ -529,6 +531,39 @@ export default function ProfileScreen() {
     router.setParams({ focus: undefined });
   }, [params.focus]);
 
+  // Scrolls to and highlights the Friends widget without ever calling
+  // ref.measureLayout(scrollNode, ...): under this app's New Architecture
+  // (Fabric) config, getScrollableNode()'s handle is not recognized by
+  // measureLayout as "a ref to a native component", which is exactly what
+  // threw "ref.measureLayout must be called with a ref to a native
+  // component" when Add Friends was pressed from an empty leaderboard.
+  // measureInWindow has no such relative-ref argument (it just reports a
+  // component's own on-screen position), so it doesn't hit that check —
+  // combined with the ScrollView's own on-screen position and its current
+  // scroll offset (tracked via onScroll), that's enough to compute the
+  // exact scrollTo target without any hardcoded Y.
+  function focusFriendsAnchor() {
+    // ScrollView does implement measureInWindow at runtime (it delegates to
+    // its inner native scroll view), but its TS type doesn't declare
+    // NativeMethods — hence the cast.
+    const scrollMeasurable = scrollViewRef.current as unknown as { measureInWindow?: (cb: (x: number, y: number) => void) => void } | null;
+    friendsAnchorRef.current?.measureInWindow((_ax: number, anchorPageY: number) => {
+      scrollMeasurable?.measureInWindow?.((_sx: number, scrollPageY: number) => {
+        // Both callbacks report 0 before layout has actually committed —
+        // bounded retry (not an infinite loop) instead of scrolling to a
+        // wrong/zero position.
+        if (anchorPageY === 0 && scrollPageY === 0 && friendsFocusRetryRef.current < 5) {
+          friendsFocusRetryRef.current += 1;
+          requestAnimationFrame(focusFriendsAnchor);
+          return;
+        }
+        friendsFocusRetryRef.current = 0;
+        const targetY = scrollOffsetRef.current + (anchorPageY - scrollPageY) - 12;
+        scrollViewRef.current?.scrollTo({ y: Math.max(0, targetY), animated: true });
+      });
+    });
+  }
+
   function handleFriendsAnchorLayout() {
     if (!pendingFocusFriendsRef.current) return;
     pendingFocusFriendsRef.current = false;
@@ -537,14 +572,7 @@ export default function ProfileScreen() {
     // never a hardcoded Y, since bio length/hobby count/font scale all
     // change how tall that content is.
     requestAnimationFrame(() => {
-      const scrollNode = scrollViewRef.current?.getScrollableNode?.();
-      if (scrollNode) {
-        friendsAnchorRef.current?.measureLayout(
-          scrollNode,
-          (_x: number, y: number) => scrollViewRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true }),
-          () => undefined
-        );
-      }
+      focusFriendsAnchor();
       setHighlightFriends(true);
     });
   }
@@ -639,6 +667,10 @@ export default function ProfileScreen() {
           ref={scrollViewRef}
           contentContainerStyle={{ paddingBottom: activeTab === "settings" ? 8 : 100 }}
           showsVerticalScrollIndicator={false}
+          onScroll={(e) => {
+            scrollOffsetRef.current = e.nativeEvent.contentOffset.y;
+          }}
+          scrollEventThrottle={32}
         >
           {/* Expandable identity card */}
           <ExpandableIdentityCard
@@ -648,6 +680,7 @@ export default function ProfileScreen() {
             bio={draft.bio}
             avatarUrl={profile.avatarUrl}
             colors={colors}
+            personalityTypeName={profile.showPersonalityType ? profile.personalityTypeName : null}
             onEditProfile={() => handleTabPress("settings")}
           />
 
@@ -815,13 +848,19 @@ export default function ProfileScreen() {
             <View style={{ padding: 16, paddingTop: 8 }}>
               <Text style={[styles.sectionTitle, { color: colors.text }]}>Achievements</Text>
               <Text style={[styles.sectionSub, { color: colors.secondaryText }]}>
-                {achievements.length} / {ALL_ACHIEVEMENT_DEFS.length} earned
+                {achievements.length} / {ACHIEVEMENT_DEFS.length} earned
               </Text>
               <View style={styles.achieveGrid}>
-                {ALL_ACHIEVEMENT_DEFS.map((def) => {
+                {ACHIEVEMENT_DEFS.map((def) => {
                   const earned = achievements.find((a) => a.id === def.id);
                   return (
-                    <AchievementTile key={def.id} def={def} earned={earned} colors={colors} />
+                    <AchievementTile
+                      key={def.id}
+                      def={def}
+                      earned={earned}
+                      colors={colors}
+                      onPress={() => setSelectedAchievementId(def.id)}
+                    />
                   );
                 })}
               </View>
@@ -900,14 +939,18 @@ export default function ProfileScreen() {
                   keyboardType="number-pad"
                   error={ageError}
                 />
-                <SettingsField
-                  label="City"
-                  icon="location-outline"
-                  value={draft.city}
-                  onChangeText={(city) => setDraft({ ...draft, city })}
-                  colors={colors}
-                  placeholder="e.g. Jerusalem, Ramallah, Tel Aviv"
-                />
+                <View style={styles.fieldGroup}>
+                  <View style={styles.fieldLabelRow}>
+                    <Ionicons name="location-outline" size={14} color={colors.secondaryText} />
+                    <Text style={[styles.fieldLabelText, { color: colors.secondaryText }]}>City</Text>
+                  </View>
+                  <LocalitySearchInput
+                    colors={colors}
+                    value={draft.city}
+                    onChange={(city, meta) => setDraft({ ...draft, city, localityId: meta.localityId, locationSource: meta.locationSource })}
+                    placeholder="Search your city, town, or village"
+                  />
+                </View>
 
                 <View style={[styles.fieldDivider, { backgroundColor: colors.border }]} />
 
@@ -934,6 +977,106 @@ export default function ProfileScreen() {
                   title="Hobbies"
                 />
               </View>
+
+              {/* 8.3 Featured achievements — only unlocked achievements are selectable, capped at MAX_FEATURED_ACHIEVEMENTS. Persisted via the same draft/Save Changes flow as the rest of this tab. */}
+              <View style={[styles.settingsCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                <Text style={[styles.cardTitle, { color: colors.text }]}>Featured Achievements</Text>
+                {achievements.length === 0 ? (
+                  <Text style={[styles.sectionSub, { color: colors.secondaryText, marginTop: 4 }]}>
+                    Unlock an achievement to feature it on your profile.
+                  </Text>
+                ) : (
+                  <>
+                    <Text style={[styles.sectionSub, { color: colors.secondaryText, marginTop: 4, marginBottom: 10 }]}>
+                      Pick up to {MAX_FEATURED_ACHIEVEMENTS} to highlight on your profile ({draft.featuredAchievementIds.length}/{MAX_FEATURED_ACHIEVEMENTS} selected)
+                    </Text>
+                    <View style={styles.featuredGrid}>
+                      {ACHIEVEMENT_DEFS.filter((def) => achievements.some((a) => a.id === def.id)).map((def) => {
+                        const selected = draft.featuredAchievementIds.includes(def.id);
+                        return (
+                          <TouchableOpacity
+                            key={def.id}
+                            onPress={() => {
+                              const already = draft.featuredAchievementIds.includes(def.id);
+                              if (already) {
+                                setDraft({ ...draft, featuredAchievementIds: draft.featuredAchievementIds.filter((id) => id !== def.id) });
+                              } else if (draft.featuredAchievementIds.length < MAX_FEATURED_ACHIEVEMENTS) {
+                                setDraft({ ...draft, featuredAchievementIds: [...draft.featuredAchievementIds, def.id] });
+                              }
+                            }}
+                            activeOpacity={0.75}
+                            accessibilityRole="checkbox"
+                            accessibilityState={{ checked: selected }}
+                            accessibilityLabel={def.title}
+                            style={[
+                              styles.featuredChip,
+                              {
+                                backgroundColor: selected ? colors.primary : colors.background,
+                                borderColor: selected ? colors.primary : colors.border,
+                              },
+                            ]}
+                          >
+                            <Ionicons name={def.icon as any} size={16} color={selected ? "#fff" : colors.text} />
+                            <Text style={[styles.featuredChipText, { color: selected ? "#fff" : colors.text }]} numberOfLines={1}>
+                              {def.title}
+                            </Text>
+                            {selected && <Ionicons name="checkmark" size={14} color="#fff" />}
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </>
+                )}
+              </View>
+
+              <Text style={[styles.sectionTitle, { color: colors.text, marginTop: 4 }]}>Personality Quiz</Text>
+              {profile.personalityTypeName ? (
+                <>
+                  <View style={[styles.infoCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                    <InfoRow icon="sparkles-outline" label="Your result" value={profile.personalityTypeName} colors={colors} divider={false} />
+                  </View>
+                  <ToggleRow
+                    label="Show my personality type"
+                    sublabel="Let other users see this on your profile card"
+                    value={profile.showPersonalityType}
+                    onToggle={async () => {
+                      if (personalityVisibilitySaving) return;
+                      setPersonalityVisibilitySaving(true);
+                      try {
+                        await updatePersonalityVisibility(!profile.showPersonalityType);
+                      } catch (e) {
+                        if (__DEV__) console.warn("[Profile] personality visibility toggle failed", e);
+                      } finally {
+                        setPersonalityVisibilitySaving(false);
+                      }
+                    }}
+                    colors={colors}
+                  />
+                  <TouchableOpacity
+                    style={[styles.actionRow, { backgroundColor: colors.card, borderColor: colors.border }]}
+                    onPress={() => router.push("/quiz" as any)}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="refresh-outline" size={18} color={colors.primary} />
+                    <View style={{ flex: 1, marginLeft: 10 }}>
+                      <Text style={[styles.actionRowLabel, { color: colors.text }]}>Retake the quiz</Text>
+                      <Text style={[styles.actionRowSub, { color: colors.secondaryText }]}>Get a fresh hobby archetype</Text>
+                    </View>
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <TouchableOpacity
+                  style={[styles.actionRow, { backgroundColor: colors.card, borderColor: colors.border }]}
+                  onPress={() => router.push("/quiz" as any)}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="help-circle-outline" size={18} color={colors.primary} />
+                  <View style={{ flex: 1, marginLeft: 10 }}>
+                    <Text style={[styles.actionRowLabel, { color: colors.text }]}>Take the Hidden Hobbies Quiz</Text>
+                    <Text style={[styles.actionRowSub, { color: colors.secondaryText }]}>Find your hobby archetype</Text>
+                  </View>
+                </TouchableOpacity>
+              )}
 
               <Text style={[styles.sectionTitle, { color: colors.text, marginTop: 4 }]}>Appearance</Text>
               <ToggleRow
@@ -1116,6 +1259,14 @@ export default function ProfileScreen() {
       />
 
       <UserCardSheet uid={cardUid} colors={colors} onClose={() => setCardUid(null)} />
+
+      <AchievementDetailSheet
+        achievementId={selectedAchievementId}
+        onClose={() => setSelectedAchievementId(null)}
+        colors={colors}
+        unlockedAchievements={achievements}
+        currentStats={{ totalSessions, totalMinutes, currentStreak }}
+      />
     </SwipeableTab>
   );
 }
@@ -1189,6 +1340,19 @@ const styles = StyleSheet.create({
   achieveTitle: { fontSize: 13, fontWeight: "700", textAlign: "center" },
   achieveDesc: { fontSize: 11, textAlign: "center" },
   achieveDate: { fontSize: 10, color: "rgba(255,255,255,0.6)", marginTop: 2 },
+
+  featuredGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  featuredChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    maxWidth: "100%",
+  },
+  featuredChipText: { fontSize: 13, fontWeight: "600" },
 
   // Settings — 8.1 Profile Details card
   cardTitle: { fontSize: 16, fontWeight: "800", marginBottom: 2 },

@@ -14,16 +14,20 @@
  * thread and doesn't have this weakness — it's already used successfully
  * elsewhere in this app (components/SwipeableTab.tsx).
  *
- * The gesture only drives the classic Animated.Value `dragY` (via
- * .runOnJS(true), so its callbacks are plain JS-thread functions — no
- * worklet/setGestureState concerns here, since this is a normal
- * auto-activating pan, not manual activation). Composition with
- * `sheetTranslate`/`backdropOpacity` and the open/close entrance animation
- * are untouched.
+ * The animated values are Reanimated shared values, not classic RN
+ * `Animated.Value`s, and the gesture has no `.runOnJS(true)`: every callback
+ * below (onUpdate/onEnd/onFinalize) runs as a UI-thread worklet, so dragging
+ * the handle never has to round-trip to the JS thread to move the sheet —
+ * that JS hop (the previous implementation's `.runOnJS(true)` +
+ * `Animated.Value.setValue`) was the source of the visible stutter during
+ * drag. Only the plain-JS side effect (closing the sheet, via onClose) is
+ * explicitly hopped back with runOnJS() at its call site — same pattern
+ * SwipeableTab.tsx already uses for its own gesture.
  */
 import { useEffect, useRef, useState } from "react";
-import { AccessibilityInfo, Animated, Easing, Platform } from "react-native";
+import { AccessibilityInfo, Platform } from "react-native";
 import { Gesture } from "react-native-gesture-handler";
+import { Easing, runOnJS, useSharedValue, withSpring, withTiming } from "react-native-reanimated";
 
 const OPEN_DURATION = 220;
 const CLOSE_DURATION = 180;
@@ -34,11 +38,15 @@ const CLOSE_VELOCITY_THRESHOLD = 1200;
 export function useSwipeToCloseSheet(visible: boolean, onClose: () => void) {
   const [mounted, setMounted] = useState(visible);
   const [reduceMotion, setReduceMotion] = useState(false);
-  const backdropOpacity = useRef(new Animated.Value(0)).current;
-  const sheetTranslate = useRef(new Animated.Value(28)).current;
-  const dragY = useRef(new Animated.Value(0)).current;
+  const backdropOpacity = useSharedValue(0);
+  const sheetTranslate = useSharedValue(28);
+  const dragY = useSharedValue(0);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+
+  // Stable across renders (unlike onClose itself) so the UI-thread worklets
+  // below can safely runOnJS() it without capturing a stale closure.
+  const triggerClose = useRef(() => onCloseRef.current()).current;
 
   useEffect(() => {
     AccessibilityInfo.isReduceMotionEnabled?.()
@@ -50,30 +58,30 @@ export function useSwipeToCloseSheet(visible: boolean, onClose: () => void) {
     const duration = reduceMotion ? 0 : visible ? OPEN_DURATION : CLOSE_DURATION;
     if (visible) {
       setMounted(true);
-      dragY.setValue(0);
-      Animated.parallel([
-        Animated.timing(backdropOpacity, { toValue: 1, duration, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-        Animated.timing(sheetTranslate, { toValue: 0, duration, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-      ]).start();
+      dragY.value = 0;
+      backdropOpacity.value = withTiming(1, { duration, easing: Easing.out(Easing.cubic) });
+      sheetTranslate.value = withTiming(0, { duration, easing: Easing.out(Easing.cubic) });
     } else {
-      Animated.parallel([
-        Animated.timing(backdropOpacity, { toValue: 0, duration, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
-        Animated.timing(sheetTranslate, { toValue: 28, duration, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
-      ]).start(({ finished }) => {
-        if (finished) setMounted(false);
+      backdropOpacity.value = withTiming(0, { duration, easing: Easing.in(Easing.cubic) });
+      sheetTranslate.value = withTiming(28, { duration, easing: Easing.in(Easing.cubic) }, (finished) => {
+        if (finished) runOnJS(setMounted)(false);
       });
     }
   }, [visible, reduceMotion, backdropOpacity, sheetTranslate, dragY]);
 
   function commitClose() {
-    Animated.timing(dragY, { toValue: 600, duration: 150, easing: Easing.in(Easing.cubic), useNativeDriver: true }).start(() => {
-      dragY.setValue(0);
-      onCloseRef.current();
+    "worklet";
+    dragY.value = withTiming(600, { duration: 150, easing: Easing.in(Easing.cubic) }, (finished) => {
+      if (finished) {
+        dragY.value = 0;
+        runOnJS(triggerClose)();
+      }
     });
   }
 
   function snapBack() {
-    Animated.spring(dragY, { toValue: 0, useNativeDriver: true, bounciness: 4 }).start();
+    "worklet";
+    dragY.value = withSpring(0, { damping: 18, stiffness: 260, mass: 0.4 });
   }
 
   // Only the dedicated drag-handle zone gets this gesture (see
@@ -83,12 +91,17 @@ export function useSwipeToCloseSheet(visible: boolean, onClose: () => void) {
   // is needed before the gesture takes over (so a plain tap on the handle
   // is never mistaken for a drag); translationY is clamped to >=0 in
   // onUpdate since dragging the handle *up* should do nothing.
+  //
+  // Deliberately no .runOnJS(true) here — every callback below is a
+  // UI-thread worklet (Reanimated's babel plugin compiles them), which is
+  // what makes the drag track the finger every frame without waiting on the
+  // JS thread. commitClose/snapBack are worklets themselves for the same
+  // reason; only the final onClose() call hops to JS via runOnJS().
   const dragGesture = Gesture.Pan()
     .activeOffsetY(8)
     .failOffsetX([-20, 20])
-    .runOnJS(true)
     .onUpdate((e) => {
-      if (e.translationY > 0) dragY.setValue(e.translationY);
+      if (e.translationY > 0) dragY.value = e.translationY;
     })
     .onEnd((e) => {
       if (e.translationY > CLOSE_DRAG_THRESHOLD || e.velocityY > CLOSE_VELOCITY_THRESHOLD) {

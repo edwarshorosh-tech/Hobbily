@@ -1,13 +1,12 @@
 /**
  * errors — typed Worker error, mirroring the app's existing service-error
  * pattern (FriendServiceError/AvatarServiceError: a `code` union + message).
- * `unauthenticated`/`no_activity_found`/`invalid_result` never leak internal
- * details — `message` is always safe to show the user as-is.
+ * `unauthenticated`/`invalid_result` never leak internal details —
+ * `message` is always safe to show the user as-is.
  */
 export type WorkerErrorCode =
   | "invalid_request"
   | "unauthenticated"
-  | "no_activity_found"
   | "invalid_result"
   | "service_unavailable"
   | "unknown";
@@ -15,7 +14,6 @@ export type WorkerErrorCode =
 const STATUS_BY_CODE: Record<WorkerErrorCode, number> = {
   invalid_request: 400,
   unauthenticated: 401,
-  no_activity_found: 422,
   invalid_result: 502,
   service_unavailable: 503,
   unknown: 500,

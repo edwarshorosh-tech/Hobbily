@@ -2,14 +2,11 @@
   "name": "hobbily-ai-worker",
   "version": "1.0.0",
   "private": true,
-  "description": "Cloudflare Worker: Expo AI Assistant -> Hugging Face Inference Providers -> validated activity JSON.",
+  "description": "Cloudflare Worker: Expo AI Assistant -> Gemini API (free tier) -> validated chat reply / activity JSON.",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@huggingface/inference": "^4.13.23"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260719.1",

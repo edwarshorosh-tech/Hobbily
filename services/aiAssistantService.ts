@@ -1,12 +1,16 @@
 /**
  * aiAssistantService
  * The only place the Expo client talks to the AI Assistant backend. Calls
- * the Cloudflare Worker (worker/) — never Hugging Face directly, and never
- * carries any Hugging Face token. Authenticates with the current user's
- * Firebase ID token (short-lived, already available via the Auth SDK — no
- * separate credential to manage). Callers pass the returned ParsedActivity
- * straight into the existing TimeContext.addTask() — this file does not
- * write to Firestore itself and does not define a second activity model.
+ * the Cloudflare Worker (worker/) — never Gemini directly, and never carries
+ * the Gemini API key. Authenticates with the current user's Firebase ID
+ * token (short-lived, already available via the Auth SDK — no separate
+ * credential to manage).
+ *
+ * The Worker is stateless — conversational memory lives here, as a plain
+ * array the caller resends on every turn (see sendChatMessage). Callers pass
+ * a returned "action" reply's ParsedActivity straight into the existing
+ * TimeContext.addTask() — this file does not write to Firestore itself and
+ * does not define a second activity model.
  */
 import { isAxiosError } from "axios";
 import { auth } from "../lib/firebase";
@@ -21,10 +25,16 @@ export type ParsedActivity = {
   duration: number;
 };
 
+export type ChatRole = "user" | "assistant";
+export type ChatMessage = { role: ChatRole; text: string };
+
+export type ChatReply =
+  | { kind: "message"; text: string }
+  | { kind: "action"; text: string; activity: ParsedActivity };
+
 export type AiAssistantServiceErrorCode =
   | "invalid-request"
   | "unauthenticated"
-  | "no-activity-found"
   | "invalid-result"
   | "service-unavailable"
   | "network-error"
@@ -39,22 +49,15 @@ export class AiAssistantServiceError extends Error {
   }
 }
 
-type WorkerErrorCode =
-  | "invalid_request"
-  | "unauthenticated"
-  | "no_activity_found"
-  | "invalid_result"
-  | "service_unavailable"
-  | "unknown";
+type WorkerErrorCode = "invalid_request" | "unauthenticated" | "invalid_result" | "service_unavailable" | "unknown";
 
 type WorkerResponse =
-  | { ok: true; activity: ParsedActivity }
+  | { ok: true; reply: ChatReply }
   | { ok: false; error: { code: WorkerErrorCode; message: string } };
 
 const WORKER_CODE_MAP: Record<WorkerErrorCode, AiAssistantServiceErrorCode> = {
   invalid_request: "invalid-request",
   unauthenticated: "unauthenticated",
-  no_activity_found: "no-activity-found",
   invalid_result: "invalid-result",
   service_unavailable: "service-unavailable",
   unknown: "unknown",
@@ -65,13 +68,20 @@ const WORKER_URL = process.env.EXPO_PUBLIC_AI_WORKER_URL ?? "";
 /** Lets callers check upfront (e.g. to show a persistent notice) instead of only finding out via a thrown error. */
 export const isAiAssistantConfigured = Boolean(WORKER_URL);
 
-/** User-facing copy for service error codes — never surface raw backend/HF error text. */
+/** User-facing copy for service error codes — never surface raw backend/Gemini error text. */
 export function friendlyAiAssistantMessage(e: unknown): string {
   if (e instanceof AiAssistantServiceError) return e.message;
   return "Something went wrong. Please try again.";
 }
 
-export async function parseActivityRequest(text: string): Promise<ParsedActivity> {
+/**
+ * Sends the running conversation (oldest first, ending with the newest user
+ * message) to the Worker and returns Gemini's reply — either a plain message
+ * or a confirmed "add to calendar" action with a validated activity. The
+ * Worker itself keeps no session state; this array *is* the assistant's
+ * memory, so the caller must keep appending to and resending it turn to turn.
+ */
+export async function sendChatMessage(history: ChatMessage[]): Promise<ChatReply> {
   if (!WORKER_URL) {
     throw new AiAssistantServiceError(
       "service-unavailable",
@@ -95,7 +105,7 @@ export async function parseActivityRequest(text: string): Promise<ParsedActivity
     const res = await api.post<WorkerResponse>(
       WORKER_URL,
       {
-        text,
+        messages: history,
         idToken,
         timezone: deviceTimeZone(),
         todayISO: localDateISO(),
@@ -103,7 +113,7 @@ export async function parseActivityRequest(text: string): Promise<ParsedActivity
       { timeout: 30000 }
     );
 
-    if (res.data.ok) return res.data.activity;
+    if (res.data.ok) return res.data.reply;
     throw new AiAssistantServiceError(WORKER_CODE_MAP[res.data.error.code] ?? "unknown", res.data.error.message);
   } catch (e) {
     if (e instanceof AiAssistantServiceError) throw e;

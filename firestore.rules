@@ -137,6 +137,50 @@ service cloud.firestore {
         return request.auth != null && request.auth.uid == uid;
       }
 
+      // The ids this user's own progress doc says are actually unlocked —
+      // used below so featuredAchievementIds can't claim an achievement the
+      // user hasn't earned. Guarded with exists()/'in' checks since a brand
+      // new account (or one that hasn't loaded ProgressContext's one-time
+      // reconciliation backfill yet — see ProgressContext.tsx) may have no
+      // progress doc, or one predating the achievementIds mirror field.
+      function unlockedAchievementIds() {
+        return exists(/databases/$(database)/documents/progress/$(uid))
+          && 'state' in get(/databases/$(database)/documents/progress/$(uid)).data
+          && 'achievementIds' in get(/databases/$(database)/documents/progress/$(uid)).data.state
+          ? get(/databases/$(database)/documents/progress/$(uid)).data.state.achievementIds
+          : [];
+      }
+
+      function isValidFeaturedAchievements(data) {
+        return !('featuredAchievementIds' in data)
+          || (
+            data.featuredAchievementIds is list
+            && data.featuredAchievementIds.size() <= 3
+            && data.featuredAchievementIds.toSet().difference(unlockedAchievementIds().toSet()).size() == 0
+          );
+      }
+
+      // Both keys are always written together (see services/profileService.ts)
+      // — either both null (quiz not completed, or the user has
+      // showPersonalityType off) or both a real, known result. typeId is
+      // checked against the fixed set utils/quizScoring.ts can actually
+      // produce (4 single-letter archetypes, 6 two-way hybrids, or
+      // "renaissance" for a 3+-way tie) so a client can't write an
+      // arbitrary/fabricated personality type here.
+      function isValidPersonalityType(data) {
+        return (('personalityTypeId' in data) == ('personalityTypeName' in data))
+          && (
+            !('personalityTypeId' in data)
+            || (data.personalityTypeId == null && data.personalityTypeName == null)
+            || (
+              data.personalityTypeId is string
+              && data.personalityTypeId in ['A', 'B', 'C', 'D', 'AB', 'AC', 'AD', 'BC', 'BD', 'CD', 'renaissance']
+              && data.personalityTypeName is string
+              && data.personalityTypeName.size() > 0 && data.personalityTypeName.size() <= 60
+            )
+          );
+      }
+
       function isValidPublicProfile() {
         let data = request.resource.data;
         return data.uid == uid
@@ -149,9 +193,11 @@ service cloud.firestore {
           && data.bio is string && data.bio.size() <= 300
           && data.hobbies is list && data.hobbies.size() <= 20
           && data.updatedAt == request.time
+          && isValidFeaturedAchievements(data)
+          && isValidPersonalityType(data)
           // No extra/private fields — only this exact allow-listed shape.
           && data.keys().hasOnly(
-            ['uid', 'username', 'usernameNormalized', 'city', 'avatarUrl', 'currentStreak', 'bio', 'hobbies', 'updatedAt']
+            ['uid', 'username', 'usernameNormalized', 'city', 'avatarUrl', 'currentStreak', 'bio', 'hobbies', 'featuredAchievementIds', 'personalityTypeId', 'personalityTypeName', 'updatedAt']
           );
       }
 
@@ -168,6 +214,19 @@ service cloud.firestore {
       // introducing a stricter one. A malicious client could misreport its
       // own streak here exactly as it already could in progress/{uid}; this
       // is a pre-existing limitation, not one introduced by this change.
+      //
+      // SECURITY NOTE: featuredAchievementIds IS enforced to be a subset of
+      // this same user's progress/{uid}.state.achievementIds — see
+      // isValidFeaturedAchievements() above — so it can't reference an
+      // achievement id that user's own progress doc doesn't list as
+      // unlocked. That's real protection against fabricating a *display*
+      // claim, but it's only as strong as achievements themselves are: since
+      // progress/{uid} has no server-side verification of *how* an
+      // achievement was unlocked (same limitation as currentStreak, just
+      // above), a client could still write itself an unearned achievement
+      // there first and then legitimately feature it here. Closing that
+      // would require a trusted backend (Cloud Functions) evaluating
+      // achievement conditions server-side — none exists in this project.
       allow create, update: if isOwner() && isValidPublicProfile();
 
       allow delete: if false;
@@ -425,7 +484,27 @@ service cloud.firestore {
     // publicProfiles/{uid}.currentStreak (see the note on that rule above).
     // Owner-scoped, same pattern as users/{uid} above.
     match /progress/{uid} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+      // Achievements are awarded entirely client-side (see
+      // context/ProgressContext.tsx — no Cloud Functions exist in this
+      // project to verify them server-side; see the achievement system's
+      // final report for the exact `firebase deploy` path if/when that
+      // changes). That's a real, acknowledged trust-boundary limitation —
+      // the same one already noted for publicProfiles.currentStreak below.
+      // What rules *can* enforce without a trusted backend is that the
+      // achievements list only ever grows: a client can (already) award
+      // itself an achievement it hasn't earned, but it can't use this write
+      // path to erase one it — or an earlier version of the client — did
+      // legitimately award.
+      function achievementsNotShrunk() {
+        return request.resource == null
+          || resource == null
+          || !('state' in resource.data) || !('achievements' in resource.data.state)
+          || !('state' in request.resource.data) || !('achievements' in request.resource.data.state)
+          || request.resource.data.state.achievements.size() >= resource.data.state.achievements.size();
+      }
+
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if request.auth != null && request.auth.uid == uid && achievementsNotShrunk();
     }
 
     // channels/{channelId}/messages/{messageId}: community chat. authorId
@@ -437,14 +516,38 @@ service cloud.firestore {
     match /channels/{channelId}/messages/{messageId} {
       function isSignedIn() { return request.auth != null; }
 
+      function isValidBaseFields(data) {
+        return data.authorId == request.auth.uid
+          && data.channelId == channelId
+          && data.author is string && data.author.size() > 0
+          && data.createdAt is string
+          && data.text is string && data.text.size() <= 2000;
+      }
+
+      // type is a new field — absent entirely on messages sent before this
+      // pass, which are always plain text. New messages always set it
+      // explicitly to one of "text"/"image"/"sticker".
+      function isValidMessageByType(data) {
+        return (
+          (!('type' in data) || data.type == 'text') && data.text.size() > 0
+        ) || (
+          data.type == 'image'
+          && data.imageUrl is string && data.imageUrl.size() > 0 && data.imageUrl.size() <= 1000
+          && data.imageStoragePath is string && data.imageStoragePath.size() > 0
+        ) || (
+          data.type == 'sticker'
+          && data.stickerId is string && data.stickerId.size() > 0 && data.stickerId.size() <= 40
+        );
+      }
+
       allow read: if isSignedIn();
 
       allow create: if isSignedIn()
-        && request.resource.data.authorId == request.auth.uid
-        && request.resource.data.channelId == channelId
-        && request.resource.data.author is string && request.resource.data.author.size() > 0
-        && request.resource.data.text is string && request.resource.data.text.size() > 0 && request.resource.data.text.size() <= 2000
-        && request.resource.data.createdAt is string;
+        && isValidBaseFields(request.resource.data)
+        && isValidMessageByType(request.resource.data)
+        && request.resource.data.keys().hasOnly(
+          ['channelId', 'authorId', 'author', 'text', 'createdAt', 'type', 'imageUrl', 'imageStoragePath', 'stickerId']
+        );
 
       // Only the sender may delete their own message; legacy messages with
       // no authorId can't be deleted by anyone through this rule (client UI

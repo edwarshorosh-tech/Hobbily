@@ -14,16 +14,21 @@ import { useTime, TaskSaveResult } from "../../context/TimeContext";
 import { useProgress } from "../../context/ProgressContext";
 import SwipeableTab from "../../components/SwipeableTab";
 import TipBanner, { TIP_KEYS } from "../../components/TipBanner";
-import { interpretMessage, formatShortDate, formatTimeAMPM } from "../../services/aiService";
 import FriendsLeaderboard from "../../components/home/FriendsLeaderboard";
 import NotificationBell from "../../components/notifications/NotificationBell";
 import StreakInfoModal from "../../components/home/StreakInfoModal";
 import StreakButton from "../../components/home/StreakButton";
-import { useState } from "react";
-import { localDateISO } from "../../utils/dateUtils";
-import { formatTimeLabel, timeStringToMinutes } from "../../utils/time";
+import { useRef, useState } from "react";
+import { localDateISO, parseLocalISO } from "../../utils/dateUtils";
+import { formatTime12h, formatTimeLabel, minutesToNormalizedTime, timeStringToMinutes } from "../../utils/time";
 import { Task } from "../../types/Task";
-import { AiAssistantServiceError, friendlyAiAssistantMessage, isAiAssistantConfigured, parseActivityRequest } from "../../services/aiAssistantService";
+import {
+  AiAssistantServiceError,
+  ChatMessage,
+  friendlyAiAssistantMessage,
+  isAiAssistantConfigured,
+  sendChatMessage,
+} from "../../services/aiAssistantService";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -35,155 +40,90 @@ function greeting(name: string): string {
   return `Good ${part}, ${name || "there"}!`;
 }
 
+/** "Jul 22" — short enough for an inline confirmation bubble. */
+function formatShortDate(dateISO: string): string {
+  return parseLocalISO(dateISO).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 // ── AI Assistant ─────────────────────────────────────────────────────────────
-// Free-time questions and exam mentions are answered locally (services/aiService.ts).
-// Plain scheduling requests are parsed server-side (worker/ -> Hugging Face
-// Inference Providers -> validated JSON) — see services/aiAssistantService.ts.
-// Either way the parsed activity is created through the exact same addTask()
-// used by the manual Add Activity flow; no second activity model, no direct
-// Firestore write here.
+// A real back-and-forth conversation with server-side memory: every turn
+// resends the transcript to the Worker (worker/ -> Gemini API free tier),
+// which can either just reply, or call its one tool to schedule something —
+// see services/aiAssistantService.ts. Whenever it does, the returned
+// activity is created through the exact same addTask() used by the manual
+// Add Activity flow; no second activity model, no direct Firestore write here.
+
+/** One bubble in the on-screen thread. `isError` bubbles are shown but never resent to Gemini as conversation history — they're a local failure notice, not something the assistant said. */
+type DisplayMessage = { id: number; role: ChatRole; text: string; isError?: boolean };
+type ChatRole = "user" | "assistant";
 
 function AIAssistantCard({
   colors,
   addTask,
-  tasks,
 }: {
   colors: any;
   addTask: (task: Omit<Task, "id" | "createdAt">) => Promise<TaskSaveResult>;
-  tasks: Task[];
 }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [feedback, setFeedback] = useState<{ ok: boolean; message: string } | null>(null);
+  const [messages, setMessages] = useState<DisplayMessage[]>([]);
+  const nextId = useRef(0);
+  const scrollRef = useRef<ScrollView>(null);
+
+  function pushMessage(role: ChatRole, text: string, isError = false) {
+    nextId.current += 1;
+    setMessages((prev) => [...prev, { id: nextId.current, role, text, isError }]);
+  }
 
   async function handleSend() {
     const text = input.trim();
     if (!text || loading) return;
+    setInput("");
     setLoading(true);
-    setFeedback(null);
+    pushMessage("user", text);
 
-    // Free-time questions and exam mentions are handled locally (the backend
-    // parser only understands single-activity scheduling) — everything else
-    // goes to the real AI backend.
-    const action = interpretMessage(text, tasks, todayISO());
-
-    if (action.kind === "free_info") {
-      setFeedback({ ok: true, message: action.message });
-      setInput("");
-      setLoading(false);
-      return;
-    }
-
-    if (action.kind === "exam") {
-      try {
-        const examResult = await addTask({
-          title: action.label,
-          type: "task",
-          date: action.date,
-          time: action.time,
-          duration: 60,
-          completed: false,
-        });
-        if (!examResult.ok) {
-          setFeedback({
-            ok: false,
-            message:
-              examResult.reason === "conflict"
-                ? `That overlaps with "${examResult.conflict.title}" at ${examResult.conflict.time} — try a different time for your ${action.label.toLowerCase()}.`
-                : "That date/time is in the past — double-check it.",
-          });
-          return;
-        }
-
-        let studyAdded = 0;
-        const studyDates: string[] = [];
-        for (const session of action.studySessions) {
-          const r = await addTask({ title: session.title, type: "task", date: session.date, time: session.time, duration: session.duration, completed: false });
-          if (r.ok) {
-            studyAdded++;
-            studyDates.push(formatShortDate(session.date));
-          }
-        }
-
-        const guessNote = action.timeWasGuessed ? ` (I guessed ${formatTimeAMPM(action.time)} — adjust it in your planner if needed)` : "";
-        const studyNote =
-          studyAdded > 0
-            ? ` I also blocked ${studyAdded} study session${studyAdded > 1 ? "s" : ""} on ${studyDates.join(", ")} so you're not cramming.`
-            : action.studySessions.length === 0
-            ? " I couldn't find open time beforehand to schedule prep sessions — good luck!"
-            : "";
-        setFeedback({ ok: true, message: `Added "${action.label}" on ${formatShortDate(action.date)}${guessNote}.${studyNote}` });
-        setInput("");
-      } catch (e) {
-        if (__DEV__) console.warn("[AIAssistantCard] exam scheduling failed", e);
-        setFeedback({ ok: false, message: "Couldn't save that — please try again." });
-      } finally {
-        setLoading(false);
-      }
-      return;
-    }
-
-    // Checked upfront rather than only discovered via the thrown error below —
-    // lets the UI show a persistent notice (see aiNotConfiguredBanner). Falls
-    // back to the local regex parser's own result instead of just failing, so
-    // plain scheduling still works offline like it did before the AI backend
-    // was added.
-    if (!isAiAssistantConfigured) {
-      if (action.kind === "schedule") {
-        const result = await addTask({
-          title: action.title,
-          type: "task",
-          date: action.date,
-          time: action.time,
-          duration: 60,
-          completed: false,
-        });
-        if (result.ok) {
-          setFeedback({ ok: true, message: `Scheduled "${action.title}" — ${formatShortDate(action.date)} at ${action.time}` });
-          setInput("");
-        } else if (result.reason === "conflict") {
-          setFeedback({ ok: false, message: `That overlaps with "${result.conflict.title}" at ${result.conflict.time} — try a different time.` });
-        } else {
-          setFeedback({ ok: false, message: "That's in the past — try a current or future date/time." });
-        }
-      } else {
-        setFeedback({
-          ok: false,
-          message: 'Couldn’t quite parse that — try "Soccer practice next Tuesday at 7pm".',
-        });
-      }
-      setLoading(false);
-      return;
-    }
+    // Only real conversational turns count as memory — a local error bubble
+    // was never something the assistant actually said, so it's excluded here
+    // even though it's still visible in the thread above.
+    const history: ChatMessage[] = [
+      ...messages.filter((m) => !m.isError).map(({ role, text: t }) => ({ role, text: t })),
+      { role: "user", text },
+    ];
 
     try {
-      const parsed = await parseActivityRequest(text);
+      const reply = await sendChatMessage(history);
+
+      if (reply.kind === "message") {
+        pushMessage("assistant", reply.text);
+        return;
+      }
+
+      // A confirmed action — actually write it through the same addTask()
+      // path the manual Add Activity sheet uses, then report the real
+      // outcome (which might differ from what Gemini assumed, e.g. a
+      // conflict it couldn't have known about) so the transcript — and the
+      // assistant's memory of what happened — stays honest.
+      const { activity } = reply;
       const result = await addTask({
-        title: parsed.title,
-        type: parsed.type,
-        date: parsed.date,
-        time: parsed.time,
-        duration: parsed.duration,
+        title: activity.title,
+        type: activity.type,
+        date: activity.date,
+        time: activity.time,
+        duration: activity.duration,
         completed: false,
       });
-      if (result.ok) {
-        setFeedback({ ok: true, message: `Scheduled "${parsed.title}" — ${formatShortDate(parsed.date)} at ${parsed.time}` });
-        setInput("");
-      } else if (result.reason === "conflict") {
-        setFeedback({ ok: false, message: `That overlaps with "${result.conflict.title}" at ${result.conflict.time} — try a different time.` });
-      } else {
-        setFeedback({ ok: false, message: "That's in the past — try a current or future date/time." });
-      }
+
+      const timeLabel = formatTimeLabel(activity.time).label;
+      const outcome = result.ok
+        ? `Added "${activity.title}" — ${formatShortDate(activity.date)} at ${timeLabel}.`
+        : result.reason === "conflict"
+        ? `That overlaps with "${result.conflict.title}" at ${formatTimeLabel(result.conflict.time).label} — try a different time.`
+        : "That's in the past — try a current or future date/time.";
+
+      pushMessage("assistant", reply.text ? `${reply.text} ${outcome}` : outcome);
     } catch (e) {
-      if (__DEV__) console.warn("[AIAssistantCard] parseActivityRequest failed", e);
-      const code = e instanceof AiAssistantServiceError ? e.code : "unknown";
-      setFeedback({
-        ok: false,
-        message:
-          code === "no-activity-found"
-            ? 'Couldn’t find a date/time — try "Soccer practice tomorrow at 19:00"'
-            : friendlyAiAssistantMessage(e),
-      });
+      if (__DEV__) console.warn("[AIAssistantCard] sendChatMessage failed", e);
+      pushMessage("assistant", friendlyAiAssistantMessage(e), true);
     } finally {
       setLoading(false);
     }
@@ -196,21 +136,55 @@ function AIAssistantCard({
         <Text style={[styles.aiTitle, { color: colors.text }]}>AI Assistant</Text>
       </View>
       <Text style={[styles.aiSubtitle, { color: colors.secondaryText }]}>
-        Schedule activities, ask "when am I free?", or mention an exam and I'll plan study time for it.
+        Chat naturally — ask a question, talk through your plans, or say "add it" and I'll schedule it.
       </Text>
       {!isAiAssistantConfigured && (
         <View style={[styles.aiNotConfiguredBanner, { backgroundColor: colors.background, borderColor: colors.border }]}>
           <Ionicons name="information-circle-outline" size={14} color={colors.secondaryText} />
           <Text style={[styles.aiNotConfiguredText, { color: colors.secondaryText }]}>
-            Free-time questions and exam planning work now — scheduling by AI needs setup by the team.
+            The AI assistant isn't set up yet — add activities manually for now.
           </Text>
         </View>
+      )}
+      {messages.length > 0 && (
+        <ScrollView
+          ref={scrollRef}
+          style={styles.aiThread}
+          contentContainerStyle={{ paddingVertical: 4 }}
+          onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
+        >
+          {messages.map((m) => (
+            <View
+              key={m.id}
+              style={[
+                styles.aiBubble,
+                m.role === "user" ? styles.aiBubbleUser : styles.aiBubbleAssistant,
+                m.role === "user"
+                  ? { backgroundColor: colors.primary }
+                  : {
+                      backgroundColor: m.isError ? colors.danger + "18" : colors.background,
+                      borderWidth: 1,
+                      borderColor: m.isError ? colors.danger : colors.border,
+                    },
+              ]}
+            >
+              <Text style={{ color: m.role === "user" ? "#fff" : m.isError ? colors.danger : colors.text, fontSize: 13 }}>
+                {m.text}
+              </Text>
+            </View>
+          ))}
+          {loading && (
+            <View style={[styles.aiBubble, styles.aiBubbleAssistant, { backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border }]}>
+              <ActivityIndicator size="small" color={colors.secondaryText} />
+            </View>
+          )}
+        </ScrollView>
       )}
       <View style={styles.aiInputRow}>
         <TextInput
           value={input}
           onChangeText={setInput}
-          placeholder='e.g. "Soccer practice next Tuesday at 7pm"'
+          placeholder='e.g. "Is football a good idea for tomorrow?"'
           placeholderTextColor={colors.secondaryText}
           style={[styles.aiInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }]}
           editable={!loading}
@@ -225,30 +199,25 @@ function AIAssistantCard({
           {loading ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="send" size={18} color="#fff" />}
         </TouchableOpacity>
       </View>
-      {feedback && (
-        <View style={styles.aiFeedbackRow}>
-          <Ionicons
-            name={feedback.ok ? "checkmark-circle" : "alert-circle-outline"}
-            size={14}
-            color={feedback.ok ? colors.success : colors.secondaryText}
-          />
-          <Text style={[styles.aiFeedbackText, { color: feedback.ok ? colors.success : colors.secondaryText }]}>
-            {feedback.message}
-          </Text>
-        </View>
-      )}
     </View>
   );
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function TodayTaskRow({ id, title, time, completed, type, colors }: { id: string; title: string; time: string; completed: boolean; type: string; colors: any }) {
+function TodayTaskRow({ id, title, time, duration, completed, type, colors }: { id: string; title: string; time: string; duration: number; completed: boolean; type: string; colors: any }) {
   // Never trust a task's raw `time` field directly — legacy/malformed records
   // (e.g. an incomplete manual entry saved before Planner's time picker
   // enforced a valid HH:mm) must render as "Time not set" instead of
   // crashing this row and, with it, the rest of Home.
   const timeResult = formatTimeLabel(time, { taskId: id });
+  // Shown as a "start – end" range (e.g. "12:00 PM – 1:00 PM"), matching the
+  // Planner's own task rows — same-day only, clamped at end of day.
+  const startMinutes = timeStringToMinutes(time);
+  const endTime = startMinutes !== null
+    ? minutesToNormalizedTime(Math.min(23 * 60 + 59, startMinutes + duration))
+    : null;
+  const timeRangeLabel = timeResult.ok && endTime ? `${timeResult.label} – ${formatTime12h(endTime)}` : timeResult.label;
   return (
     <View style={[styles.todayTask, { backgroundColor: colors.card, borderColor: colors.border, opacity: completed ? 0.55 : 1 }]}>
       <View style={[styles.todayTaskDot, { backgroundColor: type === "hobby" ? colors.primary : colors.accent }]} />
@@ -259,7 +228,7 @@ function TodayTaskRow({ id, title, time, completed, type, colors }: { id: string
         <Text
           style={[styles.todayTaskTime, { color: timeResult.ok ? colors.secondaryText : colors.danger }]}
         >
-          {timeResult.label}
+          {timeRangeLabel}
         </Text>
       </View>
       {completed && <Ionicons name="checkmark-circle" size={18} color={colors.success} />}
@@ -316,7 +285,7 @@ export default function HomeScreen() {
 
           <View style={styles.content}>
             {/* AI Assistant */}
-            <AIAssistantCard colors={colors} addTask={addTask} tasks={tasks} />
+            <AIAssistantCard colors={colors} addTask={addTask} />
 
             {/* Today's schedule */}
             <View style={styles.section}>
@@ -341,7 +310,7 @@ export default function HomeScreen() {
                 ) : (
                   <>
                     {todayTasks.map((t) => (
-                      <TodayTaskRow key={t.id} id={t.id} title={t.title} time={t.time} completed={t.completed} type={t.type} colors={colors} />
+                      <TodayTaskRow key={t.id} id={t.id} title={t.title} time={t.time} duration={t.duration} completed={t.completed} type={t.type} colors={colors} />
                     ))}
                     {completedToday > 0 && (
                       <View style={[styles.progressMini, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -365,7 +334,14 @@ export default function HomeScreen() {
                 {[
                   { icon: "add-circle-outline" as const, label: "Post", action: () => router.push("/create-post" as any), color: colors.primary },
                   { icon: "newspaper-outline" as const, label: "Feed", action: () => router.push("/feed" as any), color: "#F59E0B" },
-                  { icon: "help-circle-outline" as const, label: "Quiz", action: () => router.push("/quiz" as any), color: "#8B5CF6" },
+                  // Once the quiz is completed (a persisted profile field, not
+                  // local/component state — see types/Profile.ts
+                  // quizCompletedAt), this slot switches from "take the quiz"
+                  // to "Explore", since retaking it lives in Profile/Settings
+                  // now rather than being a primary Quick Action.
+                  profile.quizCompletedAt
+                    ? { icon: "compass-outline" as const, label: "Explore", action: () => router.push("/(tabs)/opportunities" as any), color: "#8B5CF6" }
+                    : { icon: "help-circle-outline" as const, label: "Quiz", action: () => router.push("/quiz" as any), color: "#8B5CF6" },
                 ].map((a) => (
                   <TouchableOpacity key={a.label} onPress={a.action} style={[styles.quickAction, { backgroundColor: colors.card, borderColor: colors.border }]}>
                     <View style={[styles.quickActionIcon, { backgroundColor: a.color + "18" }]}>
@@ -444,6 +420,10 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   aiNotConfiguredText: { fontSize: 11, flex: 1, lineHeight: 15 },
+  aiThread: { maxHeight: 220, marginBottom: 10 },
+  aiBubble: { maxWidth: "85%", borderRadius: 14, paddingHorizontal: 12, paddingVertical: 8, marginBottom: 6 },
+  aiBubbleUser: { alignSelf: "flex-end", borderBottomRightRadius: 4 },
+  aiBubbleAssistant: { alignSelf: "flex-start", borderBottomLeftRadius: 4 },
   aiInputRow: { flexDirection: "row", alignItems: "flex-end", gap: 8 },
   aiInput: {
     flex: 1,
@@ -461,6 +441,4 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  aiFeedbackRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 10 },
-  aiFeedbackText: { fontSize: 12, flex: 1 },
 });

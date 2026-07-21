@@ -18,6 +18,9 @@ describe("normalizePublicProfile", () => {
       currentStreak: 0,
       bio: "",
       hobbies: [],
+      featuredAchievementIds: [],
+      personalityTypeId: null,
+      personalityTypeName: null,
       updatedAt: null,
     });
   });

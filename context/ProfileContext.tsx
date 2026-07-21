@@ -7,6 +7,9 @@ import {
   ensurePublicProfileFresh,
   updateAvatarUrl,
   updateThemePreference as persistThemePreference,
+  saveQuizResult as persistQuizResult,
+  updatePersonalityVisibility as persistPersonalityVisibility,
+  dismissDisclaimer as persistDisclaimerDismissed,
 } from "../services/profileService";
 import { useAuth } from "./AuthContext";
 
@@ -19,6 +22,12 @@ type ProfileContextType = {
   updateAvatar: (avatarUrl: string | null) => Promise<void>;
   /** Applies immediately — used by ThemeContext when the user changes their theme. Updates local state right away and syncs to Firestore in the background (never blocks the UI, and is a no-op when signed out). */
   updateThemePreference: (pref: ThemePreference) => void;
+  /** Persists a freshly-computed quiz result. Throws on failure — the quiz screen keeps the user's answers and offers Retry rather than silently losing the result. */
+  saveQuizResult: (result: { typeId: string; typeName: string; quizVersion: number }) => Promise<void>;
+  /** Toggles whether personalityTypeName is visible to other users. Applies immediately, same pattern as updateAvatar. */
+  updatePersonalityVisibility: (show: boolean) => Promise<void>;
+  /** Marks a disclaimer (id+version key) dismissed — applies immediately locally so the on-screen queue advances without waiting for the round trip, and persists in the background. */
+  dismissDisclaimer: (key: string) => Promise<void>;
 };
 
 const ProfileContext = createContext<ProfileContextType | undefined>(undefined);
@@ -92,9 +101,36 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
     [user]
   );
 
+  const saveQuizResult = useCallback(
+    async (result: { typeId: string; typeName: string; quizVersion: number }) => {
+      if (!user) return;
+      await persistQuizResult(user.uid, result);
+      setProfile((p) => ({ ...p, personalityTypeId: result.typeId, personalityTypeName: result.typeName, quizCompletedAt: new Date().toISOString(), quizVersion: result.quizVersion }));
+    },
+    [user]
+  );
+
+  const updatePersonalityVisibility = useCallback(
+    async (show: boolean) => {
+      if (!user) return;
+      setProfile((p) => ({ ...p, showPersonalityType: show }));
+      await persistPersonalityVisibility(user.uid, show, profile.personalityTypeId, profile.personalityTypeName);
+    },
+    [user, profile.personalityTypeId, profile.personalityTypeName]
+  );
+
+  const dismissDisclaimer = useCallback(
+    async (key: string) => {
+      setProfile((p) => ({ ...p, dismissedDisclaimers: { ...p.dismissedDisclaimers, [key]: new Date().toISOString() } }));
+      if (!user) return;
+      await persistDisclaimerDismissed(user.uid, key);
+    },
+    [user]
+  );
+
   const value = useMemo(
-    () => ({ profile, isLoaded, saveProfile, updateAvatar, updateThemePreference }),
-    [profile, isLoaded, saveProfile, updateAvatar, updateThemePreference]
+    () => ({ profile, isLoaded, saveProfile, updateAvatar, updateThemePreference, saveQuizResult, updatePersonalityVisibility, dismissDisclaimer }),
+    [profile, isLoaded, saveProfile, updateAvatar, updateThemePreference, saveQuizResult, updatePersonalityVisibility, dismissDisclaimer]
   );
 
   return (
