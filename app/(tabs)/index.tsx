@@ -287,7 +287,7 @@ export default function HomeScreen() {
   const completedToday = todayTasks.filter((t) => t.completed).length;
 
   return (
-    <SwipeableTab tabIndex={0} backgroundColor={colors.background}>
+    <SwipeableTab tabIndex={0} backgroundColor={colors.background} colors={colors}>
       {/* Bottom safe-area inset is intentionally excluded here: the Tabs
           navigator's own (non-absolute) tab bar already reserves that space
           in its own height, so reserving it again would just add an empty

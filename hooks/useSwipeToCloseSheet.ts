@@ -1,20 +1,35 @@
 /**
  * useSwipeToCloseSheet — shared open/close animation + swipe-to-dismiss
- * gesture for every bottom sheet in the app. Before this hook, each sheet
- * either had no swipe gesture at all (BottomSheet.tsx's handle bar was
- * purely decorative — NotificationCenter/StreakInfoModal/HobbiesShowAllModal
- * all inherited that) or a one-off PanResponder copy (the Planner Add/Edit
- * Activity sheet, FriendSearchModal). Centralizing it here means "does
- * swipe-to-close work" only has one implementation to get right, and every
- * sheet gets it, Cancel/close-button behavior, and Escape-on-web for free.
+ * gesture for every bottom sheet in the app.
+ *
+ * The drag recognizer is react-native-gesture-handler's Gesture.Pan(), not
+ * the legacy PanResponder this used to use. PanResponder relies on RN's
+ * bridge-based responder system, which is a known weak spot specifically
+ * for a gesture living inside a native `Modal` with the New Architecture
+ * (Fabric) enabled (this app has newArchEnabled:true) — touches inside a
+ * Modal's separate native window can arrive late or get dropped, which is
+ * exactly the "sometimes just doesn't respond" symptom swipe-to-dismiss had
+ * even after the handle's hit area and responder-termination logic were
+ * already fixed. Gesture Handler recognizes touches on the native/UI
+ * thread and doesn't have this weakness — it's already used successfully
+ * elsewhere in this app (components/SwipeableTab.tsx).
+ *
+ * The gesture only drives the classic Animated.Value `dragY` (via
+ * .runOnJS(true), so its callbacks are plain JS-thread functions — no
+ * worklet/setGestureState concerns here, since this is a normal
+ * auto-activating pan, not manual activation). Composition with
+ * `sheetTranslate`/`backdropOpacity` and the open/close entrance animation
+ * are untouched.
  */
 import { useEffect, useRef, useState } from "react";
-import { AccessibilityInfo, Animated, Easing, PanResponder, Platform } from "react-native";
+import { AccessibilityInfo, Animated, Easing, Platform } from "react-native";
+import { Gesture } from "react-native-gesture-handler";
 
 const OPEN_DURATION = 220;
 const CLOSE_DURATION = 180;
 const CLOSE_DRAG_THRESHOLD = 80;
-const CLOSE_VELOCITY_THRESHOLD = 1.2;
+/** px/s — Gesture Handler reports velocity in pixels per second (unlike PanResponder's px/ms-ish vy), so this is the real-world equivalent of the old 1.2 threshold. */
+const CLOSE_VELOCITY_THRESHOLD = 1200;
 
 export function useSwipeToCloseSheet(visible: boolean, onClose: () => void) {
   const [mounted, setMounted] = useState(visible);
@@ -50,32 +65,44 @@ export function useSwipeToCloseSheet(visible: boolean, onClose: () => void) {
     }
   }, [visible, reduceMotion, backdropOpacity, sheetTranslate, dragY]);
 
-  const panResponder = useRef(
-    PanResponder.create({
-      // Only the dedicated drag-handle zone attaches panHandlers (see
-      // BottomSheet.tsx) — activating on any clear downward move there is
-      // safe because that zone never contains scrollable content, so this
-      // can never fight a ScrollView/FlatList for the gesture and can never
-      // become "trapped" behind one.
-      onMoveShouldSetPanResponder: (_, gestureState) => gestureState.dy > 6 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx),
-      onPanResponderMove: (_, gestureState) => {
-        if (gestureState.dy > 0) dragY.setValue(gestureState.dy);
-      },
-      onPanResponderRelease: (_, gestureState) => {
-        if (gestureState.dy > CLOSE_DRAG_THRESHOLD || gestureState.vy > CLOSE_VELOCITY_THRESHOLD) {
-          Animated.timing(dragY, { toValue: 600, duration: 150, easing: Easing.in(Easing.cubic), useNativeDriver: true }).start(() => {
-            dragY.setValue(0);
-            onCloseRef.current();
-          });
-        } else {
-          Animated.spring(dragY, { toValue: 0, useNativeDriver: true, bounciness: 4 }).start();
-        }
-      },
-      onPanResponderTerminate: () => {
-        Animated.spring(dragY, { toValue: 0, useNativeDriver: true, bounciness: 4 }).start();
-      },
+  function commitClose() {
+    Animated.timing(dragY, { toValue: 600, duration: 150, easing: Easing.in(Easing.cubic), useNativeDriver: true }).start(() => {
+      dragY.setValue(0);
+      onCloseRef.current();
+    });
+  }
+
+  function snapBack() {
+    Animated.spring(dragY, { toValue: 0, useNativeDriver: true, bounciness: 4 }).start();
+  }
+
+  // Only the dedicated drag-handle zone gets this gesture (see
+  // BottomSheet.tsx) — that zone never contains scrollable content, so it
+  // can never fight a ScrollView/FlatList for the gesture and can never end
+  // up "trapped" behind one. activeOffsetY(8) means a small vertical move
+  // is needed before the gesture takes over (so a plain tap on the handle
+  // is never mistaken for a drag); translationY is clamped to >=0 in
+  // onUpdate since dragging the handle *up* should do nothing.
+  const dragGesture = Gesture.Pan()
+    .activeOffsetY(8)
+    .failOffsetX([-20, 20])
+    .runOnJS(true)
+    .onUpdate((e) => {
+      if (e.translationY > 0) dragY.setValue(e.translationY);
     })
-  ).current;
+    .onEnd((e) => {
+      if (e.translationY > CLOSE_DRAG_THRESHOLD || e.velocityY > CLOSE_VELOCITY_THRESHOLD) {
+        commitClose();
+      } else {
+        snapBack();
+      }
+    })
+    .onFinalize((e, success) => {
+      // Safety net if the gesture is cancelled by the system without a
+      // normal onEnd (e.g. an interrupting system alert) — never leaves the
+      // sheet stuck mid-drag. Harmless to call again if onEnd already handled it.
+      if (!success) snapBack();
+    });
 
   // Web: Escape closes the currently open sheet — RN's Modal has no native
   // dialog element on web to wire this up automatically.
@@ -93,7 +120,7 @@ export function useSwipeToCloseSheet(visible: boolean, onClose: () => void) {
     backdropOpacity,
     sheetTranslate,
     dragY,
-    dragHandlers: panResponder.panHandlers,
+    dragGesture,
     reduceMotion,
   };
 }

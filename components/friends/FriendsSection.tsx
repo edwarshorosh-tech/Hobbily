@@ -2,20 +2,20 @@
  * FriendsSection — the compact "Friends" card on the Profile Overview tab.
  * Shows the accepted-friend count, a plus button (badged when requests are
  * pending) that opens FriendSearchModal, a horizontally scrollable accepted
- * friend list, and a friendly empty state. Tapping a friend opens
- * FriendPreviewModal, which is where "Remove Friend" lives.
+ * friend list, and a friendly empty state. Tapping a friend opens the
+ * reusable UserCardSheet (also used from community chat, the leaderboard,
+ * posts, and comments) — "Remove Friend" lives there now.
  */
 import { useEffect, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { ColorTokens } from "../../context/ThemeContext";
 import { useFriends } from "../../context/FriendsContext";
-import { PublicProfile } from "../../types/PublicProfile";
 import SectionCardHeader from "../profile/SectionCardHeader";
 import FriendAvatar from "./FriendAvatar";
 import { brand } from "../../constants/colors";
 import FriendSearchModal from "./FriendSearchModal";
-import FriendPreviewModal from "./FriendPreviewModal";
+import UserCardSheet from "../user-card/UserCardSheet";
 
 type Props = {
   colors: ColorTokens;
@@ -28,7 +28,7 @@ export default function FriendsSection({ colors, autoOpenRequests, onAutoOpenHan
   const { acceptedFriends, incomingRequests, isLoaded, loadError } = useFriends();
   const [searchModalVisible, setSearchModalVisible] = useState(false);
   const [searchModalInitialTab, setSearchModalInitialTab] = useState<"find" | "requests">("find");
-  const [previewProfile, setPreviewProfile] = useState<PublicProfile | null>(null);
+  const [previewUid, setPreviewUid] = useState<string | null>(null);
 
   useEffect(() => {
     if (!autoOpenRequests) return;
@@ -109,7 +109,7 @@ export default function FriendsSection({ colors, autoOpenRequests, onAutoOpenHan
                 <TouchableOpacity
                   key={friend.uid}
                   style={styles.friendItem}
-                  onPress={() => setPreviewProfile(friend)}
+                  onPress={() => setPreviewUid(friend.uid)}
                   accessibilityRole="button"
                   accessibilityLabel={`${friend.username || "User"}, ${streak} day streak`}
                 >
@@ -136,7 +136,7 @@ export default function FriendsSection({ colors, autoOpenRequests, onAutoOpenHan
         colors={colors}
         initialTab={searchModalInitialTab}
       />
-      <FriendPreviewModal profile={previewProfile} colors={colors} onClose={() => setPreviewProfile(null)} />
+      <UserCardSheet uid={previewUid} colors={colors} onClose={() => setPreviewUid(null)} />
     </View>
   );
 }

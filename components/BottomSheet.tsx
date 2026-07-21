@@ -10,6 +10,7 @@
  */
 import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, View, ViewStyle, Animated as RNAnimated } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
 import { ColorTokens } from "../context/ThemeContext";
 import { useSwipeToCloseSheet } from "../hooks/useSwipeToCloseSheet";
 
@@ -28,7 +29,7 @@ type Props = {
 
 export default function BottomSheet({ visible, onClose, colors, children, maxHeight = "86%", minHeight, avoidKeyboard = false }: Props) {
   const insets = useSafeAreaInsets();
-  const { mounted, backdropOpacity, sheetTranslate, dragY, dragHandlers } = useSwipeToCloseSheet(visible, onClose);
+  const { mounted, backdropOpacity, sheetTranslate, dragY, dragGesture } = useSwipeToCloseSheet(visible, onClose);
 
   if (!mounted) return null;
 
@@ -46,28 +47,42 @@ export default function BottomSheet({ visible, onClose, colors, children, maxHei
         },
       ]}
     >
-      {/* Drag handle — the only zone with panHandlers, so scrollable sheet
-          content (FlatList/ScrollView) below is never fought for the
-          gesture and can never end up permanently blocking dismissal. */}
-      <View {...dragHandlers} hitSlop={{ top: 10, bottom: 10, left: 40, right: 40 }} style={styles.handleRow}>
-        <View style={[styles.handle, { backgroundColor: colors.border }]} />
-      </View>
+      {/* Drag handle — the only zone with the swipe gesture attached, so
+          scrollable sheet content (FlatList/ScrollView) below is never
+          fought for the gesture and can never end up permanently blocking
+          dismissal. The touchable zone is a full-width ~48px strip (a real
+          minimum touch target), not just the few pixels the visible 36x4
+          bar occupies — that mismatch (visible handle far bigger than its
+          actual hit area) was why dragging it so often just didn't
+          register. */}
+      <GestureDetector gesture={dragGesture}>
+        <View hitSlop={{ top: 12, bottom: 12, left: 40, right: 40 }} style={styles.handleRow}>
+          <View style={[styles.handle, { backgroundColor: colors.border }]} />
+        </View>
+      </GestureDetector>
       {children}
     </RNAnimated.View>
   );
 
   return (
     <Modal visible transparent animationType="none" onRequestClose={onClose} statusBarTranslucent>
-      <RNAnimated.View style={[styles.backdrop, { opacity: backdropOpacity }]}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close" />
-        {avoidKeyboard ? (
-          <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.kbWrapper} pointerEvents="box-none">
-            {sheet}
-          </KeyboardAvoidingView>
-        ) : (
-          sheet
-        )}
-      </RNAnimated.View>
+      {/* react-native-gesture-handler gestures don't propagate into a native
+          Modal's separate window unless that subtree has its own
+          GestureHandlerRootView — the app's root one (app/_layout.tsx) does
+          not extend into here. Without this, the handle's drag gesture
+          would silently never activate at all. */}
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <RNAnimated.View style={[styles.backdrop, { opacity: backdropOpacity }]}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close" />
+          {avoidKeyboard ? (
+            <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.kbWrapper} pointerEvents="box-none">
+              {sheet}
+            </KeyboardAvoidingView>
+          ) : (
+            sheet
+          )}
+        </RNAnimated.View>
+      </GestureHandlerRootView>
     </Modal>
   );
 }
@@ -84,6 +99,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 8,
   },
-  handleRow: { alignItems: "center", paddingVertical: 6 },
+  handleRow: { alignItems: "center", justifyContent: "center", minHeight: 44, paddingVertical: 14 },
   handle: { width: 36, height: 4, borderRadius: 2 },
 });

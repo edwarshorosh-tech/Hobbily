@@ -13,5 +13,9 @@ export type PublicProfile = {
   city: string;
   avatarUrl: string | null;
   currentStreak: number;
+  /** Short public bio — safe to show on any user's card (UserCardSheet). Never age, exact location, or email; those stay private to users/{uid}. */
+  bio: string;
+  /** Selected hobby tags — safe to show publicly, same list the user already sees on their own profile. */
+  hobbies: string[];
   updatedAt: Timestamp | null;
 };

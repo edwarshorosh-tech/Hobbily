@@ -5,7 +5,9 @@
  * always present even for older accounts that predate new fields.
  *
  * Also keeps publicProfiles/{uid} — the safe-to-read-by-other-users subset
- * of the profile (username/usernameNormalized/city/avatarUrl) — in sync.
+ * of the profile (username/usernameNormalized/city/avatarUrl/bio/hobbies —
+ * deliberately never age, email, or anything more precise than city) — in
+ * sync.
  * saveProfile updates both documents in one atomic batch; ensurePublicProfileFresh
  * lazily backfills/repairs the public copy for accounts that predate this field
  * (e.g. missing usernameNormalized) the next time their profile loads.
@@ -49,6 +51,8 @@ export async function saveProfile(uid: string, profile: Profile): Promise<void> 
       usernameNormalized: normalizeUsername(profile.username),
       city: profile.city,
       avatarUrl: profile.avatarUrl ?? null,
+      bio: profile.bio,
+      hobbies: profile.hobbies,
       updatedAt: serverTimestamp(),
     },
     { merge: true }
@@ -95,7 +99,9 @@ export async function ensurePublicProfileFresh(uid: string, profile: Profile): P
     !existing ||
     existing.username !== profile.username ||
     existing.usernameNormalized !== usernameNormalized ||
-    existing.city !== profile.city;
+    existing.city !== profile.city ||
+    existing.bio !== profile.bio ||
+    JSON.stringify(existing.hobbies ?? []) !== JSON.stringify(profile.hobbies);
 
   if (!isStale) return;
 
@@ -107,6 +113,8 @@ export async function ensurePublicProfileFresh(uid: string, profile: Profile): P
       usernameNormalized,
       city: profile.city,
       avatarUrl: existing?.avatarUrl ?? null,
+      bio: profile.bio,
+      hobbies: profile.hobbies,
       updatedAt: serverTimestamp(),
     },
     { merge: true }

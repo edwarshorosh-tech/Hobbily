@@ -15,7 +15,6 @@ import { useLocalSearchParams, router } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
 import { useTheme } from "../../context/ThemeContext";
 import { usePosts } from "../../context/PostsContext";
-import { useProfile } from "../../context/ProfileContext";
 import { useAuth } from "../../context/AuthContext";
 import { uploadPostImage, deletePostImage } from "../../services/storageService";
 import PrimaryButton from "../../components/PrimaryButton";
@@ -26,13 +25,12 @@ export default function EditPost() {
   const { colors } = useTheme();
   const { id } = useLocalSearchParams<{ id: string }>();
   const { posts, editPost } = usePosts();
-  const { profile } = useProfile();
   const { user } = useAuth();
 
   // Look up the post to pre-fill the form
   const found = posts.find((p) => p.id === id);
   // Only the post's own author may edit it — treat someone else's post as not found
-  const existing = found?.username === profile.username ? found : undefined;
+  const existing = found && user && found.authorId === user.uid ? found : undefined;
 
   // State initialised from the existing post (or empty fallbacks for safety)
   const [title, setTitle] = useState(existing?.title ?? "");

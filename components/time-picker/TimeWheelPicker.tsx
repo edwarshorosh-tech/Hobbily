@@ -39,7 +39,6 @@ import { NormalizedTime, isValidHour, isValidMinute } from "../../utils/time";
 const ITEM_HEIGHT = 40;
 const VISIBLE_ITEMS = 5;
 const PADDING_COUNT = Math.floor(VISIBLE_ITEMS / 2);
-const SETTLE_DELAY_MS = 120;
 
 type WheelColumnProps = {
   values: number[];
@@ -63,10 +62,25 @@ function WheelColumn({
   reduceMotion,
 }: WheelColumnProps) {
   const scrollRef = useRef<ScrollView>(null);
-  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isUserDriven = useRef(false);
+  // True for the entire span of a touch — from the first finger-down move to
+  // the native snap animation actually finishing. While true, nothing here
+  // is allowed to call scrollTo(): issuing a programmatic scroll command
+  // while the native pan gesture is still live is exactly what used to
+  // freeze the wheel (Android's gesture responder gets a scrollTo command
+  // and a live touch fighting over the same ScrollView and stops responding
+  // to further input) — closing the whole sheet was the only way out.
+  const isTouching = useRef(false);
   const hasMounted = useRef(false);
   const selectedIndex = Math.max(0, values.indexOf(selectedValue));
+
+  // Purely visual "value currently passing under the selector" while
+  // dragging — deliberately kept separate from `selectedValue` (the
+  // confirmed value the rest of the form/validation reacts to). Updated
+  // from onScroll, never drives scrollTo and never calls onChange.
+  const [liveValue, setLiveValue] = useState(selectedValue);
+  useEffect(() => {
+    if (!isTouching.current) setLiveValue(selectedValue);
+  }, [selectedValue]);
 
   function scrollToIndex(index: number, animated: boolean) {
     scrollRef.current?.scrollTo({ y: index * ITEM_HEIGHT, animated });
@@ -77,37 +91,68 @@ function WheelColumn({
   // accessibility actions below) without fighting the user's own drag.
   // Jumps instantly on first mount (there's nothing to animate from yet).
   useEffect(() => {
-    if (isUserDriven.current) return;
+    if (isTouching.current) return;
     scrollToIndex(selectedIndex, hasMounted.current && !reduceMotion);
     hasMounted.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedIndex]);
 
+  function indexFromOffset(offsetY: number): number {
+    return Math.min(values.length - 1, Math.max(0, Math.round(offsetY / ITEM_HEIGHT)));
+  }
+
+  /** Only ever called once the touch has unambiguously ended (onMomentumScrollEnd) — safe to nudge the offset to a perfect snap and commit the value. */
   function commitOffset(offsetY: number) {
-    const index = Math.min(values.length - 1, Math.max(0, Math.round(offsetY / ITEM_HEIGHT)));
+    const index = indexFromOffset(offsetY);
     const nextValue = values[index];
+    setLiveValue(nextValue);
     if (nextValue !== selectedValue) onChange(nextValue);
     scrollToIndex(index, !reduceMotion);
   }
 
-  function scheduleSettle(offsetY: number) {
-    if (settleTimer.current) clearTimeout(settleTimer.current);
-    settleTimer.current = setTimeout(() => {
-      isUserDriven.current = false;
-      commitOffset(offsetY);
-    }, SETTLE_DELAY_MS);
+  // Defensive fallback for the (rare, platform-dependent) case where a drag
+  // ends without ever entering a momentum/snap phase — e.g. a released
+  // finger with essentially zero movement. Never calls scrollTo(); it only
+  // ever clears the `isTouching` ref so the wheel can't get permanently
+  // stuck ignoring external value syncs. Cancelled the moment real momentum
+  // starts, since onMomentumScrollEnd then owns clearing it (and committing).
+  const noMomentumFallback = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function clearFallback() {
+    if (noMomentumFallback.current) {
+      clearTimeout(noMomentumFallback.current);
+      noMomentumFallback.current = null;
+    }
+  }
+
+  function handleScrollBeginDrag() {
+    clearFallback();
+    isTouching.current = true;
+  }
+
+  function handleScrollEndDrag() {
+    clearFallback();
+    noMomentumFallback.current = setTimeout(() => {
+      isTouching.current = false;
+    }, 250);
+  }
+
+  function handleMomentumBegin() {
+    clearFallback();
   }
 
   function handleScroll(e: NativeSyntheticEvent<NativeScrollEvent>) {
-    isUserDriven.current = true;
-    scheduleSettle(e.nativeEvent.contentOffset.y);
+    // Live highlight only — no scrollTo, no onChange, so this can fire as
+    // often as the platform likes without any risk of fighting the gesture.
+    setLiveValue(values[indexFromOffset(e.nativeEvent.contentOffset.y)]);
   }
 
   function handleMomentumEnd(e: NativeSyntheticEvent<NativeScrollEvent>) {
-    if (settleTimer.current) clearTimeout(settleTimer.current);
-    isUserDriven.current = false;
+    clearFallback();
+    isTouching.current = false;
     commitOffset(e.nativeEvent.contentOffset.y);
   }
+
+  useEffect(() => clearFallback, []);
 
   function step(delta: number) {
     if (disabled) return;
@@ -147,13 +192,15 @@ function WheelColumn({
           decelerationRate="fast"
           contentContainerStyle={{ paddingVertical: PADDING_COUNT * ITEM_HEIGHT }}
           contentOffset={{ x: 0, y: selectedIndex * ITEM_HEIGHT }}
+          onScrollBeginDrag={handleScrollBeginDrag}
+          onScrollEndDrag={handleScrollEndDrag}
+          onMomentumScrollBegin={handleMomentumBegin}
           onScroll={handleScroll}
           scrollEventThrottle={16}
           onMomentumScrollEnd={handleMomentumEnd}
-          onScrollEndDrag={(e) => scheduleSettle(e.nativeEvent.contentOffset.y)}
         >
           {values.map((item) => {
-            const isSelected = item === selectedValue;
+            const isSelected = item === liveValue;
             return (
               <View key={item} style={styles.wheelItem}>
                 <Text

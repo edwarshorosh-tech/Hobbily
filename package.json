@@ -8,6 +8,7 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "lint": "expo lint",
+    "test": "jest",
     "test:rules": "firebase emulators:exec --only firestore \"node firestore-tests/rules.test.js\""
   },
   "dependencies": {
@@ -46,10 +47,21 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260719.1",
     "@firebase/rules-unit-testing": "^5.0.1",
+    "@types/jest": "29.5.14",
     "@types/react": "~19.1.0",
+    "babel-preset-expo": "~54.0.10",
     "eslint": "^9.25.0",
     "eslint-config-expo": "~10.0.0",
+    "jest": "~29.7.0",
+    "jest-expo": "~54.0.17",
     "typescript": "~5.9.2"
   },
-  "private": true
+  "private": true,
+  "jest": {
+    "preset": "jest-expo",
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/firestore-tests/"
+    ]
+  }
 }

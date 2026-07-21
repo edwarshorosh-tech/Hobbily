@@ -357,6 +357,10 @@ type TaskModalProps = {
   hobbies: string[];
   /** Pass a task to open in edit mode, undefined for add mode */
   editingTask?: Task | null;
+  /** For the inline date picker's "has tasks" dots — same map the Planner's own day strip uses. */
+  taskCounts: Record<string, number>;
+  /** Called with the saved task's date right after a successful save, so the Planner view behind the sheet jumps to show it — the whole point of picking a different date in here is to see the task land there. */
+  onDateCommitted: (iso: string) => void;
 };
 
 /** Snapshot of everything the form can change — used both to seed state on open and to detect unsaved edits (see `isDirty`). */
@@ -395,7 +399,7 @@ function snapshotFromTask(task: Task): TaskFormSnapshot {
   return { title: task.title, type: task.type, date: task.date, time, duration: task.duration };
 }
 
-function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, editingTask }: TaskModalProps) {
+function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, editingTask, taskCounts, onDateCommitted }: TaskModalProps) {
   const isEdit = !!editingTask;
 
   const [title, setTitle] = useState("");
@@ -408,11 +412,27 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [discardConfirmVisible, setDiscardConfirmVisible] = useState(false);
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
   const titleInputRef = useRef<TextInput>(null);
   const initialSnapshot = useRef<TaskFormSnapshot | null>(null);
 
   const timeString = formatTimeString(time);
+  // Pure, re-derived every render — never cached in state — so it can never
+  // go stale or need its own reset/sync logic (see isDateTimeInPast).
   const isPastSelection = isPastDateTime(date, timeString);
+
+  // isPastSelection is only ever recomputed when this component re-renders.
+  // Without this, a value that was valid when the sheet opened would stay
+  // "valid" on screen forever if the user leaves the sheet open and idle
+  // long enough for real time to catch up to it — this tick just forces a
+  // re-render every 20s while open so that can't happen; it never touches
+  // form state.
+  const [, forceRevalidateTick] = useState(0);
+  useEffect(() => {
+    if (!visible) return;
+    const interval = setInterval(() => forceRevalidateTick((n) => n + 1), 20_000);
+    return () => clearInterval(interval);
+  }, [visible]);
 
   // Recompute + seed the form exactly when the sheet becomes visible — never
   // at module load, never reusing a stale value from a previous open.
@@ -430,6 +450,7 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
     setSaveError(null);
     setSaving(false);
     setDiscardConfirmVisible(false);
+    setDatePickerOpen(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, editingTask?.id]);
 
@@ -481,6 +502,7 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
     );
     setSaving(false);
     if (result.ok) {
+      onDateCommitted(date);
       onClose();
     } else if (result.reason === "conflict") {
       setConflict(result.conflict);
@@ -569,15 +591,37 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
             </>
           )}
 
-          {/* Date — read-only display; the actual day is chosen via the Planner's
-              day strip before opening Add Activity (or, when editing, is the
-              activity's own saved day). Shown here so the date and time being
-              scheduled are never ambiguous. */}
+          {/* Date — tappable, expands the same week-strip picker used on the
+              Planner screen itself (not a separate calendar UI) so the two
+              stay visually and behaviorally consistent. Picking a different
+              day here doesn't just change what gets saved — handleSave's
+              onDateCommitted call also moves the Planner day strip behind
+              this sheet to that date on success, so the newly scheduled
+              activity is immediately visible without a manual navigate. */}
           <Text style={[styles.fieldLabel, { color: colors.secondaryText }]}>Date</Text>
-          <View style={[styles.modalInput, styles.dateDisplay, { backgroundColor: colors.inputBackground, borderColor: colors.border }]}>
+          <TouchableOpacity
+            onPress={() => setDatePickerOpen((v) => !v)}
+            disabled={saving}
+            style={[styles.modalInput, styles.dateDisplay, { backgroundColor: colors.inputBackground, borderColor: datePickerOpen ? colors.primary : colors.border }]}
+            accessibilityRole="button"
+            accessibilityLabel={`Date, ${formatLongDate(date)}. Double tap to change.`}
+            accessibilityState={{ expanded: datePickerOpen }}
+          >
             <Ionicons name="calendar-outline" size={16} color={colors.secondaryText} style={{ marginRight: 8 }} />
-            <Text style={{ color: colors.text, fontSize: 15, fontWeight: "600" }}>{formatLongDate(date)}</Text>
-          </View>
+            <Text style={{ color: colors.text, fontSize: 15, fontWeight: "600", flex: 1 }}>{formatLongDate(date)}</Text>
+            <Ionicons name={datePickerOpen ? "chevron-up" : "chevron-down"} size={16} color={colors.secondaryText} />
+          </TouchableOpacity>
+          {datePickerOpen && (
+            <View style={styles.inlineDatePicker}>
+              <DayStrip
+                selected={date}
+                onSelect={(iso) => { setDate(iso); setConflict(null); setPastError(false); setDatePickerOpen(false); }}
+                onShiftWeek={(deltaDays) => setDate((d) => addDaysISO(d, deltaDays))}
+                colors={colors}
+                taskCounts={taskCounts}
+              />
+            </View>
+          )}
 
           {/* Time — structured wheel picker only; no free-text entry, so an
               impossible time (12:66, 90:00, 24:00) can never be selected. */}
@@ -601,36 +645,59 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
             />
           </View>
 
-          {/* Past-time warning */}
+          {/* Past-time warning — includes a one-tap fix so recovering from an
+              invalid past time never depends on precisely re-dragging the
+              wheel back to a valid value; it jumps straight to "now + 1
+              minute", the same computation a brand-new activity starts from. */}
           {(isPastSelection || pastError) && (
             <View style={[styles.conflictWarning, { backgroundColor: colors.danger + "18", borderColor: colors.danger }]}>
-              <Ionicons name="warning-outline" size={16} color={colors.danger} />
-              <Text style={[styles.conflictWarningText, { color: colors.danger }]}>
-                {date === todayISO()
-                  ? "That time has already passed today. Pick a current or future time."
-                  : "You can't schedule an activity in the past."}
-              </Text>
+              <View style={styles.conflictWarningRow}>
+                <Ionicons name="warning-outline" size={16} color={colors.danger} />
+                <Text style={[styles.conflictWarningText, { color: colors.danger }]}>
+                  {date === todayISO()
+                    ? "That time has already passed today. Pick a current or future time."
+                    : "You can't schedule an activity in the past."}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => {
+                  const next = computeDefaultStart();
+                  setDate(next.date);
+                  setTime(parseTimeString(next.time) ?? { hour: 9, minute: 0 });
+                  setPastError(false);
+                  setConflict(null);
+                }}
+                style={styles.fixTimeBtn}
+                accessibilityRole="button"
+                accessibilityLabel="Set to the next available time"
+              >
+                <Text style={[styles.fixTimeBtnText, { color: colors.danger }]}>Use next available time</Text>
+              </TouchableOpacity>
             </View>
           )}
 
           {/* Conflict warning */}
           {conflict && !isPastSelection && (
             <View style={[styles.conflictWarning, { backgroundColor: colors.danger + "18", borderColor: colors.danger }]}>
-              <Ionicons name="warning-outline" size={16} color={colors.danger} />
-              <Text style={[styles.conflictWarningText, { color: colors.danger }]}>
-                {(() => {
-                  const conflictTime = formatTimeLabel(conflict.time, { taskId: conflict.id });
-                  return `Overlaps with "${conflict.title}" at ${conflictTime.label} (${conflict.duration} min). Pick a different time.`;
-                })()}
-              </Text>
+              <View style={styles.conflictWarningRow}>
+                <Ionicons name="warning-outline" size={16} color={colors.danger} />
+                <Text style={[styles.conflictWarningText, { color: colors.danger }]}>
+                  {(() => {
+                    const conflictTime = formatTimeLabel(conflict.time, { taskId: conflict.id });
+                    return `Overlaps with "${conflict.title}" at ${conflictTime.label} (${conflict.duration} min). Pick a different time.`;
+                  })()}
+                </Text>
+              </View>
             </View>
           )}
 
           {/* Generic save failure (e.g. an unexpected invalid-field result) */}
           {saveError && (
             <View style={[styles.conflictWarning, { backgroundColor: colors.danger + "18", borderColor: colors.danger }]}>
-              <Ionicons name="warning-outline" size={16} color={colors.danger} />
-              <Text style={[styles.conflictWarningText, { color: colors.danger }]}>{saveError}</Text>
+              <View style={styles.conflictWarningRow}>
+                <Ionicons name="warning-outline" size={16} color={colors.danger} />
+                <Text style={[styles.conflictWarningText, { color: colors.danger }]}>{saveError}</Text>
+              </View>
             </View>
           )}
 
@@ -733,7 +800,7 @@ export default function TimeManagerScreen() {
   }
 
   return (
-    <SwipeableTab tabIndex={1} backgroundColor={colors.background}>
+    <SwipeableTab tabIndex={1} backgroundColor={colors.background} colors={colors}>
       {/* Bottom inset excluded — the Tabs navigator's own tab bar already
           reserves it (see hooks/useTabBarHeight.ts); reserving it again here
           would just add an empty gap above the tab bar. */}
@@ -888,6 +955,8 @@ export default function TimeManagerScreen() {
           colors={colors}
           hobbies={profile.hobbies}
           editingTask={editingTask}
+          taskCounts={taskCounts}
+          onDateCommitted={setSelectedDate}
         />
 
         <PracticeTimerModal
@@ -1067,18 +1136,20 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   dateDisplay: { flexDirection: "row", alignItems: "center" },
+  inlineDatePicker: { marginTop: 10 },
   wheelWrapOuter: { borderWidth: 1, borderRadius: 14, paddingVertical: 8 },
   conflictWarning: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 8,
     padding: 12,
     borderRadius: 12,
     borderWidth: 1,
     marginTop: 4,
     marginBottom: 4,
+    gap: 8,
   },
+  conflictWarningRow: { flexDirection: "row", alignItems: "flex-start", gap: 8 },
   conflictWarningText: { flex: 1, fontSize: 13, fontWeight: "600", lineHeight: 18 },
+  fixTimeBtn: { alignSelf: "flex-start", paddingVertical: 4 },
+  fixTimeBtnText: { fontSize: 13, fontWeight: "700", textDecorationLine: "underline" },
   modalActions: { flexDirection: "row", gap: 12, marginTop: 16 },
   modalCancelBtn: {
     flex: 1,

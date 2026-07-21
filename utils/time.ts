@@ -119,11 +119,18 @@ export function formatTimeLabel(rawTime: unknown, context?: { taskId?: string })
   return { ok: false, label: "Time not set", reason: "invalid-time" };
 }
 
-/** True if `dateISO` + `time` (both must already be valid) is earlier than `now`. */
+/**
+ * Small buffer so a value that was valid the instant the form opened doesn't
+ * flip to "past" purely because the user spent a normal amount of time
+ * filling out the rest of the form before saving.
+ */
+const PAST_TIME_GRACE_MS = 60_000;
+
+/** True if `dateISO` + `time` (both must already be valid) is more than a short grace period earlier than `now`. Pure — takes `now` as a parameter and never reads any external mutable state, so it's safe to call on every render. */
 export function isDateTimeInPast(dateISO: string, time: NormalizedTime, now: Date = new Date()): boolean {
   const dt = parseLocalISO(dateISO);
   dt.setHours(time.hour, time.minute, 0, 0);
-  return dt.getTime() < now.getTime();
+  return dt.getTime() < now.getTime() - PAST_TIME_GRACE_MS;
 }
 
 /**
