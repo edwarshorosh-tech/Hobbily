@@ -18,7 +18,7 @@
  * unavoidable JS hop — calling the caller's onClose() — happens once, at
  * the very end of the close animation, via runOnJS, never per frame.
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AccessibilityInfo, Platform } from "react-native";
 import { Gesture } from "react-native-gesture-handler";
 import { Easing, runOnJS, useSharedValue, withSpring, withTiming } from "react-native-reanimated";
@@ -37,6 +37,20 @@ export function useSwipeToCloseSheet(visible: boolean, onClose: () => void) {
   const dragY = useSharedValue(0);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  // requestClose (below) is a worklet — it must never capture onCloseRef
+  // itself, only a stable JS function. A worklet closing over a plain
+  // mutable ref object causes Reanimated to convert that ref into a
+  // "shareable" the instant the worklet is created; the `onCloseRef.current
+  // = onClose` line above then mutates that same object from the JS thread
+  // on every render, which is exactly what produces
+  // "[Worklets] Tried to modify key `current` of an object which has been
+  // already passed to a worklet" (repeated once per re-render). invokeClose
+  // has a stable identity (empty deps) and only ever runs via runOnJS — i.e.
+  // entirely on the JS thread — so reading onCloseRef.current inside it is
+  // a normal JS property read/write, never crossing the worklet boundary.
+  const invokeClose = useCallback(() => {
+    onCloseRef.current();
+  }, []);
 
   useEffect(() => {
     AccessibilityInfo.isReduceMotionEnabled?.()
@@ -65,7 +79,7 @@ export function useSwipeToCloseSheet(visible: boolean, onClose: () => void) {
     dragY.value = withTiming(600, { duration: 150, easing: Easing.in(Easing.cubic) }, (finished) => {
       if (finished) {
         dragY.value = 0;
-        runOnJS(onCloseRef.current)();
+        runOnJS(invokeClose)();
       }
     });
   }

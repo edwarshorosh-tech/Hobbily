@@ -105,6 +105,17 @@ export async function fetchMemberCount(channelId: string): Promise<number> {
   }
 }
 
+/** Real count of communities a given user has joined — uses the uid+status composite index firestore.indexes.json already declares (the same one subscribeToMyMemberships relies on), so no new index is needed. Used by Public Profile's info grid for any uid, not just the signed-in user. */
+export async function fetchUserCommunityCount(uid: string): Promise<number> {
+  try {
+    const q = query(collection(db, MEMBERSHIPS), where("uid", "==", uid), where("status", "==", "joined"));
+    const snap = await getCountFromServer(q);
+    return snap.data().count;
+  } catch (e) {
+    throw mapError(e);
+  }
+}
+
 /**
  * Live-subscribes to every joined member of one channel — the real roster,
  * not just "am I in it" (subscribeToMyMemberships above). firestore.rules

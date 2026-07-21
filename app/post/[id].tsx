@@ -36,6 +36,7 @@ import TagChip from "../../components/TagChip";
 import ConfirmModal from "../../components/ConfirmModal";
 import FriendAvatar from "../../components/friends/FriendAvatar";
 import UserCardSheet from "../../components/user-card/UserCardSheet";
+import { useUserProfileSheet } from "../../hooks/useUserProfileSheet";
 import { Comment, Post } from "../../types/Post";
 import { subscribeToPost } from "../../services/postsService";
 import { useLocalSearchParams, router } from "expo-router";
@@ -187,7 +188,7 @@ export default function PostDetail() {
   const [replyTarget, setReplyTarget] = useState<Comment | null>(null);
   const [posting, setPosting] = useState(false);
   const [postError, setPostError] = useState<string | null>(null);
-  const [cardUid, setCardUid] = useState<string | null>(null);
+  const { selectedUid: cardUid, openUserProfile: setCardUid, closeUserProfile: closeCardUid } = useUserProfileSheet();
 
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
@@ -513,7 +514,7 @@ export default function PostDetail() {
         onCancel={() => setDeleteTarget(null)}
       />
 
-      <UserCardSheet uid={cardUid} colors={colors} onClose={() => setCardUid(null)} />
+      <UserCardSheet uid={cardUid} colors={colors} onClose={closeCardUid} />
     </>
   );
 }

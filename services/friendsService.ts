@@ -28,6 +28,7 @@ import { buildNotificationPayload, notificationsCollection } from "./notificatio
 import { mapFirebaseError } from "./firebaseErrors";
 import { normalizeUsername, generateFriendshipPairId } from "../utils/friendIdentity";
 import { normalizePublicProfile } from "../utils/normalizePublicProfile";
+import { rankFriendRecommendations } from "../utils/friendRecommendations";
 
 export { normalizeUsername, generateFriendshipPairId };
 
@@ -373,18 +374,8 @@ export async function fetchFriendRecommendations(
   try {
     const q = query(collection(db, "publicProfiles"), orderBy("usernameNormalized"), limit(pageSize * 4));
     const snap = await getDocs(q);
-    const candidates = snap.docs
-      .map((d) => normalizePublicProfile(d.id, d.data()))
-      .filter((p) => p.uid !== currentUid && !excludeUids.has(p.uid));
-
-    const normalizedMyHobbies = new Set(myHobbies.map((h) => h.toLowerCase()));
-    const scored = candidates.map((profile) => {
-      const sharedHobbies = profile.hobbies.filter((h) => normalizedMyHobbies.has(h.toLowerCase())).length;
-      const sameCity = myCity.trim() && profile.city.trim().toLowerCase() === myCity.trim().toLowerCase() ? 1 : 0;
-      return { profile, score: sharedHobbies * 2 + sameCity };
-    });
-    scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, pageSize).map((s) => s.profile);
+    const candidates = snap.docs.map((d) => normalizePublicProfile(d.id, d.data()));
+    return rankFriendRecommendations(candidates, currentUid, excludeUids, myHobbies, myCity, pageSize);
   } catch (e) {
     throw mapFirestoreError(e);
   }
