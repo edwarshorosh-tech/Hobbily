@@ -6,15 +6,17 @@ rules_version = '2';
 // This project had no firestore.rules under version control prior to this
 // change (rules were only ever configured directly in the Firebase Console).
 //
-// `friendships`, `publicProfiles`, and `users/{uid}/notifications` below are
-// complete, tested rules written for those features — no action needed.
+// `friendships`, `publicProfiles`, `users/{uid}/notifications`,
+// `communityMemberships`, `channels/{channelId}/messages`, `posts`
+// (including its `comments` subcollection), and `users/{uid}/likedPostIds` /
+// `users/{uid}/likedCommentIds` below are complete, tested rules written for
+// those features — no action needed.
 //
-// `users`, `progress`, `posts`, and `channels/{channelId}/messages` are a
-// signed-in-only BASELINE (any authenticated user may read/write), added
-// solely so deploying this file doesn't lock every user out of their own
-// data. This baseline is intentionally coarse — e.g. `users/{uid}` is NOT
-// yet restricted to its own owner — and is NOT a substitute for whatever
-// rules are already live in the Console.
+// `users` and `progress` are a signed-in-only BASELINE (any authenticated
+// user may read/write), added solely so deploying this file doesn't lock
+// every user out of their own data. This baseline is intentionally coarse —
+// e.g. `users/{uid}` is NOT yet restricted to its own owner — and is NOT a
+// substitute for whatever rules are already live in the Console.
 //
 // BEFORE running `firebase deploy --only firestore:rules`:
 //   1. Open Firebase Console → Firestore Database → Rules and compare
@@ -127,7 +129,9 @@ service cloud.firestore {
     // ── Public profiles ──────────────────────────────────────────────────────
     // publicProfiles/{uid} — safe-to-read-by-any-authenticated-user subset of
     // the private users/{uid} document. Kept in sync by ProfileContext
-    // (username/city) and ProgressContext (currentStreak) — see the note below.
+    // (username/city/bio/hobbies) and ProgressContext (currentStreak) — see
+    // the note below. bio/hobbies were added for UserCardSheet (Stage 9) —
+    // deliberately still no age, email, or exact location here, ever.
     match /publicProfiles/{uid} {
       function isOwner() {
         return request.auth != null && request.auth.uid == uid;
@@ -142,10 +146,12 @@ service cloud.firestore {
           && data.city is string && data.city.size() <= 60
           && (data.avatarUrl == null || (data.avatarUrl is string && data.avatarUrl.size() <= 500))
           && (data.currentStreak is int || data.currentStreak is float) && data.currentStreak >= 0
+          && data.bio is string && data.bio.size() <= 300
+          && data.hobbies is list && data.hobbies.size() <= 20
           && data.updatedAt == request.time
           // No extra/private fields — only this exact allow-listed shape.
           && data.keys().hasOnly(
-            ['uid', 'username', 'usernameNormalized', 'city', 'avatarUrl', 'currentStreak', 'updatedAt']
+            ['uid', 'username', 'usernameNormalized', 'city', 'avatarUrl', 'currentStreak', 'bio', 'hobbies', 'updatedAt']
           );
       }
 
@@ -249,6 +255,159 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // ── Community membership ──────────────────────────────────────────────────
+    // communityMemberships/{channelId}_{uid} — the real, server-side record
+    // of "this user is in this channel" (see services/communityService.ts).
+    // The deterministic doc ID is the uniqueness constraint: a second "join"
+    // is a re-write of the exact same doc, never a new one, so double-tap
+    // and multi-device joins can never create duplicates.
+    match /communityMemberships/{membershipId} {
+      function isSignedIn() { return request.auth != null; }
+
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.status == 'joined'
+        && membershipId == request.resource.data.channelId + '_' + request.auth.uid
+        && request.resource.data.username is string;
+
+      allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
+
+      allow update: if false;
+    }
+
+    // ── Posts, comments, likes ────────────────────────────────────────────────
+    // posts/{postId} holds content only — comments and likes are
+    // subcollections (below), never inline arrays, specifically so each
+    // comment/like is independently ownable by rules. likeCount/commentCount
+    // are denormalized counters kept in sync by services/postsService.ts's
+    // transactions; the rules below independently bound how they can move
+    // rather than trusting whatever number a client sends.
+    match /posts/{postId} {
+      function isSignedIn() { return request.auth != null; }
+      function isNewAuthor() { return isSignedIn() && request.resource.data.authorId == request.auth.uid; }
+      function wasAuthor() { return isSignedIn() && resource.data.authorId == request.auth.uid; }
+
+      function isValidNewPost() {
+        let data = request.resource.data;
+        return data.authorId == request.auth.uid
+          && data.username is string && data.username.size() > 0 && data.username.size() <= 40
+          && data.title is string && data.title.size() > 0 && data.title.size() <= 200
+          && data.body is string && data.body.size() <= 5000
+          && data.tags is list
+          && data.likeCount == 0
+          && data.commentCount == 0
+          && data.createdAt is string;
+      }
+
+      // A non-author may only ever move likeCount by exactly 1, and only in
+      // the direction that matches their own likedPostIds doc now existing.
+      // existsAfter() sees the state including this same transaction's other
+      // writes, which is what actually ties the counter to a real like doc
+      // (services/postsService.ts's togglePostLike creates/deletes both in
+      // one transaction) instead of trusting a bare number from the client.
+      function isValidLikeToggle() {
+        let likeDoc = /databases/$(database)/documents/users/$(request.auth.uid)/likedPostIds/$(postId);
+        return isSignedIn()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likeCount'])
+          && (
+            (request.resource.data.likeCount == resource.data.likeCount + 1 && existsAfter(likeDoc))
+            || (request.resource.data.likeCount == resource.data.likeCount - 1 && !existsAfter(likeDoc))
+          );
+      }
+
+      // commentCount can't be tied to one specific comment doc the same way
+      // a like can (this rule has no way to know which commentId a given
+      // write is "for"). Bounded to a ±1 step by any signed-in user — enough
+      // to stop a client setting it to an arbitrary number, not a full proof
+      // the step came from a real comment create/delete. This project has no
+      // trusted backend (no Cloud Functions) to close that gap fully — same
+      // documented limitation as publicProfiles.currentStreak above.
+      function isValidCommentCountStep() {
+        return isSignedIn()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['commentCount'])
+          && (request.resource.data.commentCount == resource.data.commentCount + 1
+              || request.resource.data.commentCount == resource.data.commentCount - 1);
+      }
+
+      allow read: if isSignedIn();
+      allow create: if isNewAuthor() && isValidNewPost();
+      allow update: if (wasAuthor() && request.resource.data.authorId == resource.data.authorId)
+        || isValidLikeToggle()
+        || isValidCommentCountStep();
+      allow delete: if wasAuthor();
+    }
+
+    match /posts/{postId}/comments/{commentId} {
+      function isSignedIn() { return request.auth != null; }
+      function isNewCommentAuthor() { return isSignedIn() && request.resource.data.authorId == request.auth.uid; }
+      function wasCommentAuthor() { return isSignedIn() && resource.data.authorId == request.auth.uid; }
+
+      function isValidNewComment() {
+        let data = request.resource.data;
+        return data.postId == postId
+          && data.authorId == request.auth.uid
+          && data.username is string && data.username.size() > 0
+          && data.content is string && data.content.size() > 0 && data.content.size() <= 1000
+          && (data.parentCommentId == null || data.parentCommentId is string)
+          && data.likeCount == 0
+          && data.createdAt is string;
+      }
+
+      function isValidOwnEdit() {
+        return wasCommentAuthor()
+          && request.resource.data.authorId == resource.data.authorId
+          && request.resource.data.postId == resource.data.postId
+          && request.resource.data.parentCommentId == resource.data.parentCommentId
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.likeCount == resource.data.likeCount;
+      }
+
+      // Same existsAfter-bound pattern as posts/{postId}'s isValidLikeToggle.
+      function isValidCommentLikeToggle() {
+        let likeDoc = /databases/$(database)/documents/users/$(request.auth.uid)/likedCommentIds/$(commentId);
+        return isSignedIn()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likeCount'])
+          && (
+            (request.resource.data.likeCount == resource.data.likeCount + 1 && existsAfter(likeDoc))
+            || (request.resource.data.likeCount == resource.data.likeCount - 1 && !existsAfter(likeDoc))
+          );
+      }
+
+      allow read: if isSignedIn();
+      allow create: if isNewCommentAuthor() && isValidNewComment();
+      // Edits and soft-deletes (setting deletedAt) both go through this same
+      // branch — only the comment's own author may change content/editedAt/
+      // deletedAt; authorId/postId/parentCommentId/createdAt/likeCount are
+      // immutable. A non-author may only ever be doing a like toggle.
+      allow update: if isValidOwnEdit() || isValidCommentLikeToggle();
+      allow delete: if false; // soft-delete only, via the update branch above
+    }
+
+    // users/{uid}/likedPostIds/{postId} — existence = this user likes this
+    // post. Strictly self-only; only ever created/deleted in the same
+    // transaction as the matching posts/{postId}.likeCount step (see
+    // isValidLikeToggle above, which is what actually enforces the +1/-1).
+    match /users/{uid}/likedPostIds/{postId} {
+      function isOwner() { return request.auth != null && request.auth.uid == uid; }
+      allow read: if isOwner();
+      allow create: if isOwner()
+        && request.resource.data.postId == postId
+        && exists(/databases/$(database)/documents/posts/$(postId));
+      allow delete: if isOwner();
+      allow update: if false;
+    }
+
+    // users/{uid}/likedCommentIds/{commentId} — same shape as likedPostIds above.
+    match /users/{uid}/likedCommentIds/{commentId} {
+      function isOwner() { return request.auth != null && request.auth.uid == uid; }
+      allow read: if isOwner();
+      allow create: if isOwner() && request.resource.data.commentId == commentId;
+      allow delete: if isOwner();
+      allow update: if false;
+    }
+
     // ── Existing collections — BASELINE, see the warning at the top of this file ──
     // Signed-in-only placeholder so this file doesn't default-deny these
     // collections on deploy. Verify against the Firebase Console before
@@ -269,14 +428,30 @@ service cloud.firestore {
       allow read, write: if request.auth != null && request.auth.uid == uid;
     }
 
-    // BASELINE — posts/{postId}: community feed posts.
-    match /posts/{postId} {
-      allow read, write: if request.auth != null;
-    }
-
-    // BASELINE — channels/{channelId}/messages/{messageId}: community chat.
+    // channels/{channelId}/messages/{messageId}: community chat. authorId
+    // was added alongside UserCardSheet (Stage 9, so a message author can be
+    // opened as a real user card) — messages sent before that field existed
+    // have no authorId and are simply not tappable client-side (see
+    // app/(tabs)/community.tsx), never a security concern either way since
+    // they still can't be edited/deleted by anyone but their own sender.
     match /channels/{channelId}/messages/{messageId} {
-      allow read, write: if request.auth != null;
+      function isSignedIn() { return request.auth != null; }
+
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn()
+        && request.resource.data.authorId == request.auth.uid
+        && request.resource.data.channelId == channelId
+        && request.resource.data.author is string && request.resource.data.author.size() > 0
+        && request.resource.data.text is string && request.resource.data.text.size() > 0 && request.resource.data.text.size() <= 2000
+        && request.resource.data.createdAt is string;
+
+      // Only the sender may delete their own message; legacy messages with
+      // no authorId can't be deleted by anyone through this rule (client UI
+      // already never shows a delete control for them either).
+      allow delete: if isSignedIn() && resource.data.authorId == request.auth.uid;
+
+      allow update: if false;
     }
   }
 }

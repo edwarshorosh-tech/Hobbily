@@ -2,64 +2,113 @@
  * CommunityContext
  * Channels are predefined. Messages live in Firestore under
  * channels/{channelId}/messages/{messageId} with real-time listeners.
- * Joined channel list persisted locally in AsyncStorage (device preference).
+ * Membership (which channels the current user has joined) is a real
+ * Firestore record — communityMemberships/{channelId}_{uid} — not a
+ * device-local AsyncStorage list, so it survives reinstalls, works across
+ * devices, and can't silently drift from what the server actually allows
+ * (see services/communityService.ts).
  */
-import { createContext, useContext, useState, useEffect, useRef } from "react";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   collection, doc, addDoc, deleteDoc, query, orderBy, limit, onSnapshot,
 } from "firebase/firestore";
 import { Channel, CommunityMessage } from "../types/CommunityMessage";
 import { useAuth } from "./AuthContext";
+import { useProfile } from "./ProfileContext";
 import { db } from "../lib/firebase";
-
-const JOINED_KEY = "@hobbily_joined_channels";
+import {
+  joinChannel as persistJoin,
+  leaveChannel as persistLeave,
+  subscribeToMyMemberships,
+  fetchMemberCounts,
+} from "../services/communityService";
 
 export const DEFAULT_CHANNELS: Channel[] = [
-  { id: "photography", name: "Photography", icon: "camera-outline", description: "Share shots, tips, and camera gear", members: 142 },
-  { id: "music", name: "Music", icon: "musical-notes-outline", description: "Instruments, playlists, and gigs", members: 218 },
-  { id: "drawing", name: "Drawing & Art", icon: "color-palette-outline", description: "Sketches, paintings, and digital art", members: 189 },
-  { id: "coding", name: "Coding", icon: "code-slash-outline", description: "Projects, tutorials, and coding challenges", members: 97 },
-  { id: "sports", name: "Sports", icon: "football-outline", description: "Football, basketball, running, and more", members: 263 },
-  { id: "cooking", name: "Cooking", icon: "restaurant-outline", description: "Recipes, food hacks, and kitchen tips", members: 134 },
-  { id: "gaming", name: "Gaming", icon: "game-controller-outline", description: "Reviews, strategies, and game nights", members: 301 },
-  { id: "reading", name: "Reading", icon: "book-outline", description: "Book recs, reviews, and reading clubs", members: 88 },
-  { id: "dance", name: "Dance", icon: "walk-outline", description: "Styles, videos, and local workshops", members: 112 },
-  { id: "film", name: "Film & Video", icon: "videocam-outline", description: "Short films, reviews, and editing tips", members: 76 },
+  { id: "photography", name: "Photography", icon: "camera-outline", description: "Share shots, tips, and camera gear" },
+  { id: "music", name: "Music", icon: "musical-notes-outline", description: "Instruments, playlists, and gigs" },
+  { id: "drawing", name: "Drawing & Art", icon: "color-palette-outline", description: "Sketches, paintings, and digital art" },
+  { id: "coding", name: "Coding", icon: "code-slash-outline", description: "Projects, tutorials, and coding challenges" },
+  { id: "sports", name: "Sports", icon: "football-outline", description: "Football, basketball, running, and more" },
+  { id: "cooking", name: "Cooking", icon: "restaurant-outline", description: "Recipes, food hacks, and kitchen tips" },
+  { id: "gaming", name: "Gaming", icon: "game-controller-outline", description: "Reviews, strategies, and game nights" },
+  { id: "reading", name: "Reading", icon: "book-outline", description: "Book recs, reviews, and reading clubs" },
+  { id: "dance", name: "Dance", icon: "walk-outline", description: "Styles, videos, and local workshops" },
+  { id: "film", name: "Film & Video", icon: "videocam-outline", description: "Short films, reviews, and editing tips" },
 ];
+
+export type JoinChannelResult = { ok: true } | { ok: false; message: string };
 
 type CommunityContextType = {
   channels: Channel[];
   messages: Record<string, CommunityMessage[]>;
   joinedChannelIds: string[];
+  /** Real per-channel joined-member counts — fetched from Firestore, refreshed after every join/leave. Absent key = not yet loaded. */
+  memberCounts: Record<string, number>;
+  /** True until the current user's own membership list has loaded from Firestore. */
   isLoading: boolean;
-  joinChannel: (id: string) => Promise<void>;
-  leaveChannel: (id: string) => Promise<void>;
-  sendMessage: (channelId: string, author: string, text: string) => Promise<void>;
+  /** channelIds with a join/leave currently in flight — used to disable the button and prevent a double-tap from firing twice. */
+  pendingChannelIds: Set<string>;
+  joinChannel: (id: string) => Promise<JoinChannelResult>;
+  leaveChannel: (id: string) => Promise<JoinChannelResult>;
+  sendMessage: (channelId: string, text: string) => Promise<void>;
   deleteMessage: (channelId: string, messageId: string) => Promise<void>;
 };
 
 const CommunityContext = createContext<CommunityContextType | undefined>(undefined);
 
+function friendlyMessage(e: unknown): string {
+  const code = e && typeof e === "object" && "code" in e ? String((e as { code: unknown }).code) : "";
+  if (code === "permission-denied") return "You don't have permission to do that.";
+  if (code === "network-error") return "Network error — please check your connection and try again.";
+  return "Something went wrong. Please try again.";
+}
+
 export function CommunityProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
+  const { profile } = useProfile();
   const [messages, setMessages] = useState<Record<string, CommunityMessage[]>>({});
   const [joinedChannelIds, setJoinedChannelIds] = useState<string[]>([]);
+  const [memberCounts, setMemberCounts] = useState<Record<string, number>>({});
   const [isLoading, setIsLoading] = useState(true);
-  // Track active Firestore listeners so we can tear them down
+  const [pendingChannelIds, setPendingChannelIds] = useState<Set<string>>(new Set());
+  // Track active Firestore message listeners so we can tear them down
   const channelUnsubs = useRef<Record<string, () => void>>({});
 
-  // Load joined channels from AsyncStorage on mount
-  useEffect(() => {
-    AsyncStorage.getItem(JOINED_KEY).then((raw) => {
-      setJoinedChannelIds(raw ? JSON.parse(raw) : ["photography", "sports"]);
-      setIsLoading(false);
-    });
-    return () => {
-      // Tear down all listeners when context unmounts
-      Object.values(channelUnsubs.current).forEach((u) => u());
-    };
+  const refreshMemberCounts = useCallback(async () => {
+    try {
+      const counts = await fetchMemberCounts(DEFAULT_CHANNELS.map((c) => c.id));
+      setMemberCounts(counts);
+    } catch (e) {
+      if (__DEV__) console.warn("[CommunityContext] member count refresh failed", e);
+    }
   }, []);
+
+  useEffect(() => {
+    refreshMemberCounts();
+  }, [refreshMemberCounts]);
+
+  // Subscribe to the current user's own membership records — this is the
+  // real, server-verified "which channels am I in" list.
+  useEffect(() => {
+    if (!user) {
+      setJoinedChannelIds([]);
+      setIsLoading(false);
+      return;
+    }
+    setIsLoading(true);
+    const unsub = subscribeToMyMemberships(
+      user.uid,
+      (memberships) => {
+        setJoinedChannelIds(memberships.map((m) => m.channelId));
+        setIsLoading(false);
+      },
+      (e) => {
+        if (__DEV__) console.warn("[CommunityContext] membership listener error", e);
+        setIsLoading(false);
+      }
+    );
+    return unsub;
+  }, [user]);
 
   // Subscribe to Firestore messages for all joined channels whenever they change.
   // When user signs out, tear down all active listeners to prevent memory leaks
@@ -93,36 +142,63 @@ export function CommunityProvider({ children }: { children: React.ReactNode }) {
         }
       );
     });
+
+    // Tear down listeners for channels the user has left since the last run.
+    Object.keys(channelUnsubs.current).forEach((channelId) => {
+      if (!joinedChannelIds.includes(channelId)) {
+        channelUnsubs.current[channelId]();
+        delete channelUnsubs.current[channelId];
+        setMessages((prev) => {
+          const next = { ...prev };
+          delete next[channelId];
+          return next;
+        });
+      }
+    });
   }, [joinedChannelIds, isLoading, user]);
 
-  async function persistJoined(updated: string[]) {
-    setJoinedChannelIds(updated);
-    await AsyncStorage.setItem(JOINED_KEY, JSON.stringify(updated));
-  }
+  useEffect(() => {
+    return () => {
+      Object.values(channelUnsubs.current).forEach((u) => u());
+    };
+  }, []);
 
-  async function joinChannel(id: string) {
-    if (joinedChannelIds.includes(id)) return;
-    await persistJoined([...joinedChannelIds, id]);
-  }
-
-  async function leaveChannel(id: string) {
-    // Tear down listener
-    if (channelUnsubs.current[id]) {
-      channelUnsubs.current[id]();
-      delete channelUnsubs.current[id];
+  async function withPendingGuard(id: string, action: () => Promise<void>): Promise<JoinChannelResult> {
+    if (!user) return { ok: false, message: "Please sign in again." };
+    if (pendingChannelIds.has(id)) return { ok: false, message: "Already in progress." };
+    setPendingChannelIds((prev) => new Set(prev).add(id));
+    try {
+      await action();
+      refreshMemberCounts();
+      return { ok: true };
+    } catch (e) {
+      if (__DEV__) console.warn("[CommunityContext] channel action failed", e);
+      return { ok: false, message: friendlyMessage(e) };
+    } finally {
+      setPendingChannelIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
     }
-    setMessages((prev) => {
-      const updated = { ...prev };
-      delete updated[id];
-      return updated;
-    });
-    await persistJoined(joinedChannelIds.filter((c) => c !== id));
   }
 
-  async function sendMessage(channelId: string, author: string, text: string) {
+  async function joinChannel(id: string): Promise<JoinChannelResult> {
+    if (joinedChannelIds.includes(id)) return { ok: true }; // already joined — idempotent no-op, not an error
+    return withPendingGuard(id, () => persistJoin(id, user!.uid, profile.username || "explorer"));
+  }
+
+  async function leaveChannel(id: string): Promise<JoinChannelResult> {
+    if (!joinedChannelIds.includes(id)) return { ok: true };
+    return withPendingGuard(id, () => persistLeave(id, user!.uid));
+  }
+
+  async function sendMessage(channelId: string, text: string) {
+    if (!user) return;
     await addDoc(collection(db, "channels", channelId, "messages"), {
       channelId,
-      author,
+      authorId: user.uid,
+      author: profile.username || "You",
       text,
       createdAt: new Date().toISOString(),
     });
@@ -133,19 +209,25 @@ export function CommunityProvider({ children }: { children: React.ReactNode }) {
     await deleteDoc(doc(db, "channels", channelId, "messages", messageId));
   }
 
+  const value = useMemo(
+    () => ({
+      channels: DEFAULT_CHANNELS,
+      messages,
+      joinedChannelIds,
+      memberCounts,
+      isLoading,
+      pendingChannelIds,
+      joinChannel,
+      leaveChannel,
+      sendMessage,
+      deleteMessage,
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [messages, joinedChannelIds, memberCounts, isLoading, pendingChannelIds]
+  );
+
   return (
-    <CommunityContext.Provider
-      value={{
-        channels: DEFAULT_CHANNELS,
-        messages,
-        joinedChannelIds,
-        isLoading,
-        joinChannel,
-        leaveChannel,
-        sendMessage,
-        deleteMessage,
-      }}
-    >
+    <CommunityContext.Provider value={value}>
       {children}
     </CommunityContext.Provider>
   );

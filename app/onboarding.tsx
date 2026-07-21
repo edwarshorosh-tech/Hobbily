@@ -156,19 +156,34 @@ export default function OnboardingScreen() {
     }
   }
 
+  const [finishing, setFinishing] = useState(false);
+  const [finishError, setFinishError] = useState("");
+
+  /** Persists onboarding completion to Firestore and only navigates once that succeeds — a failed save leaves the user on this screen with a retryable error instead of dropping them into a half-onboarded app. Guarded against double-tap via `finishing`. */
   async function finish() {
-    await saveProfile({
-      ...profile,
-      username: username.trim() || "explorer",
-      email: email.trim(),
-      age,
-      city: city.trim(),
-      preferredCity: city.trim() || "London",
-      hobbies: selectedHobbies,
-      freeTimePerDay: (freeTime as FreeTimePerDay) || "30-60",
-      hasOnboarded: true,
-    });
-    router.replace("/(tabs)/" as any);
+    if (finishing) return;
+    setFinishing(true);
+    setFinishError("");
+    try {
+      await saveProfile({
+        ...profile,
+        username: username.trim() || "explorer",
+        email: email.trim(),
+        age,
+        city: city.trim(),
+        preferredCity: city.trim() || "London",
+        hobbies: selectedHobbies,
+        freeTimePerDay: (freeTime as FreeTimePerDay) || "30-60",
+        hasOnboarded: true,
+      });
+      // router.replace (not push) — Back from the main app can never land
+      // here, since onboarding never enters the navigation history.
+      router.replace("/(tabs)/" as any);
+    } catch (err) {
+      if (__DEV__) console.warn("[Onboarding] finish failed", err);
+      setFinishError("Couldn't finish setting up your account. Please check your connection and try again.");
+      setFinishing(false);
+    }
   }
 
   // ── Step canContinue rules ────────────────────────────────────────────────
@@ -265,7 +280,7 @@ export default function OnboardingScreen() {
               onNext={goNext}
             />
           )}
-          {step === 5 && <StepFeatures colors={colors} onFinish={finish} />}
+          {step === 5 && <StepFeatures colors={colors} onFinish={finish} finishing={finishing} finishError={finishError} />}
         </Animated.View>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -611,18 +626,31 @@ function StepFreeTime({ colors, value, onSelect, canNext, onNext }: any) {
 
 // ── Step 5: Feature Intro ─────────────────────────────────────────────────────
 
-function StepFeatures({ colors, onFinish }: { colors: any; onFinish: () => void }) {
+function StepFeatures({
+  colors,
+  onFinish,
+  finishing,
+  finishError,
+}: {
+  colors: any;
+  onFinish: () => void;
+  finishing: boolean;
+  finishError: string;
+}) {
   return (
     <ScrollView contentContainerStyle={styles.stepContent} keyboardShouldPersistTaps="handled">
       <Text style={[styles.stepTitle, { color: colors.text }]}>You're all set! 🎉</Text>
       <Text style={[styles.stepSub, { color: colors.secondaryText }]}>Here's what Hobbily can do for you:</Text>
 
-      <View style={styles.featureList}>
-        {FEATURES.map((f) => (
-          <View key={f.title} style={[styles.featureCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <View style={[styles.featureIcon, { backgroundColor: colors.secondary }]}>
-              <Ionicons name={f.icon} size={26} color={colors.primary} />
-            </View>
+      {/* One flat, non-interactive panel — plain rows with a divider and a
+          check icon, deliberately without the shadow/elevation/border
+          treatment this screen uses for its actual buttons and inputs
+          (onboardingCardShadow), so nothing here reads as pressable. */}
+      <View style={[styles.featurePanel, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        <Text style={[styles.featurePanelLabel, { color: colors.secondaryText }]}>What you can do in Hobbily</Text>
+        {FEATURES.map((f, i) => (
+          <View key={f.title} style={[styles.featureRow, i > 0 && { borderTopWidth: 1, borderTopColor: colors.border }]}>
+            <Ionicons name="checkmark-circle" size={20} color={colors.primary} />
             <View style={{ flex: 1 }}>
               <Text style={[styles.featureTitle, { color: colors.text }]}>{f.title}</Text>
               <Text style={[styles.featureBody, { color: colors.secondaryText }]}>{f.body}</Text>
@@ -631,9 +659,27 @@ function StepFeatures({ colors, onFinish }: { colors: any; onFinish: () => void 
         ))}
       </View>
 
-      <TouchableOpacity style={[styles.primaryBtn, { backgroundColor: colors.primary, marginTop: 24 }]} onPress={onFinish}>
-        <Text style={styles.primaryBtnText}>Enter Hobbily</Text>
-        <Ionicons name="rocket-outline" size={18} color="#fff" style={{ marginLeft: 6 }} />
+      {finishError ? (
+        <Text style={[styles.finishError, { color: colors.danger }]}>{finishError}</Text>
+      ) : null}
+
+      <TouchableOpacity
+        style={[styles.primaryBtn, { backgroundColor: colors.primary, marginTop: 24, opacity: finishing ? 0.7 : 1 }]}
+        onPress={onFinish}
+        disabled={finishing}
+        activeOpacity={0.75}
+        accessibilityRole="button"
+        accessibilityLabel={finishing ? "Setting up your account" : "Enter Hobbily"}
+        accessibilityState={{ disabled: finishing, busy: finishing }}
+      >
+        {finishing ? (
+          <ActivityIndicator size="small" color="#fff" />
+        ) : (
+          <>
+            <Text style={styles.primaryBtnText}>Enter Hobbily</Text>
+            <Ionicons name="rocket-outline" size={18} color="#fff" style={{ marginLeft: 6 }} />
+          </>
+        )}
       </TouchableOpacity>
     </ScrollView>
   );
@@ -764,20 +810,16 @@ const styles = StyleSheet.create({
     ...onboardingCardShadow,
   },
   freeTimeLabel: { fontSize: 17, fontWeight: "700" },
-  // Features
-  featureList: { gap: 12 },
-  featureCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    padding: 16,
-    borderRadius: 14,
-    borderWidth: 1,
-    gap: 14,
-    ...onboardingCardShadow,
-  },
-  featureIcon: { width: 52, height: 52, borderRadius: 14, alignItems: "center", justifyContent: "center" },
+  // Features — one flat, non-interactive panel (deliberately no
+  // onboardingCardShadow/elevation here — that treatment is reserved for
+  // this screen's actual buttons/inputs, so applying it to these rows would
+  // make static information look pressable).
+  featurePanel: { borderRadius: 14, borderWidth: 1, paddingHorizontal: 16, paddingVertical: 4 },
+  featurePanelLabel: { fontSize: 12, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.4, marginTop: 14, marginBottom: 6 },
+  featureRow: { flexDirection: "row", alignItems: "flex-start", gap: 12, paddingVertical: 14 },
   featureTitle: { fontSize: 15, fontWeight: "700", marginBottom: 3 },
   featureBody: { fontSize: 13, lineHeight: 18 },
+  finishError: { fontSize: 13, textAlign: "center", marginTop: 14, lineHeight: 18 },
   // Notice box (kept for potential future use)
   noticeBox: {
     flexDirection: "row",

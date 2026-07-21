@@ -1,5 +1,8 @@
 export type FreeTimePerDay = "<30" | "30-60" | "1-2h" | "2h+";
 
+/** The authenticated app's light/dark mode — see context/ThemeContext.tsx for the full initialization/priority rules. */
+export type ThemePreference = "light" | "dark";
+
 export type Profile = {
   username: string;
   email: string;
@@ -17,4 +20,6 @@ export type Profile = {
   hasOnboarded: boolean;
   /** IDs of saved/bookmarked opportunities */
   savedOpportunities: string[];
+  /** null = user has never explicitly chosen a theme on any device — ThemeContext falls back to light. */
+  themePreference: ThemePreference | null;
 };

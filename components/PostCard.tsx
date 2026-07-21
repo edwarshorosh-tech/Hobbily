@@ -1,59 +1,88 @@
 /**
- * PostCard component
- * Renders a summary card for a single post in the feed.
+ * PostCard — the reusable post summary card used in the feed and in
+ * Profile's Posts tab.
  *
- * Tapping the card navigates to the Post Detail + Comments screen.
- * The pencil icon calls onEdit immediately (no confirmation needed).
- * The trash icon opens a ConfirmModal before calling onDelete.
- * The "edited" badge appears when post.editedAt is set.
- * Tags are rendered as read-only TagChip pills at the bottom.
- *
- * Footer row:
- *   ♥  Like button — toggles the current user's like; count shown next to it.
- *   ↑  Share button — opens the native share sheet with post content.
+ * Interaction rules:
+ *  - Tapping the card body opens Post Detail.
+ *  - Tapping the avatar or name opens UserCardSheet (never navigates).
+ *  - Tapping Like toggles it in place — never opens Post Detail.
+ *  - Tapping Comment opens Post Detail with the comment input focused.
+ *  - Edit/Delete (own posts only) live behind an overflow menu, not
+ *    permanently-visible icons — a bottom sheet with two options, using the
+ *    same shared sheet primitive as everywhere else in the app.
  */
-
-import { View, Text, StyleSheet, Pressable, Share, Image } from "react-native";
+import { View, Text, StyleSheet, Pressable, TouchableOpacity, Share, Image } from "react-native";
 import { useState } from "react";
 import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
 import TagChip from "./TagChip";
 import ConfirmModal from "./ConfirmModal";
-import { router } from "expo-router";
+import BottomSheet from "./BottomSheet";
+import FriendAvatar from "./friends/FriendAvatar";
 import { Post } from "../types/Post";
 import { usePosts } from "../context/PostsContext";
-import { useProfile } from "../context/ProfileContext";
+import { useAuth } from "../context/AuthContext";
+import { previewWithOverflow } from "../utils/previewList";
+
+const TAGS_PREVIEW_COUNT = 3;
+
+/** "2m", "5h", "3d", or a short date once it's more than a week old. */
+function relativeTime(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return "now";
+  if (diffMin < 60) return `${diffMin}m`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h`;
+  const diffDay = Math.floor(diffHr / 24);
+  if (diffDay < 7) return `${diffDay}d`;
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
 
 type Props = {
   post: Post;
   colors: any;
-  /** Called when the user taps the edit (pencil) icon */
+  /** Resolved live from publicProfiles by the caller (see hooks/useAuthorProfiles.ts) — undefined while still loading, never a stale value cached on the post itself. */
+  authorAvatarUrl?: string | null;
   onEdit: () => void;
-  /** Called after the user confirms the delete modal */
   onDelete: () => void;
+  onOpenUser: (uid: string) => void;
 };
 
-export default function PostCard({ post, colors, onEdit, onDelete }: Props) {
-  const { likePost } = usePosts();
-  const { profile } = useProfile();
+export default function PostCard({ post, colors, authorAvatarUrl, onEdit, onDelete, onOpenUser }: Props) {
+  const { toggleLike, likedPostIds } = usePosts();
+  const { user } = useAuth();
 
-  // Track whether the delete confirm modal is showing
   const [deleteVisible, setDeleteVisible] = useState(false);
+  const [menuVisible, setMenuVisible] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
-  const likes = post.likes ?? [];
-  const isLiked = likes.includes(profile.username);
-  const isOwn = post.username === profile.username;
-  // Only count non-deleted comments — matches the heading on the post detail screen
-  const commentCount = post.comments.filter((c) => !c.deletedAt).length;
+  const isLiked = likedPostIds.has(post.id);
+  const isOwn = !!user && post.authorId === user.uid;
+  const { visible: visibleTags, overflowCount: hiddenTagCount } = previewWithOverflow(post.tags, TAGS_PREVIEW_COUNT);
+  const isLongBody = post.body.length > 220;
 
-  /** Toggles the current user's like on the post */
-  async function handleLike(e: any) {
-    e.stopPropagation?.();
-    await likePost(post.id);
+  function openDetail() {
+    router.push(`/post/${post.id}` as any);
   }
 
-  /** Opens the native share sheet with a preview of the post */
-  async function handleShare(e: any) {
-    e.stopPropagation?.();
+  function openDetailFocused(e?: { stopPropagation?: () => void }) {
+    e?.stopPropagation?.();
+    router.push(`/post/${post.id}?focus=comment` as any);
+  }
+
+  function openAuthor(e?: { stopPropagation?: () => void }) {
+    e?.stopPropagation?.();
+    onOpenUser(post.authorId);
+  }
+
+  async function handleLike(e?: { stopPropagation?: () => void }) {
+    e?.stopPropagation?.();
+    await toggleLike(post.id);
+  }
+
+  async function handleShare(e?: { stopPropagation?: () => void }) {
+    e?.stopPropagation?.();
     try {
       await Share.share({
         message: `Check out "${post.title}" by @${post.username} on Hobbily!\n\n${post.body}`,
@@ -62,96 +91,110 @@ export default function PostCard({ post, colors, onEdit, onDelete }: Props) {
     } catch {
       // Share.share() rejects when the user cancels (native) or when the
       // browser has no Web Share API (most desktop browsers) — neither is
-      // an error worth surfacing, so this fails silently rather than as an
-      // unhandled promise rejection.
+      // an error worth surfacing.
     }
   }
 
   return (
     <>
-      {/* Outer Pressable navigates to the post detail screen on tap */}
-      <Pressable onPress={() => router.push(`/post/${post.id}`)}>
+      <Pressable onPress={openDetail} style={({ pressed }) => [pressed && { opacity: 0.96 }]}>
         <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
-
-          {/* ── Header: author on left, edit/delete icons on right ── */}
+          {/* ── Header ── */}
           <View style={styles.header}>
-            <Text style={[styles.username, { color: colors.text }]}>@{post.username}</Text>
-            {/* Edit/delete are only ever available to the post's own author */}
-            {isOwn && (
-              <View style={styles.actions}>
-                {/* stopPropagation prevents the card's onPress from also firing */}
-                <Pressable onPress={(e) => { e.stopPropagation?.(); onEdit(); }} style={styles.actionBtn} hitSlop={8}>
-                  <Ionicons name="pencil-outline" size={16} color={colors.primary} />
-                </Pressable>
-                <Pressable onPress={(e) => { e.stopPropagation?.(); setDeleteVisible(true); }} style={styles.actionBtn} hitSlop={8}>
-                  <Ionicons name="trash-outline" size={16} color={colors.danger} />
-                </Pressable>
+            <TouchableOpacity onPress={openAuthor} style={styles.identity} accessibilityRole="button" accessibilityLabel={`View ${post.username}'s profile`}>
+              <FriendAvatar username={post.username} avatarUrl={authorAvatarUrl ?? null} size={38} colors={colors} />
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={[styles.displayName, { color: colors.text }]} numberOfLines={1}>
+                  {post.username}
+                </Text>
+                <Text style={[styles.metaLine, { color: colors.secondaryText }]} numberOfLines={1}>
+                  @{post.username} · {relativeTime(post.createdAt)}
+                  {post.editedAt ? " · edited" : ""}
+                </Text>
               </View>
+            </TouchableOpacity>
+            {isOwn && (
+              <TouchableOpacity
+                onPress={(e) => { e.stopPropagation?.(); setMenuVisible(true); }}
+                style={styles.menuBtn}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                accessibilityRole="button"
+                accessibilityLabel="Post options"
+              >
+                <Ionicons name="ellipsis-horizontal" size={18} color={colors.secondaryText} />
+              </TouchableOpacity>
             )}
           </View>
 
-          {/* ── Post title ── */}
-          <Text style={[styles.title, { color: colors.text }]}>{post.title}</Text>
+          {/* ── Content ── */}
+          {!!post.title && <Text style={[styles.title, { color: colors.text }]}>{post.title}</Text>}
 
-          {/* Attached photo, if any */}
           {!!post.imageUrl && (
             <Image source={{ uri: post.imageUrl }} style={styles.postImage} resizeMode="cover" />
           )}
 
-          {/* Body preview — capped at 2 lines; full text visible on the detail screen */}
-          <Text style={[styles.content, { color: colors.secondaryText }]} numberOfLines={2}>
+          <Text style={[styles.body, { color: colors.secondaryText }]} numberOfLines={expanded ? undefined : 3}>
             {post.body}
           </Text>
-
-          {/* "edited" badge — only visible when the post has been modified after creation */}
-          {post.editedAt && (
-            <Text style={[styles.edited, { color: colors.secondaryText }]}>✎ edited</Text>
+          {isLongBody && (
+            <TouchableOpacity onPress={(e) => { e.stopPropagation?.(); setExpanded((v) => !v); }} hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}>
+              <Text style={[styles.readMore, { color: colors.primary }]}>{expanded ? "Show less" : "Read more"}</Text>
+            </TouchableOpacity>
           )}
 
-          {/* Read-only tag chips */}
-          <View style={styles.tagRow}>
-            {post.tags.map((tag) => (
-              <TagChip key={tag} label={tag} textColor="#fff" backgroundColor={colors.primary} />
-            ))}
-          </View>
+          {/* ── Tags — capped, never dominates the card ── */}
+          {post.tags.length > 0 && (
+            <View style={styles.tagRow}>
+              {visibleTags.map((tag) => (
+                <TagChip key={tag} label={tag} textColor="#fff" backgroundColor={colors.primary} />
+              ))}
+              {hiddenTagCount > 0 && (
+                <TagChip label={`+${hiddenTagCount}`} textColor={colors.secondaryText} backgroundColor={colors.background} />
+              )}
+            </View>
+          )}
 
-          {/* ── Footer: like + comments + share ── */}
+          {/* ── Actions ── */}
           <View style={[styles.footer, { borderTopColor: colors.border }]}>
-            {/* Like button — filled heart when liked, outline when not */}
-            <Pressable onPress={handleLike} style={styles.footerAction} hitSlop={8}>
-              <Ionicons
-                name={isLiked ? "heart" : "heart-outline"}
-                size={17}
-                color={isLiked ? "#DC2626" : colors.secondaryText}
-              />
-              <Text style={[styles.footerCount, { color: colors.secondaryText }]}>
-                {likes.length}
-              </Text>
-            </Pressable>
+            <TouchableOpacity onPress={handleLike} style={styles.footerAction} hitSlop={8} accessibilityRole="button" accessibilityLabel={isLiked ? "Unlike post" : "Like post"}>
+              <Ionicons name={isLiked ? "heart" : "heart-outline"} size={18} color={isLiked ? "#DC2626" : colors.secondaryText} />
+              <Text style={[styles.footerCount, { color: colors.secondaryText }]}>{post.likeCount}</Text>
+            </TouchableOpacity>
 
-            {/* Comments — tapping opens the post detail screen where comments live */}
-            <Pressable
-              onPress={(e) => { e.stopPropagation?.(); router.push(`/post/${post.id}`); }}
-              style={styles.footerAction}
-              hitSlop={8}
-            >
-              <Ionicons name="chatbubble-outline" size={16} color={colors.secondaryText} />
-              <Text style={[styles.footerCount, { color: colors.secondaryText }]}>
-                {commentCount}
-              </Text>
-            </Pressable>
+            <TouchableOpacity onPress={openDetailFocused} style={styles.footerAction} hitSlop={8} accessibilityRole="button" accessibilityLabel="Comment">
+              <Ionicons name="chatbubble-outline" size={17} color={colors.secondaryText} />
+              <Text style={[styles.footerCount, { color: colors.secondaryText }]}>{post.commentCount}</Text>
+            </TouchableOpacity>
 
-            {/* Share button */}
-            <Pressable onPress={handleShare} style={styles.footerAction} hitSlop={8}>
-              <Ionicons name="share-outline" size={17} color={colors.secondaryText} />
-              <Text style={[styles.footerLabel, { color: colors.secondaryText }]}>Share</Text>
-            </Pressable>
+            <TouchableOpacity onPress={handleShare} style={styles.footerAction} hitSlop={8} accessibilityRole="button" accessibilityLabel="Share">
+              <Ionicons name="share-outline" size={18} color={colors.secondaryText} />
+            </TouchableOpacity>
           </View>
-
         </View>
       </Pressable>
 
-      {/* Delete confirmation modal — rendered outside the card Pressable */}
+      {/* Own-post overflow menu — a sheet, not permanently-visible icons */}
+      <BottomSheet visible={menuVisible} onClose={() => setMenuVisible(false)} colors={colors} maxHeight="40%">
+        <TouchableOpacity
+          style={styles.menuRow}
+          onPress={() => { setMenuVisible(false); onEdit(); }}
+          accessibilityRole="button"
+          accessibilityLabel="Edit post"
+        >
+          <Ionicons name="pencil-outline" size={18} color={colors.text} />
+          <Text style={[styles.menuRowText, { color: colors.text }]}>Edit Post</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.menuRow}
+          onPress={() => { setMenuVisible(false); setDeleteVisible(true); }}
+          accessibilityRole="button"
+          accessibilityLabel="Delete post"
+        >
+          <Ionicons name="trash-outline" size={18} color={colors.danger} />
+          <Text style={[styles.menuRowText, { color: colors.danger }]}>Delete Post</Text>
+        </TouchableOpacity>
+      </BottomSheet>
+
       <ConfirmModal
         visible={deleteVisible}
         title="Delete Post"
@@ -166,19 +209,20 @@ export default function PostCard({ post, colors, onEdit, onDelete }: Props) {
 }
 
 const styles = StyleSheet.create({
-  card: { padding: 12, borderRadius: 10, borderWidth: 1, marginVertical: 8 },
-  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 },
-  username: { fontWeight: "bold" },
-  actions: { flexDirection: "row", gap: 8 },
-  actionBtn: { padding: 4 },
-  title: { fontSize: 16, fontWeight: "700", marginBottom: 4 },
-  postImage: { width: "100%", aspectRatio: 16 / 9, borderRadius: 8, marginBottom: 6 },
-  content: { marginBottom: 6 },
-  edited: { fontSize: 11, fontStyle: "italic", marginBottom: 4 },
-  tagRow: { flexDirection: "row", flexWrap: "wrap", marginTop: 4, marginBottom: 4 },
-  // Footer row below tags
-  footer: { flexDirection: "row", gap: 16, marginTop: 8, paddingTop: 8, borderTopWidth: 1 },
-  footerAction: { flexDirection: "row", alignItems: "center", gap: 4 },
+  card: { padding: 14, borderRadius: 16, borderWidth: 1, marginVertical: 6 },
+  header: { flexDirection: "row", alignItems: "center", marginBottom: 10, gap: 8 },
+  identity: { flexDirection: "row", alignItems: "center", gap: 10, flex: 1, minWidth: 0 },
+  displayName: { fontWeight: "700", fontSize: 14 },
+  metaLine: { fontSize: 12, marginTop: 1 },
+  menuBtn: { padding: 4 },
+  title: { fontSize: 16, fontWeight: "700", marginBottom: 6 },
+  postImage: { width: "100%", aspectRatio: 16 / 9, borderRadius: 12, marginBottom: 8 },
+  body: { fontSize: 14, lineHeight: 20 },
+  readMore: { fontSize: 13, fontWeight: "700", marginTop: 4 },
+  tagRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 10 },
+  footer: { flexDirection: "row", gap: 20, marginTop: 10, paddingTop: 10, borderTopWidth: 1 },
+  footerAction: { flexDirection: "row", alignItems: "center", gap: 5 },
   footerCount: { fontSize: 13 },
-  footerLabel: { fontSize: 13 },
+  menuRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 14 },
+  menuRowText: { fontSize: 15, fontWeight: "600" },
 });

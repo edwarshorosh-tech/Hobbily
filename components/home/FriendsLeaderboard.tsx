@@ -5,7 +5,7 @@
  * mirrored currentStreak (from FriendsContext / publicProfiles). Ranking is
  * memoized outside JSX; friend profiles refresh on screen focus.
  */
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "@react-navigation/native";
@@ -17,6 +17,8 @@ import { brand } from "../../constants/colors";
 import { useProgress } from "../../context/ProgressContext";
 import { useFriends } from "../../context/FriendsContext";
 import FriendAvatar from "../friends/FriendAvatar";
+import UserCardSheet from "../user-card/UserCardSheet";
+import { friendsWidgetProfileTarget } from "../../utils/profileNavigation";
 
 export type FriendLeaderboardEntry = {
   uid: string;
@@ -60,14 +62,21 @@ function PodiumSlot({
   entry,
   colors,
   allZero,
+  onPress,
 }: {
   entry: FriendLeaderboardEntry;
   colors: ColorTokens;
   allZero: boolean;
+  onPress: () => void;
 }) {
   const height = podiumHeight(entry, allZero);
   return (
-    <View style={styles.podiumSlot}>
+    <TouchableOpacity
+      style={styles.podiumSlot}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`${entry.isCurrentUser ? "Your" : entry.username + "'s"} profile, ${entry.currentStreak} day streak`}
+    >
       <FriendAvatar
         username={entry.username}
         avatarUrl={entry.avatarUrl}
@@ -80,10 +89,7 @@ function PodiumSlot({
       </Text>
       <View style={styles.podiumStreakRow}>
         <Ionicons name="flame" size={12} color={brand.streakFlame} />
-        <Text
-          style={[styles.podiumStreakText, { color: colors.secondaryText }]}
-          accessibilityLabel={`${entry.isCurrentUser ? "Current user" : entry.username}, ${entry.currentStreak} day streak`}
-        >
+        <Text style={[styles.podiumStreakText, { color: colors.secondaryText }]}>
           {entry.currentStreak}
         </Text>
       </View>
@@ -93,7 +99,7 @@ function PodiumSlot({
           { height, backgroundColor: entry.isCurrentUser ? colors.primary : colors.secondary },
         ]}
       />
-    </View>
+    </TouchableOpacity>
   );
 }
 
@@ -102,6 +108,7 @@ export default function FriendsLeaderboard({ colors }: { colors: ColorTokens }) 
   const { profile } = useProfile();
   const { currentStreak } = useProgress();
   const { acceptedFriends, isLoaded, loadError, refreshFriendProfiles } = useFriends();
+  const [cardUid, setCardUid] = useState<string | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -170,13 +177,14 @@ export default function FriendsLeaderboard({ colors }: { colors: ColorTokens }) 
               Your friends&apos; streaks will appear here.
             </Text>
             <TouchableOpacity
-              onPress={() => router.push("/(tabs)/profile")}
+              onPress={() => router.push(friendsWidgetProfileTarget())}
               style={[styles.emptyAction, { borderColor: colors.primary }]}
               accessibilityRole="button"
-              accessibilityLabel="Go to Profile to add a friend"
+              accessibilityLabel="Go to your Friends list to add a friend"
+              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
             >
               <Ionicons name="add" size={14} color={colors.primary} />
-              <Text style={[styles.emptyActionText, { color: colors.primary }]}>Add Friend</Text>
+              <Text style={[styles.emptyActionText, { color: colors.primary }]}>Add Friends</Text>
             </TouchableOpacity>
           </View>
         ) : (
@@ -187,9 +195,9 @@ export default function FriendsLeaderboard({ colors }: { colors: ColorTokens }) 
               </Text>
             )}
             <View style={styles.podiumRow}>
-              {top3[1] && <PodiumSlot entry={top3[1]} colors={colors} allZero={allZero} />}
-              {top3[0] && <PodiumSlot entry={top3[0]} colors={colors} allZero={allZero} />}
-              {top3[2] && <PodiumSlot entry={top3[2]} colors={colors} allZero={allZero} />}
+              {top3[1] && <PodiumSlot entry={top3[1]} colors={colors} allZero={allZero} onPress={() => setCardUid(top3[1].uid)} />}
+              {top3[0] && <PodiumSlot entry={top3[0]} colors={colors} allZero={allZero} onPress={() => setCardUid(top3[0].uid)} />}
+              {top3[2] && <PodiumSlot entry={top3[2]} colors={colors} allZero={allZero} onPress={() => setCardUid(top3[2].uid)} />}
             </View>
 
             {remaining.length > 0 && (
@@ -200,7 +208,13 @@ export default function FriendsLeaderboard({ colors }: { colors: ColorTokens }) 
                 style={{ marginTop: 14 }}
               >
                 {remaining.map((entry) => (
-                  <View key={entry.uid} style={[styles.remainingItem, { borderColor: colors.border }]}>
+                  <TouchableOpacity
+                    key={entry.uid}
+                    style={[styles.remainingItem, { borderColor: colors.border }]}
+                    onPress={() => setCardUid(entry.uid)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${entry.isCurrentUser ? "Your" : entry.username + "'s"} profile, ${entry.currentStreak} day streak`}
+                  >
                     <FriendAvatar
                       username={entry.username}
                       avatarUrl={entry.avatarUrl}
@@ -214,13 +228,15 @@ export default function FriendsLeaderboard({ colors }: { colors: ColorTokens }) 
                     <Text style={[styles.remainingStreak, { color: colors.secondaryText }]}>
                       {entry.currentStreak}
                     </Text>
-                  </View>
+                  </TouchableOpacity>
                 ))}
               </ScrollView>
             )}
           </>
         )}
       </View>
+
+      <UserCardSheet uid={cardUid} colors={colors} onClose={() => setCardUid(null)} />
     </View>
   );
 }

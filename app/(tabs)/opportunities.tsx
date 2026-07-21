@@ -4,7 +4,7 @@
  */
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
-  TextInput, Modal, Linking,
+  TextInput, Linking,
 } from "react-native";
 import { useState, useEffect } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -13,6 +13,7 @@ import { useLocalSearchParams } from "expo-router";
 import { useTheme } from "../../context/ThemeContext";
 import { useProfile } from "../../context/ProfileContext";
 import SwipeableTab from "../../components/SwipeableTab";
+import BottomSheet from "../../components/BottomSheet";
 import { brand } from "../../constants/colors";
 
 // ── Data ──────────────────────────────────────────────────────────────────────
@@ -59,10 +60,7 @@ function RegistrationModal({ opp, onClose, colors }: { opp: Opportunity; onClose
   const [submitted, setSubmitted] = useState(false);
 
   return (
-    <Modal visible animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.modalOverlay}>
-        <View style={[styles.modalSheet, { backgroundColor: colors.card }]}>
-          <View style={[styles.modalHandle, { backgroundColor: colors.border }]} />
+    <BottomSheet visible onClose={onClose} colors={colors} maxHeight="92%" avoidKeyboard>
           {submitted ? (
             <View style={{ alignItems: "center", paddingVertical: 16, gap: 12 }}>
               <Ionicons name="checkmark-circle" size={64} color={colors.success} />
@@ -98,9 +96,7 @@ function RegistrationModal({ opp, onClose, colors }: { opp: Opportunity; onClose
               </View>
             </ScrollView>
           )}
-        </View>
-      </View>
-    </Modal>
+    </BottomSheet>
   );
 }
 
@@ -150,10 +146,7 @@ function DetailModal({ opp, saved, onToggleSave, onRegister, onClose, colors }: 
   const openMaps = () => Linking.openURL(`https://maps.google.com/?q=${encodeURIComponent(opp.mapsQuery ?? opp.location)}`);
 
   return (
-    <Modal visible animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.modalOverlay}>
-        <View style={[styles.modalSheet, { backgroundColor: colors.card }]}>
-          <View style={[styles.modalHandle, { backgroundColor: colors.border }]} />
+    <BottomSheet visible onClose={onClose} colors={colors} maxHeight="92%">
           <ScrollView showsVerticalScrollIndicator={false}>
             <View style={{ flexDirection: "row", alignItems: "flex-start", marginBottom: 12 }}>
               <View style={{ flex: 1 }}>
@@ -226,9 +219,7 @@ function DetailModal({ opp, saved, onToggleSave, onRegister, onClose, colors }: 
               <Text style={{ color: colors.secondaryText, fontWeight: "600" }}>Close</Text>
             </TouchableOpacity>
           </View>
-        </View>
-      </View>
-    </Modal>
+    </BottomSheet>
   );
 }
 
@@ -277,8 +268,10 @@ export default function OpportunitiesScreen() {
   });
 
   return (
-    <SwipeableTab tabIndex={3} backgroundColor={colors.background}>
-      <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+    <SwipeableTab tabIndex={3} backgroundColor={colors.background} colors={colors}>
+      {/* Bottom inset excluded — the Tabs navigator's own tab bar already
+          reserves it (see hooks/useTabBarHeight.ts). */}
+      <SafeAreaView edges={["top", "left", "right"]} style={[styles.container, { backgroundColor: colors.background }]}>
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
           <View style={styles.headerTopRow}>
             <Text style={[styles.headerTitle, { color: colors.text }]}>Explore</Text>
@@ -383,16 +376,6 @@ const styles = StyleSheet.create({
   footerNote: { flexDirection: "row", alignItems: "center", margin: 16, padding: 14, borderRadius: 12, borderWidth: 1 },
   footerText: { flex: 1, fontSize: 13, lineHeight: 18 },
   // Modals
-  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "flex-end" },
-  modalSheet: {
-    width: "100%",
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    padding: 24,
-    paddingBottom: 36,
-    maxHeight: "92%",
-  },
-  modalHandle: { width: 36, height: 4, borderRadius: 2, backgroundColor: "#ccc", alignSelf: "center", marginBottom: 20 },
   modalTitle: { fontSize: 22, fontWeight: "800", marginBottom: 6, letterSpacing: -0.3 },
   modalOrg: { fontSize: 14, fontWeight: "600" },
   modalDesc: { fontSize: 14, lineHeight: 22, marginBottom: 20 },

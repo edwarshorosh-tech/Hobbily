@@ -3,10 +3,11 @@
  * Countdown timer sheet used both for manual "Practice Now" sessions and for
  * auto-popups when a scheduled task's time arrives (see TimeContext's dueTask).
  */
-import { View, Text, StyleSheet, TextInput, Modal, TouchableOpacity } from "react-native";
+import { View, Text, StyleSheet, TextInput, TouchableOpacity } from "react-native";
 import { useState, useEffect, useRef } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../context/ThemeContext";
+import BottomSheet from "./BottomSheet";
 
 type TimerModalProps = {
   visible: boolean;
@@ -81,11 +82,8 @@ export default function PracticeTimerModal({
   const progress = notStarted ? 0 : 1 - secondsLeft / (selectedMinutes * 60);
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={tStyles.overlay}>
-        <View style={[tStyles.sheet, { backgroundColor: colors.card }]}>
-          <View style={[tStyles.handle, { backgroundColor: colors.border }]} />
-
+    <BottomSheet visible={visible} onClose={onClose} colors={colors} maxHeight="92%" avoidKeyboard>
+      <View style={tStyles.sheetContent}>
           {done ? (
             <View style={tStyles.doneView}>
               <Ionicons name="checkmark-circle" size={72} color={colors.success} />
@@ -189,22 +187,13 @@ export default function PracticeTimerModal({
               </TouchableOpacity>
             </>
           )}
-        </View>
       </View>
-    </Modal>
+    </BottomSheet>
   );
 }
 
 const tStyles = StyleSheet.create({
-  overlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" },
-  sheet: {
-    width: "100%",
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    padding: 24,
-    paddingBottom: 44,
-  },
-  handle: { width: 36, height: 4, borderRadius: 2, backgroundColor: "#ccc", alignSelf: "center", marginBottom: 20 },
+  sheetContent: { paddingTop: 8, paddingBottom: 12 },
   banner: { flexDirection: "row", alignItems: "center", justifyContent: "center", borderWidth: 1, borderRadius: 10, paddingVertical: 8, marginBottom: 14 },
   bannerText: { fontSize: 13, fontWeight: "700" },
   timerTitle: { fontSize: 18, fontWeight: "700", textAlign: "center", marginBottom: 12 },
