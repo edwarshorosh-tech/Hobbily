@@ -1,5 +1,5 @@
+import { describe, it, expect } from "@jest/globals";
 import { isDateTimeInPast, parseTimeString, computeDefaultStart, formatTimeLabel } from "../utils/time";
-
 describe("Planner time validation (isDateTimeInPast)", () => {
   const NOW = new Date(2026, 5, 15, 14, 0, 0, 0); // 2026-06-15 14:00 local
 
