@@ -19,6 +19,7 @@ import {
   createFriendRequest,
   declineFriendRequest,
   fetchPublicProfilesByIds,
+  getUserCard,
   removeFriend,
   searchUserByUsername,
   subscribeToAcceptedFriendships,
@@ -51,6 +52,8 @@ type FriendsContextType = {
   cancelRequest: (friendshipId: string) => Promise<FriendActionResult>;
   removeFriendship: (friendshipId: string) => Promise<FriendActionResult>;
   searchUsername: (rawQuery: string) => Promise<FriendSearchResult | null>;
+  /** Looks up a known uid's public profile + friendship relationship — used by UserCardSheet. */
+  getUserCard: (targetUid: string) => Promise<FriendSearchResult | null>;
   refreshFriendProfiles: () => void;
 };
 
@@ -289,6 +292,14 @@ export function FriendsProvider({ children }: { children: React.ReactNode }) {
     [uid]
   );
 
+  const getUserCardFn = useCallback(
+    (targetUid: string) => {
+      if (!uid) return Promise.resolve(null);
+      return getUserCard(uid, targetUid);
+    },
+    [uid]
+  );
+
   const value: FriendsContextType = useMemo(
     () => ({
       isLoaded,
@@ -303,6 +314,7 @@ export function FriendsProvider({ children }: { children: React.ReactNode }) {
       cancelRequest,
       removeFriendship,
       searchUsername,
+      getUserCard: getUserCardFn,
       refreshFriendProfiles,
     }),
     [
@@ -318,6 +330,7 @@ export function FriendsProvider({ children }: { children: React.ReactNode }) {
       cancelRequest,
       removeFriendship,
       searchUsername,
+      getUserCardFn,
       refreshFriendProfiles,
     ]
   );

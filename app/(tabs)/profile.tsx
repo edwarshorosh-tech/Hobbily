@@ -24,6 +24,9 @@ import { usePosts } from "../../context/PostsContext";
 import TagChip from "../../components/TagChip";
 import ConfirmModal from "../../components/ConfirmModal";
 import PostCard from "../../components/PostCard";
+import PostCardSkeleton from "../../components/post/PostCardSkeleton";
+import UserCardSheet from "../../components/user-card/UserCardSheet";
+import { useAuthorPosts } from "../../hooks/useAuthorPosts";
 import SwipeableTab from "../../components/SwipeableTab";
 import { TIP_KEYS, useTipsReset } from "../../components/TipBanner";
 import FriendsSection from "../../components/friends/FriendsSection";
@@ -35,9 +38,10 @@ import StreakInfoModal from "../../components/home/StreakInfoModal";
 import HobbiesEditor from "../../components/settings/HobbiesEditor";
 import FriendAvatar from "../../components/friends/FriendAvatar";
 import * as ImagePicker from "expo-image-picker";
-import { uploadAvatar, removeAvatar, AvatarServiceError } from "../../services/storageService";
+import { uploadAvatar, removeAvatar, avatarErrorMessage, AvatarServiceError } from "../../services/storageService";
 import { Achievement } from "../../types/Progress";
 import { brand } from "../../constants/colors";
+import { shouldFocusFriendsWidget } from "../../utils/profileNavigation";
 
 // Overview hobbies: how many chips to show before collapsing behind "Show all".
 const HOBBIES_PREVIEW_COUNT = 8;
@@ -372,12 +376,17 @@ export default function ProfileScreen() {
   const { achievements, currentStreak } = useProgress();
   const { dailyReminderEnabled, setDailyReminderEnabled, resetDailyBanner } = useTime();
   const { signOut, deleteAccount, user } = useAuth();
-  const { posts, deletePost } = usePosts();
+  const { deletePost } = usePosts();
   const { bump: bumpTips } = useTipsReset();
-  const params = useLocalSearchParams<{ tab?: string; openRequests?: string }>();
+  const params = useLocalSearchParams<{ tab?: string; openRequests?: string; focus?: string }>();
 
+  // Posts is the default landing tab (deep links to overview/badges/settings
+  // still work) — computed synchronously into useState's initial value below,
+  // never switched to after an "overview" flash post-mount.
   const initialTab: TabId =
-    params.tab === "badges" || params.tab === "settings" || params.tab === "posts" ? params.tab : "overview";
+    params.tab === "overview" || params.tab === "badges" || params.tab === "settings" || params.tab === "posts"
+      ? params.tab
+      : "posts";
 
   const [activeTab, setActiveTab] = useState<TabId>(initialTab);
   const [draft, setDraft] = useState({ ...profile });
@@ -396,6 +405,18 @@ export default function ProfileScreen() {
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [removeAvatarConfirmVisible, setRemoveAvatarConfirmVisible] = useState(false);
+  const [cardUid, setCardUid] = useState<string | null>(null);
+
+  // "Add Friends" from the Home leaderboard's empty state deep-links here
+  // with ?tab=overview&focus=friends — this scrolls to and briefly
+  // highlights the Friends widget once the Overview tab has actually laid
+  // out, rather than assuming a fixed pixel offset (the identity card above
+  // it can grow/shrink with bio length, hobby count, font scale, etc.).
+  const scrollViewRef = useRef<ScrollView>(null);
+  const friendsAnchorRef = useRef<View>(null);
+  const pendingFocusFriendsRef = useRef(false);
+  const [highlightFriends, setHighlightFriends] = useState(false);
+  const highlightProgress = useRef(new Animated.Value(0)).current;
 
   const hasChanges = useMemo(() => JSON.stringify(draft) !== JSON.stringify(profile), [draft, profile]);
 
@@ -408,8 +429,12 @@ export default function ProfileScreen() {
   }, [profile.avatarUrl]);
 
   async function handlePickAvatar() {
-    if (avatarUploading || !user) return;
+    if (avatarUploading) return;
     setAvatarError(null);
+    if (!user) {
+      setAvatarError(avatarErrorMessage("not-authenticated"));
+      return;
+    }
 
     // The permission request and picker launch previously ran outside any
     // try/catch — if either rejected (e.g. no media-library permission
@@ -419,7 +444,7 @@ export default function ProfileScreen() {
     try {
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!perm.granted) {
-        setAvatarError("Photo access was denied. Enable it in your device settings to add a profile picture.");
+        setAvatarError(avatarErrorMessage("permission-denied"));
         return;
       }
 
@@ -429,19 +454,22 @@ export default function ProfileScreen() {
         aspect: [1, 1],
         quality: 0.7,
       });
+      // User cancellation is not an error — no message, no thrown exception.
       if (result.canceled || !result.assets?.[0]?.uri) return;
 
       setAvatarUploading(true);
+      // Old avatar stays on screen (avatarUrl only changes on success below)
+      // — a failed upload never leaves the user with a broken image.
       const url = await uploadAvatar(user.uid, result.assets[0].uri);
-      await updateAvatar(url);
+      try {
+        await updateAvatar(url);
+      } catch (e) {
+        throw new AvatarServiceError("profile-update-failed", e instanceof Error ? e.message : undefined);
+      }
     } catch (e) {
       if (__DEV__) console.warn("[Profile] avatar upload failed", e);
       const code = e instanceof AvatarServiceError ? e.code : "unknown";
-      setAvatarError(
-        code === "permission-denied"
-          ? "You don't have permission to update this photo."
-          : "Couldn't update your photo. Please check your connection and try again."
-      );
+      setAvatarError(avatarErrorMessage(code));
     } finally {
       setAvatarUploading(false);
     }
@@ -449,15 +477,24 @@ export default function ProfileScreen() {
 
   async function handleRemoveAvatarConfirmed() {
     setRemoveAvatarConfirmVisible(false);
-    if (avatarUploading || !user) return;
-    setAvatarUploading(true);
+    if (avatarUploading) return;
     setAvatarError(null);
+    if (!user) {
+      setAvatarError(avatarErrorMessage("not-authenticated"));
+      return;
+    }
+    setAvatarUploading(true);
     try {
       await removeAvatar(user.uid);
-      await updateAvatar(null);
+      try {
+        await updateAvatar(null);
+      } catch (e) {
+        throw new AvatarServiceError("profile-update-failed", e instanceof Error ? e.message : undefined);
+      }
     } catch (e) {
       if (__DEV__) console.warn("[Profile] avatar removal failed", e);
-      setAvatarError("Couldn't remove your photo. Please check your connection and try again.");
+      const code = e instanceof AvatarServiceError ? e.code : "delete-failed";
+      setAvatarError(avatarErrorMessage(code));
     } finally {
       setAvatarUploading(false);
     }
@@ -482,6 +519,44 @@ export default function ProfileScreen() {
     }).start();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, reduceMotion]);
+
+  // Consumed once per request (like openRequests above) — a later plain
+  // visit to Profile (no focus param) never re-triggers this.
+  useEffect(() => {
+    if (!shouldFocusFriendsWidget(params.focus)) return;
+    pendingFocusFriendsRef.current = true;
+    setActiveTab("overview");
+    router.setParams({ focus: undefined });
+  }, [params.focus]);
+
+  function handleFriendsAnchorLayout() {
+    if (!pendingFocusFriendsRef.current) return;
+    pendingFocusFriendsRef.current = false;
+    // One frame so the just-mounted Overview content (identity card + tab
+    // selector above it) has settled before measuring its real offset —
+    // never a hardcoded Y, since bio length/hobby count/font scale all
+    // change how tall that content is.
+    requestAnimationFrame(() => {
+      const scrollNode = scrollViewRef.current?.getScrollableNode?.();
+      if (scrollNode) {
+        friendsAnchorRef.current?.measureLayout(
+          scrollNode,
+          (_x: number, y: number) => scrollViewRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true }),
+          () => undefined
+        );
+      }
+      setHighlightFriends(true);
+    });
+  }
+
+  useEffect(() => {
+    if (!highlightFriends) return;
+    Animated.sequence([
+      Animated.timing(highlightProgress, { toValue: 1, duration: reduceMotion ? 0 : 220, useNativeDriver: false }),
+      Animated.delay(reduceMotion ? 700 : 1400),
+      Animated.timing(highlightProgress, { toValue: 0, duration: reduceMotion ? 0 : 400, useNativeDriver: false }),
+    ]).start(() => setHighlightFriends(false));
+  }, [highlightFriends, reduceMotion, highlightProgress]);
 
   function handleTabPress(id: TabId) {
     if (activeTab === "settings" && id !== "settings" && hasChanges) {
@@ -538,18 +613,22 @@ export default function ProfileScreen() {
     setTimeout(() => setTipsResetDone(false), 2000);
   }
 
-  const myPosts = posts.filter((p) => p.username === profile.username);
+  const { posts: myPosts, isLoading: myPostsLoading, loadError: myPostsError, hasMore: myPostsHasMore, loadingMore: myPostsLoadingMore, loadMore: loadMoreMyPosts } = useAuthorPosts(user?.uid ?? null);
 
   const TABS: { id: TabId; label: string }[] = [
-    { id: "overview", label: "Overview" },
     { id: "posts", label: "Posts" },
+    { id: "overview", label: "Overview" },
     { id: "badges", label: "Badges" },
     { id: "settings", label: "Settings" },
   ];
 
   return (
-    <SwipeableTab tabIndex={4} backgroundColor={colors.background}>
-      <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+    <SwipeableTab tabIndex={4} backgroundColor={colors.background} colors={colors}>
+      {/* Bottom inset excluded — the Tabs navigator's own tab bar already
+          reserves it (see hooks/useTabBarHeight.ts); the sticky Save footer
+          below also needs to sit flush above the tab bar, not floating
+          above an extra reserved gap. */}
+      <SafeAreaView edges={["top", "left", "right"]} style={[styles.container, { backgroundColor: colors.background }]}>
         {/* Header */}
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
           <Text style={[styles.headerTitle, { color: colors.text }]}>Profile</Text>
@@ -557,6 +636,7 @@ export default function ProfileScreen() {
         </View>
 
         <ScrollView
+          ref={scrollViewRef}
           contentContainerStyle={{ paddingBottom: activeTab === "settings" ? 8 : 100 }}
           showsVerticalScrollIndicator={false}
         >
@@ -602,14 +682,30 @@ export default function ProfileScreen() {
             {activeTab === "overview" && (
               <View style={styles.overviewContent}>
                 {/* Friends */}
-                <FriendsSection
-                  colors={colors}
-                  autoOpenRequests={autoOpenRequests}
-                  onAutoOpenHandled={() => {
-                    setAutoOpenRequests(false);
-                    router.setParams({ openRequests: undefined });
-                  }}
-                />
+                <View ref={friendsAnchorRef} onLayout={handleFriendsAnchorLayout} style={styles.friendsAnchor}>
+                  <Animated.View
+                    pointerEvents="none"
+                    style={[
+                      StyleSheet.absoluteFill,
+                      styles.friendsHighlight,
+                      {
+                        borderColor: highlightProgress.interpolate({ inputRange: [0, 1], outputRange: ["transparent", colors.primary] }),
+                        backgroundColor: highlightProgress.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: ["transparent", `${colors.primary}14`],
+                        }),
+                      },
+                    ]}
+                  />
+                  <FriendsSection
+                    colors={colors}
+                    autoOpenRequests={autoOpenRequests}
+                    onAutoOpenHandled={() => {
+                      setAutoOpenRequests(false);
+                      router.setParams({ openRequests: undefined });
+                    }}
+                  />
+                </View>
 
                 {/* My Hobbies */}
                 <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -658,7 +754,17 @@ export default function ProfileScreen() {
                   <Ionicons name="create-outline" size={22} color={colors.primary} />
                 </TouchableOpacity>
               </View>
-              {myPosts.length === 0 ? (
+              {myPostsLoading ? (
+                <>
+                  <PostCardSkeleton colors={colors} />
+                  <PostCardSkeleton colors={colors} />
+                </>
+              ) : myPostsError ? (
+                <View style={[styles.postsEmpty, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                  <Ionicons name="cloud-offline-outline" size={36} color={colors.secondaryText} />
+                  <Text style={[styles.postsEmptyText, { color: colors.secondaryText }]}>{myPostsError}</Text>
+                </View>
+              ) : myPosts.length === 0 ? (
                 <View style={[styles.postsEmpty, { backgroundColor: colors.card, borderColor: colors.border }]}>
                   <Ionicons name="newspaper-outline" size={36} color={colors.secondaryText} />
                   <Text style={[styles.postsEmptyText, { color: colors.secondaryText }]}>
@@ -672,15 +778,34 @@ export default function ProfileScreen() {
                   </TouchableOpacity>
                 </View>
               ) : (
-                myPosts.map((post) => (
-                  <PostCard
-                    key={post.id}
-                    post={post}
-                    colors={colors}
-                    onEdit={() => router.push(`/edit-post/${post.id}` as any)}
-                    onDelete={() => deletePost(post.id)}
-                  />
-                ))
+                <>
+                  {myPosts.map((post) => (
+                    <PostCard
+                      key={post.id}
+                      post={post}
+                      colors={colors}
+                      authorAvatarUrl={profile.avatarUrl}
+                      onEdit={() => router.push(`/edit-post/${post.id}` as any)}
+                      onDelete={() => deletePost(post.id)}
+                      onOpenUser={setCardUid}
+                    />
+                  ))}
+                  {myPostsHasMore && (
+                    <TouchableOpacity
+                      onPress={loadMoreMyPosts}
+                      disabled={myPostsLoadingMore}
+                      style={[styles.postsCreateBtn, { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, alignSelf: "center" }]}
+                      accessibilityRole="button"
+                      accessibilityLabel="Load more posts"
+                    >
+                      {myPostsLoadingMore ? (
+                        <ActivityIndicator size="small" color={colors.text} />
+                      ) : (
+                        <Text style={{ color: colors.text, fontWeight: "600" }}>Load more</Text>
+                      )}
+                    </TouchableOpacity>
+                  )}
+                </>
               )}
             </View>
           )}
@@ -989,6 +1114,8 @@ export default function ProfileScreen() {
         onConfirm={handleRemoveAvatarConfirmed}
         onCancel={() => setRemoveAvatarConfirmVisible(false)}
       />
+
+      <UserCardSheet uid={cardUid} colors={colors} onClose={() => setCardUid(null)} />
     </SwipeableTab>
   );
 }
@@ -1028,6 +1155,8 @@ const styles = StyleSheet.create({
 
   // Overview tab
   overviewContent: { padding: 16, paddingTop: 8, gap: 20 },
+  friendsAnchor: { borderRadius: 18 },
+  friendsHighlight: { borderRadius: 18, borderWidth: 2 },
   sectionCard: { borderRadius: 14, borderWidth: 1, padding: 16, gap: 12 },
   aboutText: { fontSize: 14, lineHeight: 20 },
   showAllBtn: { flexDirection: "row", alignItems: "center", gap: 2 },

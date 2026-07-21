@@ -1,20 +1,16 @@
 /**
  * FriendSearchModal — the "Add Friend" bottom sheet opened from FriendsSection's
  * plus button. Two panes: Find Friends (exact username search) and Requests
- * (incoming/outgoing). Hand-rolled Animated bottom sheet (backdrop fade + slide/
- * scale) since the project has no bottom-sheet library — matches the existing
- * custom-Modal pattern used by ConfirmModal/PracticeTimerModal.
+ * (incoming/outgoing). Uses the shared BottomSheet shell (backdrop, handle,
+ * swipe-to-dismiss, safe-area padding) instead of its own Modal/Animated copy
+ * — previously this duplicated that whole shell by hand, which meant a fix to
+ * the shared handle/gesture (see BottomSheet.tsx/useSwipeToCloseSheet.ts)
+ * would silently not apply here.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  AccessibilityInfo,
   ActivityIndicator,
   Animated,
-  Easing,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -22,12 +18,13 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { ColorTokens } from "../../context/ThemeContext";
 import { friendlyMessage, FriendRequestViewModel, useFriends } from "../../context/FriendsContext";
 import { FriendRelationshipStatus, FriendSearchResult } from "../../services/friendsService";
+import BottomSheet from "../BottomSheet";
 import FriendAvatar from "./FriendAvatar";
+import UserCardSheet from "../user-card/UserCardSheet";
 
 type Tab = "find" | "requests";
 
@@ -65,10 +62,12 @@ function SearchResultCard({
   result,
   colors,
   onResultChange,
+  onOpenCard,
 }: {
   result: FriendSearchResult;
   colors: ColorTokens;
   onResultChange: (next: FriendSearchResult) => void;
+  onOpenCard: (uid: string) => void;
 }) {
   const { sendRequest, acceptRequest, actionState } = useFriends();
   const [localError, setLocalError] = useState<string | null>(null);
@@ -114,17 +113,24 @@ function SearchResultCard({
     <Animated.View
       style={[styles.resultCard, { backgroundColor: colors.card, borderColor: colors.border, opacity: fade }]}
     >
-      <FriendAvatar username={displayName} avatarUrl={result.profile.avatarUrl} size={44} colors={colors} />
-      <View style={styles.resultInfo}>
-        <Text style={[styles.resultName, { color: colors.text }]} numberOfLines={1}>
-          {displayName}
-        </Text>
-        {result.profile.city ? (
-          <Text style={[styles.resultCity, { color: colors.secondaryText }]} numberOfLines={1}>
-            {result.profile.city}
+      <TouchableOpacity
+        style={styles.resultIdentity}
+        onPress={() => onOpenCard(result.profile.uid)}
+        accessibilityRole="button"
+        accessibilityLabel={`View ${displayName}'s profile`}
+      >
+        <FriendAvatar username={displayName} avatarUrl={result.profile.avatarUrl} size={44} colors={colors} />
+        <View style={styles.resultInfo}>
+          <Text style={[styles.resultName, { color: colors.text }]} numberOfLines={1}>
+            {displayName}
           </Text>
-        ) : null}
-      </View>
+          {result.profile.city ? (
+            <Text style={[styles.resultCity, { color: colors.secondaryText }]} numberOfLines={1}>
+              {result.profile.city}
+            </Text>
+          ) : null}
+        </View>
+      </TouchableOpacity>
       <TouchableOpacity
         onPress={handlePress}
         disabled={disabled}
@@ -166,7 +172,7 @@ function SearchResultCard({
 
 // ── Find Friends pane ────────────────────────────────────────────────────────
 
-function FindFriendsPane({ colors }: { colors: ColorTokens }) {
+function FindFriendsPane({ colors, onOpenCard }: { colors: ColorTokens; onOpenCard: (uid: string) => void }) {
   const { searchUsername } = useFriends();
   const [query, setQuery] = useState("");
   const [state, setState] = useState<SearchState>("idle");
@@ -259,7 +265,7 @@ function FindFriendsPane({ colors }: { colors: ColorTokens }) {
         <Text style={[styles.inlineHint, { color: colors.secondaryText }]}>{error}</Text>
       )}
       {state === "found" && result && (
-        <SearchResultCard result={result} colors={colors} onResultChange={setResult} />
+        <SearchResultCard result={result} colors={colors} onResultChange={setResult} onOpenCard={onOpenCard} />
       )}
     </View>
   );
@@ -270,9 +276,11 @@ function FindFriendsPane({ colors }: { colors: ColorTokens }) {
 function RequestRow({
   item,
   colors,
+  onOpenCard,
 }: {
   item: FriendRequestViewModel;
   colors: ColorTokens;
+  onOpenCard: (uid: string) => void;
 }) {
   const { acceptRequest, declineRequest, cancelRequest, actionState } = useFriends();
   const displayName = item.profile?.username || "User";
@@ -291,18 +299,26 @@ function RequestRow({
 
   return (
     <View style={[styles.requestRow, { borderColor: colors.border }]}>
-      <FriendAvatar username={displayName} avatarUrl={item.profile?.avatarUrl} size={40} colors={colors} />
-      <View style={styles.requestInfo}>
-        <Text style={[styles.requestName, { color: colors.text }]} numberOfLines={1}>
-          {displayName}
-        </Text>
-        {city ? (
-          <Text style={[styles.requestCity, { color: colors.secondaryText }]} numberOfLines={1}>
-            {city}
+      <TouchableOpacity
+        style={styles.requestIdentity}
+        onPress={() => item.profile && onOpenCard(item.profile.uid)}
+        disabled={!item.profile}
+        accessibilityRole="button"
+        accessibilityLabel={`View ${displayName}'s profile`}
+      >
+        <FriendAvatar username={displayName} avatarUrl={item.profile?.avatarUrl} size={40} colors={colors} />
+        <View style={styles.requestInfo}>
+          <Text style={[styles.requestName, { color: colors.text }]} numberOfLines={1}>
+            {displayName}
           </Text>
-        ) : null}
-        {rowError ? <Text style={[styles.resultError, { color: colors.danger }]}>{rowError}</Text> : null}
-      </View>
+          {city ? (
+            <Text style={[styles.requestCity, { color: colors.secondaryText }]} numberOfLines={1}>
+              {city}
+            </Text>
+          ) : null}
+          {rowError ? <Text style={[styles.resultError, { color: colors.danger }]}>{rowError}</Text> : null}
+        </View>
+      </TouchableOpacity>
 
       {item.direction === "incoming" ? (
         <View style={styles.requestActions}>
@@ -355,7 +371,7 @@ function RequestRow({
   );
 }
 
-function RequestsPane({ colors }: { colors: ColorTokens }) {
+function RequestsPane({ colors, onOpenCard }: { colors: ColorTokens; onOpenCard: (uid: string) => void }) {
   const { incomingRequests, outgoingRequests } = useFriends();
   const hasAny = incomingRequests.length > 0 || outgoingRequests.length > 0;
 
@@ -375,7 +391,7 @@ function RequestsPane({ colors }: { colors: ColorTokens }) {
         <>
           <Text style={[styles.paneSectionLabel, { color: colors.secondaryText }]}>Incoming</Text>
           {incomingRequests.map((item) => (
-            <RequestRow key={item.friendshipId} item={item} colors={colors} />
+            <RequestRow key={item.friendshipId} item={item} colors={colors} onOpenCard={onOpenCard} />
           ))}
         </>
       )}
@@ -383,7 +399,7 @@ function RequestsPane({ colors }: { colors: ColorTokens }) {
         <>
           <Text style={[styles.paneSectionLabel, { color: colors.secondaryText, marginTop: 12 }]}>Sent</Text>
           {outgoingRequests.map((item) => (
-            <RequestRow key={item.friendshipId} item={item} colors={colors} />
+            <RequestRow key={item.friendshipId} item={item} colors={colors} onOpenCard={onOpenCard} />
           ))}
         </>
       )}
@@ -394,149 +410,83 @@ function RequestsPane({ colors }: { colors: ColorTokens }) {
 // ── Main modal ───────────────────────────────────────────────────────────────
 
 export default function FriendSearchModal({ visible, onClose, colors, initialTab = "find" }: Props) {
-  const insets = useSafeAreaInsets();
   const { incomingRequests } = useFriends();
   const [tab, setTab] = useState<Tab>("find");
-  const [mounted, setMounted] = useState(visible);
-  const [reduceMotion, setReduceMotion] = useState(false);
-
-  const backdropOpacity = useRef(new Animated.Value(0)).current;
-  const sheetTranslate = useRef(new Animated.Value(28)).current;
-  const sheetScale = useRef(new Animated.Value(0.97)).current;
+  const [cardUid, setCardUid] = useState<string | null>(null);
 
   useEffect(() => {
-    AccessibilityInfo.isReduceMotionEnabled?.()
-      .then(setReduceMotion)
-      .catch(() => undefined);
-  }, []);
-
-  useEffect(() => {
-    const duration = reduceMotion ? 0 : visible ? 240 : 180;
-    if (visible) {
-      setMounted(true);
-      setTab(initialTab);
-      Animated.parallel([
-        Animated.timing(backdropOpacity, { toValue: 1, duration, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-        Animated.timing(sheetTranslate, { toValue: 0, duration, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-        Animated.timing(sheetScale, { toValue: 1, duration, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-      ]).start();
-    } else {
-      Animated.parallel([
-        Animated.timing(backdropOpacity, { toValue: 0, duration, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
-        Animated.timing(sheetTranslate, { toValue: 28, duration, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
-        Animated.timing(sheetScale, { toValue: 0.97, duration, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
-      ]).start(({ finished }) => {
-        if (finished) setMounted(false);
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, reduceMotion, initialTab]);
-
-  if (!mounted) return null;
+    if (visible) setTab(initialTab);
+  }, [visible, initialTab]);
 
   return (
-    <Modal visible transparent animationType="none" onRequestClose={onClose} statusBarTranslucent>
-      <Animated.View style={[styles.backdrop, { opacity: backdropOpacity }]}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close" />
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={styles.kbWrapper}
-          pointerEvents="box-none"
-        >
-          <Animated.View
-            style={[
-              styles.sheet,
-              {
-                backgroundColor: colors.background,
-                borderColor: colors.border,
-                paddingBottom: insets.bottom + 12,
-                transform: [{ translateY: sheetTranslate }, { scale: sheetScale }],
-              },
-            ]}
+    <>
+      <BottomSheet visible={visible} onClose={onClose} colors={colors} avoidKeyboard maxHeight="86%">
+        <View style={styles.titleRow}>
+          <Text style={[styles.sheetTitle, { color: colors.text }]}>Friends</Text>
+          <TouchableOpacity
+            onPress={onClose}
+            style={styles.closeIconBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Close"
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
-            <View style={styles.handleRow}>
-              <View style={[styles.handle, { backgroundColor: colors.border }]} />
-            </View>
-            <View style={styles.titleRow}>
-              <Text style={[styles.sheetTitle, { color: colors.text }]}>Friends</Text>
-              <TouchableOpacity
-                onPress={onClose}
-                style={styles.closeIconBtn}
-                accessibilityRole="button"
-                accessibilityLabel="Close"
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <Ionicons name="close" size={22} color={colors.secondaryText} />
-              </TouchableOpacity>
-            </View>
+            <Ionicons name="close" size={22} color={colors.secondaryText} />
+          </TouchableOpacity>
+        </View>
 
-            <View style={[styles.tabRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
-              <TouchableOpacity
-                style={[styles.tabPill, tab === "find" && { backgroundColor: colors.primary }]}
-                onPress={() => setTab("find")}
+        <View style={[styles.tabRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <TouchableOpacity
+            style={[styles.tabPill, tab === "find" && { backgroundColor: colors.primary }]}
+            onPress={() => setTab("find")}
+          >
+            <Text style={[styles.tabPillText, { color: tab === "find" ? "#fff" : colors.secondaryText }]}>
+              Find Friends
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tabPill, tab === "requests" && { backgroundColor: colors.primary }]}
+            onPress={() => setTab("requests")}
+          >
+            <View style={styles.tabPillInner}>
+              <Text
+                style={[styles.tabPillText, { color: tab === "requests" ? "#fff" : colors.secondaryText }]}
               >
-                <Text style={[styles.tabPillText, { color: tab === "find" ? "#fff" : colors.secondaryText }]}>
-                  Find Friends
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.tabPill, tab === "requests" && { backgroundColor: colors.primary }]}
-                onPress={() => setTab("requests")}
-              >
-                <View style={styles.tabPillInner}>
+                Requests
+              </Text>
+              {incomingRequests.length > 0 && (
+                <View
+                  style={[
+                    styles.tabBadge,
+                    { backgroundColor: tab === "requests" ? "#fff" : "#EF4444" },
+                  ]}
+                >
                   <Text
-                    style={[styles.tabPillText, { color: tab === "requests" ? "#fff" : colors.secondaryText }]}
+                    style={[
+                      styles.tabBadgeText,
+                      { color: tab === "requests" ? colors.primary : "#fff" },
+                    ]}
                   >
-                    Requests
+                    {incomingRequests.length > 9 ? "9+" : incomingRequests.length}
                   </Text>
-                  {incomingRequests.length > 0 && (
-                    <View
-                      style={[
-                        styles.tabBadge,
-                        { backgroundColor: tab === "requests" ? "#fff" : "#EF4444" },
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.tabBadgeText,
-                          { color: tab === "requests" ? colors.primary : "#fff" },
-                        ]}
-                      >
-                        {incomingRequests.length > 9 ? "9+" : incomingRequests.length}
-                      </Text>
-                    </View>
-                  )}
                 </View>
-              </TouchableOpacity>
+              )}
             </View>
+          </TouchableOpacity>
+        </View>
 
-            {tab === "find" ? <FindFriendsPane colors={colors} /> : <RequestsPane colors={colors} />}
-          </Animated.View>
-        </KeyboardAvoidingView>
-      </Animated.View>
-    </Modal>
+        {tab === "find" ? (
+          <FindFriendsPane colors={colors} onOpenCard={setCardUid} />
+        ) : (
+          <RequestsPane colors={colors} onOpenCard={setCardUid} />
+        )}
+      </BottomSheet>
+
+      <UserCardSheet uid={cardUid} colors={colors} onClose={() => setCardUid(null)} />
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.55)",
-    justifyContent: "flex-end",
-  },
-  kbWrapper: { justifyContent: "flex-end" },
-  sheet: {
-    width: "100%",
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    borderWidth: 1,
-    borderBottomWidth: 0,
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    maxHeight: "86%",
-  },
-  handleRow: { alignItems: "center", paddingVertical: 6 },
-  handle: { width: 36, height: 4, borderRadius: 2 },
   titleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 2, marginBottom: 12 },
   sheetTitle: { fontSize: 19, fontWeight: "800" },
   closeIconBtn: { padding: 2 },
@@ -574,6 +524,7 @@ const styles = StyleSheet.create({
     gap: 10,
     flexWrap: "wrap",
   },
+  resultIdentity: { flexDirection: "row", alignItems: "center", gap: 10, flex: 1, minWidth: 80 },
   resultInfo: { flex: 1, minWidth: 80 },
   resultName: { fontSize: 15, fontWeight: "700" },
   resultCity: { fontSize: 12, marginTop: 1 },
@@ -583,7 +534,8 @@ const styles = StyleSheet.create({
   resultSuccess: { fontSize: 11, width: "100%", marginTop: 2, fontWeight: "600" },
 
   requestRow: { flexDirection: "row", alignItems: "center", paddingVertical: 10, borderBottomWidth: 1 },
-  requestInfo: { flex: 1, marginLeft: 10 },
+  requestIdentity: { flexDirection: "row", alignItems: "center", flex: 1, minWidth: 0 },
+  requestInfo: { flex: 1, marginLeft: 10, minWidth: 0 },
   requestName: { fontSize: 14, fontWeight: "700" },
   requestCity: { fontSize: 12, marginTop: 1 },
   requestActions: { flexDirection: "row", alignItems: "center", gap: 8 },

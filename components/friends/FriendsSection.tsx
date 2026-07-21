@@ -2,20 +2,20 @@
  * FriendsSection — the compact "Friends" card on the Profile Overview tab.
  * Shows the accepted-friend count, a plus button (badged when requests are
  * pending) that opens FriendSearchModal, a horizontally scrollable accepted
- * friend list, and a friendly empty state. Tapping a friend opens
- * FriendPreviewModal, which is where "Remove Friend" lives.
+ * friend list, and a friendly empty state. Tapping a friend opens the
+ * reusable UserCardSheet (also used from community chat, the leaderboard,
+ * posts, and comments) — "Remove Friend" lives there now.
  */
 import { useEffect, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { ColorTokens } from "../../context/ThemeContext";
 import { useFriends } from "../../context/FriendsContext";
-import { PublicProfile } from "../../types/PublicProfile";
 import SectionCardHeader from "../profile/SectionCardHeader";
 import FriendAvatar from "./FriendAvatar";
 import { brand } from "../../constants/colors";
 import FriendSearchModal from "./FriendSearchModal";
-import FriendPreviewModal from "./FriendPreviewModal";
+import UserCardSheet from "../user-card/UserCardSheet";
 
 type Props = {
   colors: ColorTokens;
@@ -28,7 +28,7 @@ export default function FriendsSection({ colors, autoOpenRequests, onAutoOpenHan
   const { acceptedFriends, incomingRequests, isLoaded, loadError } = useFriends();
   const [searchModalVisible, setSearchModalVisible] = useState(false);
   const [searchModalInitialTab, setSearchModalInitialTab] = useState<"find" | "requests">("find");
-  const [previewProfile, setPreviewProfile] = useState<PublicProfile | null>(null);
+  const [previewUid, setPreviewUid] = useState<string | null>(null);
 
   useEffect(() => {
     if (!autoOpenRequests) return;
@@ -56,12 +56,13 @@ export default function FriendsSection({ colors, autoOpenRequests, onAutoOpenHan
           action={
             <TouchableOpacity
               onPress={openSearchModal}
-              style={[styles.addBtn, { backgroundColor: colors.primary }]}
+              style={[styles.addBtn, { borderColor: colors.primary }]}
               accessibilityRole="button"
               accessibilityLabel="Add a friend"
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <Ionicons name="person-add" size={18} color="#fff" />
+              <Ionicons name="add" size={14} color={colors.primary} />
+              <Text style={[styles.addBtnText, { color: colors.primary }]}>Add Friend</Text>
               {hasRequests && (
                 <View style={[styles.badge, { backgroundColor: "#EF4444", borderColor: colors.card }]}>
                   <Text style={styles.badgeText}>{incomingRequests.length > 9 ? "9+" : incomingRequests.length}</Text>
@@ -81,6 +82,10 @@ export default function FriendsSection({ colors, autoOpenRequests, onAutoOpenHan
             <Text style={[styles.stateText, { color: colors.secondaryText }]}>{loadError}</Text>
           </View>
         ) : acceptedFriends.length === 0 ? (
+          // Single control for this whole card: the "Add Friend" button in
+          // the header above. This empty state used to repeat a second,
+          // icon-only "Add Friend" button here — two controls for the same
+          // action — so it's description-only now.
           <View style={styles.emptyState}>
             <View style={styles.emptyRow}>
               <Ionicons name="people-outline" size={20} color={colors.secondaryText} />
@@ -91,15 +96,6 @@ export default function FriendsSection({ colors, autoOpenRequests, onAutoOpenHan
                 </Text>
               </View>
             </View>
-            <TouchableOpacity
-              onPress={openSearchModal}
-              style={[styles.emptyAction, { borderColor: colors.primary }]}
-              accessibilityRole="button"
-              accessibilityLabel="Add a friend"
-            >
-              <Ionicons name="add" size={14} color={colors.primary} />
-              <Text style={[styles.emptyActionText, { color: colors.primary }]}>Add Friend</Text>
-            </TouchableOpacity>
           </View>
         ) : (
           <ScrollView
@@ -113,7 +109,7 @@ export default function FriendsSection({ colors, autoOpenRequests, onAutoOpenHan
                 <TouchableOpacity
                   key={friend.uid}
                   style={styles.friendItem}
-                  onPress={() => setPreviewProfile(friend)}
+                  onPress={() => setPreviewUid(friend.uid)}
                   accessibilityRole="button"
                   accessibilityLabel={`${friend.username || "User"}, ${streak} day streak`}
                 >
@@ -140,7 +136,7 @@ export default function FriendsSection({ colors, autoOpenRequests, onAutoOpenHan
         colors={colors}
         initialTab={searchModalInitialTab}
       />
-      <FriendPreviewModal profile={previewProfile} colors={colors} onClose={() => setPreviewProfile(null)} />
+      <UserCardSheet uid={previewUid} colors={colors} onClose={() => setPreviewUid(null)} />
     </View>
   );
 }
@@ -149,16 +145,19 @@ const styles = StyleSheet.create({
   section: {},
   card: { borderRadius: 14, borderWidth: 1, padding: 16, gap: 12 },
   addBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
+    gap: 4,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
   },
+  addBtnText: { fontSize: 13, fontWeight: "700" },
   badge: {
     position: "absolute",
-    top: -4,
-    right: -4,
+    top: -6,
+    right: -6,
     minWidth: 17,
     height: 17,
     borderRadius: 9,
@@ -176,17 +175,6 @@ const styles = StyleSheet.create({
   emptyTextCol: { flex: 1, minWidth: 0, gap: 2 },
   emptyTitle: { fontSize: 14, fontWeight: "700" },
   emptyBody: { fontSize: 12, lineHeight: 16 },
-  emptyAction: {
-    flexDirection: "row",
-    alignSelf: "flex-start",
-    alignItems: "center",
-    gap: 4,
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-  },
-  emptyActionText: { fontSize: 13, fontWeight: "700" },
   friendRow: { gap: 14, paddingVertical: 2 },
   friendItem: { alignItems: "center", width: 60, gap: 4 },
   friendName: { fontSize: 12, fontWeight: "600", maxWidth: 60 },

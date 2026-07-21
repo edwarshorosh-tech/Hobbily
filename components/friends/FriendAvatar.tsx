@@ -6,7 +6,11 @@
  * avatarUrl is null (no photo uploaded, or it was removed).
  */
 import { Image, StyleProp, StyleSheet, Text, View, ViewStyle } from "react-native";
+import { useState } from "react";
 import { ColorTokens } from "../../context/ThemeContext";
+import { initialsFor } from "../../utils/avatarInitials";
+
+export { initialsFor };
 
 type Props = {
   username: string;
@@ -18,20 +22,14 @@ type Props = {
   highlighted?: boolean;
 };
 
-function initialsFor(username: string): string {
-  const trimmed = (username || "?").trim();
-  if (!trimmed) return "?";
-  return trimmed
-    .split(/\s+/)
-    .map((w) => w[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
-}
-
 export default function FriendAvatar({ username, avatarUrl, size = 44, colors, style, highlighted }: Props) {
   const initials = initialsFor(username);
   const fontSize = Math.max(11, Math.round(size * 0.4));
+  // Tracks the specific URL that failed so a later successful upload (a new
+  // avatarUrl string, e.g. after replacing the photo) automatically retries
+  // rendering the image instead of being stuck on the initials fallback.
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const showImage = !!avatarUrl && avatarUrl !== failedUrl;
 
   return (
     <View
@@ -50,10 +48,12 @@ export default function FriendAvatar({ username, avatarUrl, size = 44, colors, s
         style,
       ]}
     >
-      {avatarUrl ? (
+      {showImage ? (
         <Image
           source={{ uri: avatarUrl }}
           style={{ width: size, height: size, borderRadius: size / 2 }}
+          onError={() => setFailedUrl(avatarUrl)}
+          accessibilityLabel={`${username}'s profile photo`}
         />
       ) : (
         <Text style={[styles.initials, { fontSize }]} numberOfLines={1}>

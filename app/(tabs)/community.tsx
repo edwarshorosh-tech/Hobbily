@@ -2,7 +2,8 @@
  * Community screen
  * Browse hobby channels, join them, and chat with other teens who share
  * the same interests. Messages are stored in Firestore (real-time via
- * onSnapshot). The joined-channel list is persisted locally in AsyncStorage.
+ * onSnapshot). Membership is a real Firestore record — see
+ * context/CommunityContext.tsx — not a device-local AsyncStorage list.
  */
 import {
   View,
@@ -12,6 +13,7 @@ import {
   Pressable,
   TextInput,
   TouchableOpacity,
+  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   FlatList,
@@ -23,8 +25,12 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../../context/ThemeContext";
 import { useCommunity } from "../../context/CommunityContext";
 import { useProfile } from "../../context/ProfileContext";
+import { useAuth } from "../../context/AuthContext";
 import SwipeableTab from "../../components/SwipeableTab";
 import TipBanner, { TIP_KEYS } from "../../components/TipBanner";
+import UserCardSheet from "../../components/user-card/UserCardSheet";
+import FriendAvatar from "../../components/friends/FriendAvatar";
+import { useAuthorProfiles } from "../../hooks/useAuthorProfiles";
 import { Channel, CommunityMessage } from "../../types/CommunityMessage";
 
 // ── Seed messages for a better first-run experience ───────────────────────────
@@ -56,13 +62,15 @@ const SEED_MESSAGES: Record<string, { author: string; text: string }[]> = {
 type ChannelCardProps = {
   channel: Channel;
   isJoined: boolean;
+  memberCount: number | undefined;
+  pending: boolean;
   lastMessage?: CommunityMessage;
   colors: ReturnType<typeof useTheme>["colors"];
   onPress: () => void;
   onJoinToggle: () => void;
 };
 
-function ChannelCard({ channel, isJoined, lastMessage, colors, onPress, onJoinToggle }: ChannelCardProps) {
+function ChannelCard({ channel, isJoined, memberCount, pending, lastMessage, colors, onPress, onJoinToggle }: ChannelCardProps) {
   return (
     <Pressable
       onPress={onPress}
@@ -95,21 +103,29 @@ function ChannelCard({ channel, isJoined, lastMessage, colors, onPress, onJoinTo
           </Text>
         )}
         <Text style={[styles.channelMembers, { color: colors.tabBarInactive }]}>
-          <Ionicons name="people-outline" size={11} /> {channel.members.toLocaleString()} members
+          <Ionicons name="people-outline" size={11} /> {memberCount === undefined ? "…" : memberCount.toLocaleString()} members
         </Text>
       </View>
       <TouchableOpacity
         onPress={(e) => { e.stopPropagation(); onJoinToggle(); }}
+        disabled={pending}
         style={[
           styles.joinBtn,
           isJoined
             ? { backgroundColor: colors.secondary, borderColor: colors.border }
             : { backgroundColor: colors.primary },
+          pending && { opacity: 0.6 },
         ]}
+        accessibilityRole="button"
+        accessibilityLabel={isJoined ? `Leave ${channel.name}` : `Join ${channel.name}`}
       >
-        <Text style={[styles.joinBtnText, { color: isJoined ? colors.text : "#fff" }]}>
-          {isJoined ? "Leave" : "Join"}
-        </Text>
+        {pending ? (
+          <ActivityIndicator size="small" color={isJoined ? colors.text : "#fff"} />
+        ) : (
+          <Text style={[styles.joinBtnText, { color: isJoined ? colors.text : "#fff" }]}>
+            {isJoined ? "Leave" : "Join"}
+          </Text>
+        )}
       </TouchableOpacity>
     </Pressable>
   );
@@ -122,20 +138,32 @@ type BubbleProps = {
   isMine: boolean;
   colors: ReturnType<typeof useTheme>["colors"];
   onDelete?: () => void;
+  /** Opens UserCardSheet for this message's author — absent (and the avatar/name become non-interactive) on legacy messages sent before authorId existed. */
+  onAuthorPress?: () => void;
+  /** Resolved live from publicProfiles by ChannelView's useAuthorProfiles — undefined while still loading, never a value cached on the message itself. */
+  avatarUrl?: string | null;
 };
 
-function MessageBubble({ msg, isMine, colors, onDelete }: BubbleProps) {
+function MessageBubble({ msg, isMine, colors, onDelete, onAuthorPress, avatarUrl }: BubbleProps) {
   const time = new Date(msg.createdAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
   return (
     <View style={[styles.bubbleWrapper, isMine && styles.bubbleWrapperMine]}>
       {!isMine && (
-        <View style={[styles.avatarCircle, { backgroundColor: colors.primary }]}>
-          <Text style={styles.avatarText}>{msg.author[0]?.toUpperCase()}</Text>
-        </View>
+        <TouchableOpacity
+          onPress={onAuthorPress}
+          disabled={!onAuthorPress}
+          style={styles.avatarWrap}
+          accessibilityRole={onAuthorPress ? "button" : undefined}
+          accessibilityLabel={onAuthorPress ? `View ${msg.author}'s profile` : undefined}
+        >
+          <FriendAvatar username={msg.author} avatarUrl={avatarUrl ?? null} size={30} colors={colors} />
+        </TouchableOpacity>
       )}
       <View style={{ maxWidth: "75%" }}>
         {!isMine && (
-          <Text style={[styles.bubbleAuthor, { color: colors.secondaryText }]}>{msg.author}</Text>
+          <TouchableOpacity onPress={onAuthorPress} disabled={!onAuthorPress} accessibilityRole={onAuthorPress ? "button" : undefined}>
+            <Text style={[styles.bubbleAuthor, { color: colors.secondaryText }]}>{msg.author}</Text>
+          </TouchableOpacity>
         )}
         <View
           style={[
@@ -171,9 +199,12 @@ type ChannelViewProps = {
 };
 
 function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
-  const { messages, sendMessage, deleteMessage, joinedChannelIds, joinChannel } = useCommunity();
+  const { messages, sendMessage, deleteMessage, joinedChannelIds, joinChannel, memberCounts, pendingChannelIds } = useCommunity();
   const { profile } = useProfile();
+  const { user } = useAuth();
   const [draft, setDraft] = useState("");
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [cardUid, setCardUid] = useState<string | null>(null);
   const flatRef = useRef<FlatList>(null);
 
   const rawMessages = messages[channel.id] ?? [];
@@ -186,16 +217,29 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
     createdAt: new Date(Date.now() - (60 - i * 10) * 60000).toISOString(),
   }));
   const allMessages = rawMessages.length > 0 ? rawMessages : seedMsgs;
+  const authorProfiles = useAuthorProfiles(allMessages.map((m) => m.authorId));
 
   const isJoined = joinedChannelIds.includes(channel.id);
+  const joinPending = pendingChannelIds.has(channel.id);
 
   async function handleSend() {
     const text = draft.trim();
     if (!text) return;
-    if (!isJoined) await joinChannel(channel.id);
-    await sendMessage(channel.id, profile.username || "You", text);
-    setDraft("");
-    setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 100);
+    setSendError(null);
+    if (!isJoined) {
+      const result = await joinChannel(channel.id);
+      if (!result.ok) {
+        setSendError(result.message);
+        return;
+      }
+    }
+    try {
+      await sendMessage(channel.id, text);
+      setDraft("");
+      setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 100);
+    } catch {
+      setSendError("Couldn't send that message. Please check your connection and try again.");
+    }
   }
 
   // Scroll to bottom on first render
@@ -228,18 +272,27 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
         <View style={{ flex: 1 }}>
           <Text style={[styles.chatHeaderTitle, { color: colors.text }]}>{channel.name}</Text>
           <Text style={[styles.chatHeaderSub, { color: colors.secondaryText }]}>
-            {channel.members.toLocaleString()} members
+            {(memberCounts[channel.id] ?? 0).toLocaleString()} members
           </Text>
         </View>
         {!isJoined && (
           <TouchableOpacity
-            onPress={() => joinChannel(channel.id)}
-            style={[styles.joinSmallBtn, { backgroundColor: colors.primary }]}
+            onPress={() => joinChannel(channel.id).then((r) => { if (!r.ok) setSendError(r.message); })}
+            disabled={joinPending}
+            style={[styles.joinSmallBtn, { backgroundColor: colors.primary, opacity: joinPending ? 0.6 : 1 }]}
+            accessibilityRole="button"
+            accessibilityLabel={`Join ${channel.name}`}
           >
-            <Text style={{ color: "#fff", fontWeight: "700", fontSize: 13 }}>Join</Text>
+            {joinPending ? <ActivityIndicator size="small" color="#fff" /> : <Text style={{ color: "#fff", fontWeight: "700", fontSize: 13 }}>Join</Text>}
           </TouchableOpacity>
         )}
       </SafeAreaView>
+      {sendError && (
+        <View style={[styles.chatErrorBanner, { backgroundColor: colors.danger + "18", borderColor: colors.danger }]}>
+          <Ionicons name="alert-circle-outline" size={14} color={colors.danger} />
+          <Text style={[styles.chatErrorText, { color: colors.danger }]}>{sendError}</Text>
+        </View>
+      )}
 
       <FlatList
         ref={flatRef}
@@ -251,16 +304,25 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
         renderItem={({ item }) => (
           <MessageBubble
             msg={item}
-            isMine={item.author === (profile.username || "You")}
+            isMine={item.authorId ? item.authorId === user?.uid : item.author === (profile.username || "You")}
             colors={colors}
             onDelete={
-              item.id.startsWith("seed_")
+              // Strict authorId match only (not the username fallback
+              // `isMine` uses for bubble styling) — a legacy message with no
+              // authorId can never satisfy firestore.rules' delete
+              // condition, so it never gets an onDelete handler in the
+              // first place rather than offering a control that would fail.
+              item.id.startsWith("seed_") || !item.authorId || item.authorId !== user?.uid
                 ? undefined
-                : () => deleteMessage(channel.id, item.id)
+                : () => deleteMessage(channel.id, item.id).catch(() => setSendError("Couldn't delete that message. Please try again."))
             }
+            onAuthorPress={item.authorId ? () => setCardUid(item.authorId!) : undefined}
+            avatarUrl={item.authorId ? authorProfiles.get(item.authorId)?.avatarUrl : null}
           />
         )}
       />
+
+      <UserCardSheet uid={cardUid} onClose={() => setCardUid(null)} colors={colors} />
 
       {/* Input bar */}
       <View style={[styles.inputBar, { backgroundColor: colors.card, borderTopColor: colors.border }]}>
@@ -290,12 +352,19 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
 
 export default function CommunityScreen() {
   const { colors } = useTheme();
-  const { channels, messages, joinedChannelIds, joinChannel, leaveChannel } = useCommunity();
+  const { channels, messages, joinedChannelIds, joinChannel, leaveChannel, memberCounts, pendingChannelIds } = useCommunity();
   const { profile } = useProfile();
 
   const [activeChannel, setActiveChannel] = useState<Channel | null>(null);
   const [filter, setFilter] = useState<"all" | "mine">("all");
   const [search, setSearch] = useState("");
+  const [joinError, setJoinError] = useState<string | null>(null);
+
+  async function handleJoinToggle(channelId: string) {
+    setJoinError(null);
+    const result = joinedChannelIds.includes(channelId) ? await leaveChannel(channelId) : await joinChannel(channelId);
+    if (!result.ok) setJoinError(result.message);
+  }
 
   if (activeChannel) {
     return (
@@ -319,8 +388,10 @@ export default function CommunityScreen() {
   }
 
   return (
-    <SwipeableTab tabIndex={2} backgroundColor={colors.background}>
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+    <SwipeableTab tabIndex={2} backgroundColor={colors.background} colors={colors}>
+    {/* Bottom inset excluded — the Tabs navigator's own tab bar already
+        reserves it (see hooks/useTabBarHeight.ts). */}
+    <SafeAreaView edges={["top", "left", "right"]} style={[styles.container, { backgroundColor: colors.background }]}>
       {/* Header */}
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <View>
@@ -410,6 +481,13 @@ export default function CommunityScreen() {
           ))}
         </View>
 
+        {joinError && (
+          <View style={[styles.chatErrorBanner, { backgroundColor: colors.danger + "18", borderColor: colors.danger, marginHorizontal: 16, marginTop: 12 }]}>
+            <Ionicons name="alert-circle-outline" size={14} color={colors.danger} />
+            <Text style={[styles.chatErrorText, { color: colors.danger }]}>{joinError}</Text>
+          </View>
+        )}
+
         {/* Channel list */}
         <View style={styles.channelList}>
           {displayed.length === 0 ? (
@@ -435,12 +513,12 @@ export default function CommunityScreen() {
                 key={ch.id}
                 channel={ch}
                 isJoined={joinedChannelIds.includes(ch.id)}
+                memberCount={memberCounts[ch.id]}
+                pending={pendingChannelIds.has(ch.id)}
                 lastMessage={getLastMessage(ch.id)}
                 colors={colors}
                 onPress={() => setActiveChannel(ch)}
-                onJoinToggle={() =>
-                  joinedChannelIds.includes(ch.id) ? leaveChannel(ch.id) : joinChannel(ch.id)
-                }
+                onJoinToggle={() => handleJoinToggle(ch.id)}
               />
             ))
           )}
@@ -552,6 +630,8 @@ const styles = StyleSheet.create({
   },
   chatHeaderTitle: { fontSize: 16, fontWeight: "700" },
   chatHeaderSub: { fontSize: 12 },
+  chatErrorBanner: { flexDirection: "row", alignItems: "center", gap: 6, borderWidth: 1, borderRadius: 10, padding: 10 },
+  chatErrorText: { fontSize: 12, flex: 1 },
   joinSmallBtn: {
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -561,16 +641,7 @@ const styles = StyleSheet.create({
   chatList: { padding: 16, gap: 8 },
   bubbleWrapper: { flexDirection: "row", alignItems: "flex-end" },
   bubbleWrapperMine: { justifyContent: "flex-end" },
-  avatarCircle: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 8,
-    marginBottom: 18,
-  },
-  avatarText: { color: "#fff", fontWeight: "700", fontSize: 12 },
+  avatarWrap: { marginRight: 8, marginBottom: 18 },
   bubbleAuthor: { fontSize: 11, fontWeight: "600", marginBottom: 3, marginLeft: 4 },
   bubble: {
     paddingHorizontal: 14,

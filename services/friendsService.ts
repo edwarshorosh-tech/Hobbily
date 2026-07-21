@@ -25,6 +25,10 @@ import { Friendship, FriendshipStatus } from "../types/Friendship";
 import { PublicProfile } from "../types/PublicProfile";
 import { buildNotificationPayload, notificationsCollection } from "./notificationsService";
 import { mapFirebaseError } from "./firebaseErrors";
+import { normalizeUsername, generateFriendshipPairId } from "../utils/friendIdentity";
+import { normalizePublicProfile } from "../utils/normalizePublicProfile";
+
+export { normalizeUsername, generateFriendshipPairId };
 
 // ── View-model types ──────────────────────────────────────────────────────────
 
@@ -72,18 +76,6 @@ export class FriendServiceError extends Error {
 function mapFirestoreError(e: unknown): FriendServiceError {
   const { code, message } = mapFirebaseError(e, "friendsService");
   return new FriendServiceError(code, message);
-}
-
-// ── Helpers ────────────────────────────────────────────────────────────────────
-
-/** Trims, lowercases — the single normalization rule used both on save and search. */
-export function normalizeUsername(raw: string): string {
-  return raw.trim().toLowerCase();
-}
-
-/** Deterministic doc id for a pair of UIDs: the two UIDs sorted, joined with "_". */
-export function generateFriendshipPairId(uidA: string, uidB: string): string {
-  return uidA < uidB ? `${uidA}_${uidB}` : `${uidB}_${uidA}`;
 }
 
 // ── Mutations ──────────────────────────────────────────────────────────────────
@@ -283,6 +275,38 @@ export async function removeFriend(currentUid: string, friendshipId: string): Pr
 
 // ── Queries ────────────────────────────────────────────────────────────────────
 
+/** Shared by searchUserByUsername and getUserCard — resolves the friendship relationship (and its doc id, if any) between currentUid and an already-known profile. */
+async function resolveRelationship(
+  currentUid: string,
+  profile: PublicProfile
+): Promise<{ relationship: FriendRelationshipStatus; friendshipId: string | null }> {
+  if (profile.uid === currentUid) return { relationship: "self", friendshipId: null };
+
+  const pairId = generateFriendshipPairId(currentUid, profile.uid);
+  const friendshipSnap = await getDoc(doc(db, "friendships", pairId));
+  if (!friendshipSnap.exists()) return { relationship: "none", friendshipId: null };
+
+  const friendship = friendshipSnap.data() as Friendship;
+  let relationship: FriendRelationshipStatus;
+  switch (friendship.status) {
+    case "accepted":
+      relationship = "friends";
+      break;
+    case "pending":
+      relationship = friendship.requestedBy === currentUid ? "outgoing_pending" : "incoming_pending";
+      break;
+    case "declined":
+      relationship = "declined";
+      break;
+    case "cancelled":
+      relationship = "cancelled";
+      break;
+    default:
+      relationship = "none";
+  }
+  return { relationship, friendshipId: pairId };
+}
+
 export async function searchUserByUsername(
   currentUid: string,
   rawQuery: string
@@ -300,37 +324,23 @@ export async function searchUserByUsername(
     if (snap.empty) return null;
 
     const docSnap = snap.docs[0];
-    const profile = { uid: docSnap.id, ...docSnap.data() } as PublicProfile;
+    const profile = normalizePublicProfile(docSnap.id, docSnap.data());
+    const { relationship, friendshipId } = await resolveRelationship(currentUid, profile);
+    return { profile, relationship, friendshipId };
+  } catch (e) {
+    if (e instanceof FriendServiceError) throw e;
+    throw mapFirestoreError(e);
+  }
+}
 
-    if (profile.uid === currentUid) {
-      return { profile, relationship: "self", friendshipId: null };
-    }
-
-    const pairId = generateFriendshipPairId(currentUid, profile.uid);
-    const friendshipSnap = await getDoc(doc(db, "friendships", pairId));
-    if (!friendshipSnap.exists()) {
-      return { profile, relationship: "none", friendshipId: null };
-    }
-
-    const friendship = friendshipSnap.data() as Friendship;
-    let relationship: FriendRelationshipStatus;
-    switch (friendship.status) {
-      case "accepted":
-        relationship = "friends";
-        break;
-      case "pending":
-        relationship = friendship.requestedBy === currentUid ? "outgoing_pending" : "incoming_pending";
-        break;
-      case "declined":
-        relationship = "declined";
-        break;
-      case "cancelled":
-        relationship = "cancelled";
-        break;
-      default:
-        relationship = "none";
-    }
-    return { profile, relationship, friendshipId: pairId };
+/** Same shape as searchUserByUsername, but looked up by a known uid — used by UserCardSheet, which is opened from a uid the caller already has (a post's authorId, a chat message's author, a leaderboard entry, ...), never a username search. */
+export async function getUserCard(currentUid: string, targetUid: string): Promise<FriendSearchResult | null> {
+  try {
+    const snap = await getDoc(doc(db, "publicProfiles", targetUid));
+    if (!snap.exists()) return null;
+    const profile = normalizePublicProfile(snap.id, snap.data());
+    const { relationship, friendshipId } = await resolveRelationship(currentUid, profile);
+    return { profile, relationship, friendshipId };
   } catch (e) {
     if (e instanceof FriendServiceError) throw e;
     throw mapFirestoreError(e);
@@ -405,7 +415,7 @@ export async function fetchPublicProfilesByIds(uids: string[]): Promise<Map<stri
         const q = query(collection(db, "publicProfiles"), where(documentId(), "in", chunk));
         const snap = await getDocs(q);
         snap.docs.forEach((d) => {
-          result.set(d.id, { uid: d.id, ...d.data() } as PublicProfile);
+          result.set(d.id, normalizePublicProfile(d.id, d.data()));
         });
       })
     );

@@ -9,13 +9,8 @@ import {
   ScrollView,
   StyleSheet,
   TextInput,
-  Modal,
   TouchableOpacity,
   Animated,
-  PanResponder,
-  TouchableWithoutFeedback,
-  Platform,
-  KeyboardAvoidingView,
   ActivityIndicator,
 } from "react-native";
 import { useEffect, useRef, useState } from "react";
@@ -28,8 +23,21 @@ import { useProfile } from "../../context/ProfileContext";
 import { useProgress } from "../../context/ProgressContext";
 import SwipeableTab from "../../components/SwipeableTab";
 import PracticeTimerModal from "../../components/PracticeTimerModal";
+import BottomSheet from "../../components/BottomSheet";
+import TimeWheelPicker from "../../components/time-picker/TimeWheelPicker";
+import DurationSlider from "../../components/duration-slider/DurationSlider";
+import ConfirmModal from "../../components/ConfirmModal";
 import { Task } from "../../types/Task";
 import { addDaysISO, localDateISO, parseLocalISO, startOfWeekISO } from "../../utils/dateUtils";
+import {
+  NormalizedTime,
+  computeDefaultStart,
+  formatTimeLabel,
+  formatTimeString,
+  parseTimeString,
+  timeStringToMinutes,
+} from "../../utils/time";
+import { DEFAULT_DURATION_MINUTES, isValidDurationMinutes } from "../../utils/duration";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 // All date math below is local-calendar-day based (utils/dateUtils.ts) and
@@ -43,15 +51,6 @@ function todayISO() {
 
 function tomorrowISO() {
   return addDaysISO(todayISO(), 1);
-}
-
-/** Current time + 1 minute, as "HH:MM" — the +1 keeps a freshly-opened Add
- *  Task modal from defaulting to a slot that's already "in the past" the
- *  instant isPastDateTime() checks it (it compares against Date.now(), which
- *  only ever moves forward from the moment this default was computed). */
-function defaultTaskTime(): string {
-  const d = new Date(Date.now() + 60000);
-  return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
 }
 
 function formatDate(iso: string): string {
@@ -69,19 +68,6 @@ function formatLongDate(iso: string): string {
   return d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
 }
 
-function formatTime(time: string): string {
-  const [h, m] = time.split(":").map(Number);
-  const ampm = h >= 12 ? "PM" : "AM";
-  const hour = h % 12 || 12;
-  return `${hour}:${m.toString().padStart(2, "0")} ${ampm}`;
-}
-
-function formatTimeInput(raw: string): string {
-  const digits = (raw ?? "").replace(/[^\d]/g, "").slice(0, 4);
-  if (digits.length <= 2) return digits;
-  return `${digits.slice(0, 2)}:${digits.slice(2)}`;
-}
-
 // ── Task Row ──────────────────────────────────────────────────────────────────
 
 type TaskRowProps = {
@@ -94,6 +80,7 @@ type TaskRowProps = {
 
 function TaskRow({ task, colors, onToggle, onEdit, onDelete }: TaskRowProps) {
   const isHobby = task.type === "hobby";
+  const timeResult = formatTimeLabel(task.time, { taskId: task.id });
   return (
     <View
       style={[
@@ -152,8 +139,8 @@ function TaskRow({ task, colors, onToggle, onEdit, onDelete }: TaskRowProps) {
             </Text>
           </View>
           <Ionicons name="time-outline" size={12} color={colors.secondaryText} style={{ marginRight: 2 }} />
-          <Text style={[styles.taskTime, { color: colors.secondaryText }]}>
-            {formatTime(task.time)}
+          <Text style={[styles.taskTime, { color: timeResult.ok ? colors.secondaryText : colors.danger }]}>
+            {timeResult.label}
           </Text>
           <Text style={[styles.taskDot, { color: colors.secondaryText }]}>·</Text>
           <Text style={[styles.taskDuration, { color: colors.secondaryText }]}>
@@ -181,6 +168,14 @@ function TaskRow({ task, colors, onToggle, onEdit, onDelete }: TaskRowProps) {
 function buildWeekDays(anchorISO: string): string[] {
   const monday = startOfWeekISO(anchorISO);
   return Array.from({ length: 7 }, (_, i) => addDaysISO(monday, i));
+}
+
+/** Every YYYY-MM-DD date in the calendar month containing anchorISO, in order. */
+function buildMonthDays(anchorISO: string): string[] {
+  const d = parseLocalISO(anchorISO);
+  const firstOfMonth = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+  const daysInMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  return Array.from({ length: daysInMonth }, (_, i) => addDaysISO(firstOfMonth, i));
 }
 
 type DayTileProps = {
@@ -300,16 +295,37 @@ type WeekOverviewProps = {
 };
 
 function WeekOverview({ tasks, selected, onSelect, colors }: WeekOverviewProps) {
-  const days = buildWeekDays(selected);
+  // "Zoomed out" toggles the glance list from the current week to the whole
+  // calendar month containing the selected date — same row layout, just more
+  // of them; the page's own ScrollView handles the extra length.
+  const [zoomedOut, setZoomedOut] = useState(false);
+  const days = zoomedOut ? buildMonthDays(selected) : buildWeekDays(selected);
   const today = todayISO();
+  const monthLabel = parseLocalISO(selected).toLocaleDateString(undefined, { month: "long", year: "numeric" });
 
   return (
     <View style={[styles.weekOverviewCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-      <Text style={[styles.weekOverviewTitle, { color: colors.text }]}>Week at a Glance</Text>
+      <View style={styles.weekOverviewHeader}>
+        <Text style={[styles.weekOverviewTitle, { color: colors.text }]}>
+          {zoomedOut ? `${monthLabel} at a Glance` : "Week at a Glance"}
+        </Text>
+        <TouchableOpacity
+          onPress={() => setZoomedOut((v) => !v)}
+          style={styles.weekOverviewZoomBtn}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          accessibilityRole="button"
+          accessibilityLabel={zoomedOut ? "Zoom in to week view" : "Zoom out to month view"}
+        >
+          <Ionicons name={zoomedOut ? "contract-outline" : "expand-outline"} size={15} color={colors.primary} />
+          <Text style={[styles.weekOverviewZoomText, { color: colors.primary }]}>
+            {zoomedOut ? "Week" : "Month"}
+          </Text>
+        </TouchableOpacity>
+      </View>
       {days.map((iso, i) => {
         const dayTasks = tasks
           .filter((t) => t.date === iso)
-          .sort((a, b) => a.time.localeCompare(b.time));
+          .sort((a, b) => (timeStringToMinutes(a.time) ?? Infinity) - (timeStringToMinutes(b.time) ?? Infinity));
         const d = parseLocalISO(iso);
         const isSelected = iso === selected;
         const isToday = iso === today;
@@ -370,123 +386,172 @@ type TaskModalProps = {
   hobbies: string[];
   /** Pass a task to open in edit mode, undefined for add mode */
   editingTask?: Task | null;
+  /** For the inline date picker's "has tasks" dots — same map the Planner's own day strip uses. */
+  taskCounts: Record<string, number>;
+  /** Called with the saved task's date right after a successful save, so the Planner view behind the sheet jumps to show it — the whole point of picking a different date in here is to see the task land there. */
+  onDateCommitted: (iso: string) => void;
 };
 
-function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, editingTask }: TaskModalProps) {
+/** Snapshot of everything the form can change — used both to seed state on open and to detect unsaved edits (see `isDirty`). */
+type TaskFormSnapshot = {
+  title: string;
+  type: "task" | "hobby";
+  date: string;
+  time: NormalizedTime;
+  duration: number;
+};
+
+/**
+ * The default start date+time for a brand-new activity: "now + 1 minute",
+ * computed fresh every time the sheet opens (never a stale module-load
+ * value). When the Planner's currently-viewed day is today, both the date
+ * and time follow that computation exactly — including rolling to tomorrow
+ * if "now" is late enough that +1 minute crosses midnight. When the user has
+ * already navigated the day strip to a different (future) day, that
+ * explicit choice of date is preserved — only the time defaults to "now
+ * clock-reading + 1 minute", since there's no sense re-deriving the date
+ * from today's midnight rollover for a day the user didn't select "now" for.
+ */
+function buildDefaultSnapshot(defaultDate: string): TaskFormSnapshot {
+  const computed = computeDefaultStart();
+  const date = defaultDate === todayISO() ? computed.date : defaultDate;
+  const time = parseTimeString(computed.time) ?? { hour: 9, minute: 0 };
+  return { title: "", type: "task", date, time, duration: DEFAULT_DURATION_MINUTES };
+}
+
+function snapshotFromTask(task: Task): TaskFormSnapshot {
+  // A legacy/malformed saved time can't be shown on the wheel picker as-is —
+  // fall back to a sane default and let the user confirm/adjust it; this is
+  // also how editing naturally repairs a malformed legacy record going
+  // forward, since the save path can only ever write a validated time.
+  const time = parseTimeString(task.time) ?? { hour: 9, minute: 0 };
+  return { title: task.title, type: task.type, date: task.date, time, duration: task.duration };
+}
+
+function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, editingTask, taskCounts, onDateCommitted }: TaskModalProps) {
   const isEdit = !!editingTask;
 
-  const [title, setTitle] = useState(editingTask?.title ?? "");
-  const [type, setType] = useState<"task" | "hobby">(editingTask?.type ?? "task");
-  const [time, setTime] = useState(editingTask?.time ?? defaultTaskTime());
-  const [duration, setDuration] = useState(String(editingTask?.duration ?? 30));
+  const [title, setTitle] = useState("");
+  const [type, setType] = useState<"task" | "hobby">("task");
+  const [date, setDate] = useState(defaultDate);
+  const [time, setTime] = useState<NormalizedTime>({ hour: 9, minute: 0 });
+  const [duration, setDuration] = useState(DEFAULT_DURATION_MINUTES);
   const [conflict, setConflict] = useState<Task | null>(null);
   const [pastError, setPastError] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [discardConfirmVisible, setDiscardConfirmVisible] = useState(false);
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
+  const titleInputRef = useRef<TextInput>(null);
+  const initialSnapshot = useRef<TaskFormSnapshot | null>(null);
 
-  const targetDate = editingTask?.date ?? defaultDate;
-  const isPastSelection = isPastDateTime(targetDate, time);
+  const timeString = formatTimeString(time);
+  // Pure, re-derived every render — never cached in state — so it can never
+  // go stale or need its own reset/sync logic (see isDateTimeInPast).
+  const isPastSelection = isPastDateTime(date, timeString);
 
-  // Swipe-down-to-close: track sheet position with an Animated value
-  const panY = useRef(new Animated.Value(0)).current;
-  const panResponder = useRef(
-    PanResponder.create({
-      // Activate on clear downward swipes (dy dominant over dx)
-      onMoveShouldSetPanResponder: (_, gs) => gs.dy > 5 && Math.abs(gs.dy) > Math.abs(gs.dx),
-      onPanResponderMove: (_, gs) => { if (gs.dy > 0) panY.setValue(gs.dy); },
-      onPanResponderRelease: (_, gs) => {
-        if (gs.dy > 80) {
-          // Swipe past threshold — animate out then close
-          Animated.timing(panY, { toValue: 500, duration: 150, useNativeDriver: true }).start(() => {
-            panY.setValue(0);
-            onClose();
-          });
-        } else {
-          // Not far enough — snap back
-          Animated.spring(panY, { toValue: 0, useNativeDriver: true }).start();
-        }
-      },
-      onPanResponderTerminate: () => {
-        Animated.spring(panY, { toValue: 0, useNativeDriver: true }).start();
-      },
-    })
-  ).current;
+  // isPastSelection is only ever recomputed when this component re-renders.
+  // Without this, a value that was valid when the sheet opened would stay
+  // "valid" on screen forever if the user leaves the sheet open and idle
+  // long enough for real time to catch up to it — this tick just forces a
+  // re-render every 20s while open so that can't happen; it never touches
+  // form state.
+  const [, forceRevalidateTick] = useState(0);
+  useEffect(() => {
+    if (!visible) return;
+    const interval = setInterval(() => forceRevalidateTick((n) => n + 1), 20_000);
+    return () => clearInterval(interval);
+  }, [visible]);
 
-  // Reset sheet position whenever the modal closes
-  useEffect(() => { if (!visible) panY.setValue(0); }, [visible, panY]);
-
-  // Reset fields when modal opens (handles switching between add and edit)
-  function handleOpen() {
-    setTitle(editingTask?.title ?? "");
-    setType(editingTask?.type ?? "task");
-    setTime(editingTask?.time ?? defaultTaskTime());
-    setDuration(String(editingTask?.duration ?? 30));
+  // Recompute + seed the form exactly when the sheet becomes visible — never
+  // at module load, never reusing a stale value from a previous open.
+  useEffect(() => {
+    if (!visible) return;
+    const snapshot = editingTask ? snapshotFromTask(editingTask) : buildDefaultSnapshot(defaultDate);
+    initialSnapshot.current = snapshot;
+    setTitle(snapshot.title);
+    setType(snapshot.type);
+    setDate(snapshot.date);
+    setTime(snapshot.time);
+    setDuration(snapshot.duration);
     setConflict(null);
     setPastError(false);
+    setSaveError(null);
     setSaving(false);
+    setDiscardConfirmVisible(false);
+    setDatePickerOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, editingTask?.id]);
+
+  const isDirty =
+    !!initialSnapshot.current &&
+    (title !== initialSnapshot.current.title ||
+      type !== initialSnapshot.current.type ||
+      date !== initialSnapshot.current.date ||
+      time.hour !== initialSnapshot.current.time.hour ||
+      time.minute !== initialSnapshot.current.time.minute ||
+      duration !== initialSnapshot.current.duration);
+
+  /** Every dismissal path (Cancel, close icon, backdrop, swipe, Escape, Android back) funnels through here so unsaved input is never discarded silently. */
+  function requestClose() {
+    if (isDirty && !saving) {
+      setDiscardConfirmVisible(true);
+      return;
+    }
+    onClose();
+  }
+
+  function confirmDiscard() {
+    setDiscardConfirmVisible(false);
+    onClose();
   }
 
   async function handleSave() {
-    if (!title.trim() || saving || isPastSelection) return;
+    if (saving) return;
+    if (!title.trim()) {
+      titleInputRef.current?.focus();
+      return;
+    }
+    if (isPastSelection || !isValidDurationMinutes(duration)) return;
+
     setSaving(true);
     setConflict(null);
     setPastError(false);
+    setSaveError(null);
     const result = await onSave(
       {
         title: title.trim(),
         type,
-        date: editingTask?.date ?? defaultDate,
-        time,
-        duration: parseInt(duration, 10) || 30,
+        date,
+        time: timeString,
+        duration,
         completed: editingTask?.completed ?? false,
       },
       editingTask?.id
     );
     setSaving(false);
     if (result.ok) {
+      onDateCommitted(date);
       onClose();
     } else if (result.reason === "conflict") {
       setConflict(result.conflict);
-    } else {
+    } else if (result.reason === "past") {
       setPastError(true);
+    } else {
+      setSaveError(result.message);
     }
   }
 
   return (
-    <Modal
-      visible={visible}
-      animationType="slide"
-      transparent
-      onRequestClose={onClose}
-      onShow={handleOpen}
-    >
-      <KeyboardAvoidingView
-        style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)" }}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-      >
-        {/* Transparent area above the sheet — tap to cancel */}
-        <TouchableWithoutFeedback onPress={onClose}>
-          <View style={{ flex: 1 }} />
-        </TouchableWithoutFeedback>
-        <Animated.View
-          style={[styles.modalSheet, { backgroundColor: colors.card, transform: [{ translateY: panY }] }]}
-        >
-          {/* Drag handle — the only draggable zone, so text inputs/buttons below
-              never lose the touch to the sheet's pan responder. Padded well past
-              the visible bar so it's actually easy to grab. */}
-          <View
-            {...panResponder.panHandlers}
-            hitSlop={{ top: 12, bottom: 12, left: 40, right: 40 }}
-            style={styles.dragHandleZone}
-          >
-            <View style={[styles.modalHandle, { backgroundColor: colors.border }]} />
-          </View>
-
+    <>
+      <BottomSheet visible={visible} onClose={requestClose} colors={colors} maxHeight="92%" avoidKeyboard>
+        <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
           {/* Modal header */}
           <View style={styles.modalHeader}>
             <Text style={[styles.modalTitle, { color: colors.text }]}>
               {isEdit ? "Edit Activity" : "Add to Schedule"}
             </Text>
-            <TouchableOpacity onPress={onClose} style={styles.modalCloseBtn}>
+            <TouchableOpacity onPress={requestClose} style={styles.modalCloseBtn} accessibilityRole="button" accessibilityLabel="Close">
               <Ionicons name="close" size={22} color={colors.secondaryText} />
             </TouchableOpacity>
           </View>
@@ -525,6 +590,7 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
           {/* Title */}
           <Text style={[styles.fieldLabel, { color: colors.secondaryText }]}>Title</Text>
           <TextInput
+            ref={titleInputRef}
             style={[styles.modalInput, { backgroundColor: colors.inputBackground, color: colors.text, borderColor: colors.border }]}
             placeholder={type === "hobby" ? "e.g. Practice guitar" : "e.g. Finish homework"}
             placeholderTextColor={colors.secondaryText}
@@ -554,83 +620,123 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
             </>
           )}
 
-          {/* Time + Duration row */}
-          <View style={styles.timeRow}>
-            <View style={{ flex: 1, marginRight: 8 }}>
-              <Text style={[styles.fieldLabel, { color: colors.secondaryText }]}>Time (HH:MM)</Text>
-              <TextInput
-                style={[styles.modalInput, { backgroundColor: colors.inputBackground, color: colors.text, borderColor: (conflict || pastError || isPastSelection) ? colors.danger : colors.border }]}
-                placeholder="09:00"
-                placeholderTextColor={colors.secondaryText}
-                value={time}
-                onChangeText={(txt) => { setTime(formatTimeInput(txt)); setConflict(null); setPastError(false); }}
-                keyboardType={Platform.OS === "ios" ? "number-pad" : "numeric"}
-                inputMode="numeric"
-                maxLength={5}
+          {/* Date — tappable, expands the same week-strip picker used on the
+              Planner screen itself (not a separate calendar UI) so the two
+              stay visually and behaviorally consistent. Picking a different
+              day here doesn't just change what gets saved — handleSave's
+              onDateCommitted call also moves the Planner day strip behind
+              this sheet to that date on success, so the newly scheduled
+              activity is immediately visible without a manual navigate. */}
+          <Text style={[styles.fieldLabel, { color: colors.secondaryText }]}>Date</Text>
+          <TouchableOpacity
+            onPress={() => setDatePickerOpen((v) => !v)}
+            disabled={saving}
+            style={[styles.modalInput, styles.dateDisplay, { backgroundColor: colors.inputBackground, borderColor: datePickerOpen ? colors.primary : colors.border }]}
+            accessibilityRole="button"
+            accessibilityLabel={`Date, ${formatLongDate(date)}. Double tap to change.`}
+            accessibilityState={{ expanded: datePickerOpen }}
+          >
+            <Ionicons name="calendar-outline" size={16} color={colors.secondaryText} style={{ marginRight: 8 }} />
+            <Text style={{ color: colors.text, fontSize: 15, fontWeight: "600", flex: 1 }}>{formatLongDate(date)}</Text>
+            <Ionicons name={datePickerOpen ? "chevron-up" : "chevron-down"} size={16} color={colors.secondaryText} />
+          </TouchableOpacity>
+          {datePickerOpen && (
+            <View style={styles.inlineDatePicker}>
+              <DayStrip
+                selected={date}
+                onSelect={(iso) => { setDate(iso); setConflict(null); setPastError(false); setDatePickerOpen(false); }}
+                onShiftWeek={(deltaDays) => setDate((d) => addDaysISO(d, deltaDays))}
+                colors={colors}
+                taskCounts={taskCounts}
               />
             </View>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.fieldLabel, { color: colors.secondaryText }]}>Duration (min)</Text>
-              <TextInput
-                style={[styles.modalInput, { backgroundColor: colors.inputBackground, color: colors.text, borderColor: conflict ? colors.danger : colors.border }]}
-                placeholder="30"
-                placeholderTextColor={colors.secondaryText}
-                value={duration}
-                onChangeText={(txt) => { setDuration(txt); setConflict(null); }}
-                keyboardType="number-pad"
-                inputMode="numeric"
-              />
-            </View>
+          )}
+
+          {/* Time — structured wheel picker only; no free-text entry, so an
+              impossible time (12:66, 90:00, 24:00) can never be selected. */}
+          <Text style={[styles.fieldLabel, { color: colors.secondaryText, marginTop: 10 }]}>Time</Text>
+          <View style={[styles.wheelWrapOuter, { borderColor: (conflict || pastError || isPastSelection) ? colors.danger : colors.border }]}>
+            <TimeWheelPicker
+              value={time}
+              onChange={(next) => { setTime(next); setConflict(null); setPastError(false); }}
+              colors={colors}
+              disabled={saving}
+            />
           </View>
 
-          {/* Duration presets */}
-          <View style={styles.durationPresets}>
-            {["15", "30", "45", "60", "90"].map((d) => (
-              <TouchableOpacity
-                key={d}
-                onPress={() => { setDuration(d); setConflict(null); }}
-                style={[
-                  styles.durationPreset,
-                  {
-                    backgroundColor: duration === d ? colors.primary : colors.inputBackground,
-                    borderColor: duration === d ? colors.primary : colors.border,
-                  },
-                ]}
-              >
-                <Text style={{ color: duration === d ? "#fff" : colors.secondaryText, fontSize: 12, fontWeight: "600" }}>
-                  {d}m
-                </Text>
-              </TouchableOpacity>
-            ))}
+          {/* Duration — one slider, no competing text field or preset buttons. */}
+          <View style={{ marginTop: 14 }}>
+            <DurationSlider
+              value={duration}
+              onChange={(next) => { setDuration(next); setConflict(null); }}
+              colors={colors}
+              disabled={saving}
+            />
           </View>
 
-          {/* Past-time warning */}
+          {/* Past-time warning — includes a one-tap fix so recovering from an
+              invalid past time never depends on precisely re-dragging the
+              wheel back to a valid value; it jumps straight to "now + 1
+              minute", the same computation a brand-new activity starts from. */}
           {(isPastSelection || pastError) && (
             <View style={[styles.conflictWarning, { backgroundColor: colors.danger + "18", borderColor: colors.danger }]}>
-              <Ionicons name="warning-outline" size={16} color={colors.danger} />
-              <Text style={[styles.conflictWarningText, { color: colors.danger }]}>
-                {targetDate === todayISO()
-                  ? "That time has already passed today. Pick a current or future time."
-                  : "You can't schedule an activity in the past."}
-              </Text>
+              <View style={styles.conflictWarningRow}>
+                <Ionicons name="warning-outline" size={16} color={colors.danger} />
+                <Text style={[styles.conflictWarningText, { color: colors.danger }]}>
+                  {date === todayISO()
+                    ? "That time has already passed today. Pick a current or future time."
+                    : "You can't schedule an activity in the past."}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => {
+                  const next = computeDefaultStart();
+                  setDate(next.date);
+                  setTime(parseTimeString(next.time) ?? { hour: 9, minute: 0 });
+                  setPastError(false);
+                  setConflict(null);
+                }}
+                style={styles.fixTimeBtn}
+                accessibilityRole="button"
+                accessibilityLabel="Set to the next available time"
+              >
+                <Text style={[styles.fixTimeBtnText, { color: colors.danger }]}>Use next available time</Text>
+              </TouchableOpacity>
             </View>
           )}
 
           {/* Conflict warning */}
           {conflict && !isPastSelection && (
             <View style={[styles.conflictWarning, { backgroundColor: colors.danger + "18", borderColor: colors.danger }]}>
-              <Ionicons name="warning-outline" size={16} color={colors.danger} />
-              <Text style={[styles.conflictWarningText, { color: colors.danger }]}>
-                Overlaps with "{conflict.title}" at {formatTime(conflict.time)} ({conflict.duration} min). Pick a different time.
-              </Text>
+              <View style={styles.conflictWarningRow}>
+                <Ionicons name="warning-outline" size={16} color={colors.danger} />
+                <Text style={[styles.conflictWarningText, { color: colors.danger }]}>
+                  {(() => {
+                    const conflictTime = formatTimeLabel(conflict.time, { taskId: conflict.id });
+                    return `Overlaps with "${conflict.title}" at ${conflictTime.label} (${conflict.duration} min). Pick a different time.`;
+                  })()}
+                </Text>
+              </View>
+            </View>
+          )}
+
+          {/* Generic save failure (e.g. an unexpected invalid-field result) */}
+          {saveError && (
+            <View style={[styles.conflictWarning, { backgroundColor: colors.danger + "18", borderColor: colors.danger }]}>
+              <View style={styles.conflictWarningRow}>
+                <Ionicons name="warning-outline" size={16} color={colors.danger} />
+                <Text style={[styles.conflictWarningText, { color: colors.danger }]}>{saveError}</Text>
+              </View>
             </View>
           )}
 
           {/* Actions */}
           <View style={styles.modalActions}>
             <TouchableOpacity
-              onPress={onClose}
+              onPress={requestClose}
               style={[styles.modalCancelBtn, { borderColor: colors.border }]}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel"
             >
               <Text style={{ color: colors.secondaryText, fontWeight: "600" }}>Cancel</Text>
             </TouchableOpacity>
@@ -638,6 +744,8 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
               onPress={handleSave}
               style={[styles.modalSaveBtn, { backgroundColor: colors.primary }, (!title.trim() || saving || isPastSelection) && { opacity: 0.4 }]}
               disabled={!title.trim() || saving || isPastSelection}
+              accessibilityRole="button"
+              accessibilityLabel={isEdit ? "Save changes" : "Add activity"}
             >
               {saving ? (
                 <ActivityIndicator size="small" color="#fff" />
@@ -649,9 +757,20 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
               )}
             </TouchableOpacity>
           </View>
-        </Animated.View>
-      </KeyboardAvoidingView>
-    </Modal>
+        </ScrollView>
+      </BottomSheet>
+
+      <ConfirmModal
+        visible={discardConfirmVisible}
+        title="Discard changes?"
+        message="You have unsaved changes to this activity. Leave without saving?"
+        confirmLabel="Discard"
+        cancelLabel="Keep editing"
+        dangerous
+        onConfirm={confirmDiscard}
+        onCancel={() => setDiscardConfirmVisible(false)}
+      />
+    </>
   );
 }
 
@@ -710,8 +829,11 @@ export default function TimeManagerScreen() {
   }
 
   return (
-    <SwipeableTab tabIndex={1} backgroundColor={colors.background}>
-      <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+    <SwipeableTab tabIndex={1} backgroundColor={colors.background} colors={colors}>
+      {/* Bottom inset excluded — the Tabs navigator's own tab bar already
+          reserves it (see hooks/useTabBarHeight.ts); reserving it again here
+          would just add an empty gap above the tab bar. */}
+      <SafeAreaView edges={["top", "left", "right"]} style={[styles.container, { backgroundColor: colors.background }]}>
         {/* Header — compact, left-aligned. The subtitle always derives from
             selectedDate, so it can never contradict the visible month/week
             below (e.g. "Today · July 2026" while August is on screen). */}
@@ -862,6 +984,8 @@ export default function TimeManagerScreen() {
           colors={colors}
           hobbies={profile.hobbies}
           editingTask={editingTask}
+          taskCounts={taskCounts}
+          onDateCommitted={setSelectedDate}
         />
 
         <PracticeTimerModal
@@ -976,7 +1100,17 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: 6,
   },
-  weekOverviewTitle: { fontSize: 15, fontWeight: "700", marginHorizontal: 10, marginTop: 8, marginBottom: 6 },
+  weekOverviewHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginHorizontal: 10,
+    marginTop: 8,
+    marginBottom: 6,
+  },
+  weekOverviewTitle: { fontSize: 15, fontWeight: "700", flexShrink: 1 },
+  weekOverviewZoomBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingVertical: 2, paddingLeft: 8 },
+  weekOverviewZoomText: { fontSize: 13, fontWeight: "700" },
   weekOverviewRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1001,28 +1135,6 @@ const styles = StyleSheet.create({
   },
   weekOverviewCountText: { color: "#fff", fontSize: 11, fontWeight: "700" },
   // Modal
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "flex-end",
-  },
-  modalSheet: {
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 24,
-    paddingBottom: 44,
-  },
-  dragHandleZone: {
-    alignItems: "center",
-    paddingVertical: 10,
-    marginBottom: 6,
-  },
-  modalHandle: {
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: "#ccc",
-  },
   modalHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1062,25 +1174,21 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     marginRight: 8,
   },
-  timeRow: { flexDirection: "row", marginTop: 4 },
-  durationPresets: { flexDirection: "row", gap: 8, marginTop: 8, marginBottom: 8 },
-  durationPreset: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-    borderWidth: 1,
-  },
+  dateDisplay: { flexDirection: "row", alignItems: "center" },
+  inlineDatePicker: { marginTop: 10 },
+  wheelWrapOuter: { borderWidth: 1, borderRadius: 14, paddingVertical: 8 },
   conflictWarning: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 8,
     padding: 12,
     borderRadius: 12,
     borderWidth: 1,
     marginTop: 4,
     marginBottom: 4,
+    gap: 8,
   },
+  conflictWarningRow: { flexDirection: "row", alignItems: "flex-start", gap: 8 },
   conflictWarningText: { flex: 1, fontSize: 13, fontWeight: "600", lineHeight: 18 },
+  fixTimeBtn: { alignSelf: "flex-start", paddingVertical: 4 },
+  fixTimeBtnText: { fontSize: 13, fontWeight: "700", textDecorationLine: "underline" },
   modalActions: { flexDirection: "row", gap: 12, marginTop: 16 },
   modalCancelBtn: {
     flex: 1,
