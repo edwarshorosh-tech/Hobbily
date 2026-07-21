@@ -8,9 +8,10 @@
  * shared with FriendSearchModal and the Planner Add/Edit Activity sheet,
  * which have their own layouts but the same open/close/gesture behavior.
  */
-import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, View, ViewStyle, Animated as RNAnimated } from "react-native";
+import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, View, ViewStyle } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
+import Animated, { useAnimatedStyle } from "react-native-reanimated";
 import { ColorTokens } from "../context/ThemeContext";
 import { useSwipeToCloseSheet } from "../hooks/useSwipeToCloseSheet";
 
@@ -31,20 +32,27 @@ export default function BottomSheet({ visible, onClose, colors, children, maxHei
   const insets = useSafeAreaInsets();
   const { mounted, backdropOpacity, sheetTranslate, dragY, dragGesture } = useSwipeToCloseSheet(visible, onClose);
 
+  // Combining sheetTranslate + dragY here (rather than via RN's Animated.add)
+  // keeps the whole composition on the UI thread — this style is recomputed
+  // by a worklet driven directly off the shared values the drag gesture
+  // itself mutates, so it can never lag a frame behind the finger.
+  const backdropStyle = useAnimatedStyle(() => ({ opacity: backdropOpacity.value }));
+  const sheetStyle = useAnimatedStyle(() => ({ transform: [{ translateY: sheetTranslate.value + dragY.value }] }));
+
   if (!mounted) return null;
 
   const sheet = (
-    <RNAnimated.View
+    <Animated.View
       style={[
         styles.sheet,
         {
           backgroundColor: colors.background,
           borderColor: colors.border,
           paddingBottom: insets.bottom + 12,
-          transform: [{ translateY: RNAnimated.add(sheetTranslate, dragY) }],
           maxHeight,
           minHeight,
         },
+        sheetStyle,
       ]}
     >
       {/* Drag handle — the only zone with the swipe gesture attached, so
@@ -61,7 +69,7 @@ export default function BottomSheet({ visible, onClose, colors, children, maxHei
         </View>
       </GestureDetector>
       {children}
-    </RNAnimated.View>
+    </Animated.View>
   );
 
   return (
@@ -72,7 +80,7 @@ export default function BottomSheet({ visible, onClose, colors, children, maxHei
           not extend into here. Without this, the handle's drag gesture
           would silently never activate at all. */}
       <GestureHandlerRootView style={{ flex: 1 }}>
-        <RNAnimated.View style={[styles.backdrop, { opacity: backdropOpacity }]}>
+        <Animated.View style={[styles.backdrop, backdropStyle]}>
           <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close" />
           {avoidKeyboard ? (
             <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.kbWrapper} pointerEvents="box-none">
@@ -81,7 +89,7 @@ export default function BottomSheet({ visible, onClose, colors, children, maxHei
           ) : (
             sheet
           )}
-        </RNAnimated.View>
+        </Animated.View>
       </GestureHandlerRootView>
     </Modal>
   );

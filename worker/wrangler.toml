@@ -15,8 +15,9 @@ FIREBASE_WEB_API_KEY = "AIzaSyCYvDaQITNmA_-vHs-cjoethTGicmpoKjE"
 ALLOWED_ORIGIN = "*"
 
 # ── Secret configuration — DO NOT put these here ────────────────────────────
-# HF_TOKEN must never appear in this file, in git, or anywhere in this repo.
-# Set it once per environment with:
-#   wrangler secret put HF_TOKEN
-# You will be prompted to paste the token interactively — it is stored
+# GEMINI_API_KEY must never appear in this file, in git, or anywhere in this
+# repo. Get a free-tier key at https://aistudio.google.com/apikey, then set
+# it once per environment with:
+#   wrangler secret put GEMINI_API_KEY
+# You will be prompted to paste the key interactively — it is stored
 # encrypted by Cloudflare and is never written to disk or logged.
