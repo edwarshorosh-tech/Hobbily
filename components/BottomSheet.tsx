@@ -27,9 +27,21 @@ type Props = {
   minHeight?: ViewStyle["minHeight"];
   /** Wraps children in a KeyboardAvoidingView — for sheets containing text inputs (e.g. the Planner Add/Edit Activity sheet). Defaults to false. */
   avoidKeyboard?: boolean;
+  /**
+   * Content rendered on top of the sheet, inside this same Modal window —
+   * e.g. a "discard changes?" confirmation. Stacking a second native RN
+   * `<Modal>` on top of an already-open one (e.g. rendering <ConfirmModal>
+   * as a sibling while this sheet is still visible) is unreliable on
+   * Android: the OS can route touches to the wrong modal window, which is
+   * exactly what made a sheet look "frozen" — swipe-to-close a dirty form,
+   * the discard-confirmation modal opens on top of the still-open sheet
+   * modal, and nothing on screen registers taps anymore. Passing that
+   * confirmation through `overlay` instead keeps everything in one modal.
+   */
+  overlay?: React.ReactNode;
 };
 
-export default function BottomSheet({ visible, onClose, colors, children, maxHeight = "86%", minHeight, avoidKeyboard = false }: Props) {
+export default function BottomSheet({ visible, onClose, colors, children, maxHeight = "86%", minHeight, avoidKeyboard = false, overlay }: Props) {
   const insets = useSafeAreaInsets();
   const { mounted, backdropOpacity, sheetTranslate, dragY, dragGesture } = useSwipeToCloseSheet(visible, onClose);
 
@@ -106,6 +118,7 @@ export default function BottomSheet({ visible, onClose, colors, children, maxHei
             sheet
           )}
         </Animated.View>
+        {overlay}
       </GestureHandlerRootView>
     </Modal>
   );

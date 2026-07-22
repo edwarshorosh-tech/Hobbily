@@ -576,8 +576,26 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
   }
 
   return (
-    <>
-      <BottomSheet visible={visible} onClose={requestClose} colors={colors} maxHeight="92%" avoidKeyboard>
+    <BottomSheet
+      visible={visible}
+      onClose={requestClose}
+      colors={colors}
+      maxHeight="92%"
+      avoidKeyboard
+      overlay={
+        <ConfirmModal
+          asOverlay
+          visible={discardConfirmVisible}
+          title="Discard changes?"
+          message="You have unsaved changes to this activity. Leave without saving?"
+          confirmLabel="Discard"
+          cancelLabel="Keep editing"
+          dangerous
+          onConfirm={confirmDiscard}
+          onCancel={() => setDiscardConfirmVisible(false)}
+        />
+      }
+    >
         <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
           {/* Modal header */}
           <View style={styles.modalHeader}>
@@ -840,20 +858,8 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
               )}
             </TouchableOpacity>
           </View>
-        </ScrollView>
-      </BottomSheet>
-
-      <ConfirmModal
-        visible={discardConfirmVisible}
-        title="Discard changes?"
-        message="You have unsaved changes to this activity. Leave without saving?"
-        confirmLabel="Discard"
-        cancelLabel="Keep editing"
-        dangerous
-        onConfirm={confirmDiscard}
-        onCancel={() => setDiscardConfirmVisible(false)}
-      />
-    </>
+      </ScrollView>
+    </BottomSheet>
   );
 }
 
