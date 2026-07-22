@@ -18,7 +18,14 @@ import { useCallback, useState } from "react";
 export function useUserProfileSheet() {
   const [selectedUid, setSelectedUid] = useState<string | null>(null);
 
-  const openUserProfile = useCallback((uid: string) => setSelectedUid(uid), []);
+  // Guards against an empty/whitespace-only uid — every real caller passes a
+  // genuine Firestore document id, but a blank string would otherwise still
+  // flip UserCardSheet's `visible` to true (its check is just `uid !== null`)
+  // and open a sheet with nothing to load.
+  const openUserProfile = useCallback((uid: string) => {
+    if (uid.trim().length === 0) return;
+    setSelectedUid(uid);
+  }, []);
   const closeUserProfile = useCallback(() => setSelectedUid(null), []);
 
   return { selectedUid, openUserProfile, closeUserProfile };

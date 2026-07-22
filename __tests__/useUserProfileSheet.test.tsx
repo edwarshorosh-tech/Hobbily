@@ -48,6 +48,20 @@ describe("useUserProfileSheet", () => {
     expect(result.current.selectedUid).toBeNull();
   });
 
+  it("ignores an empty or whitespace-only uid instead of opening the sheet with nothing to load", () => {
+    const { result } = renderUserProfileSheetHook();
+
+    act(() => {
+      result.current.openUserProfile("");
+    });
+    expect(result.current.selectedUid).toBeNull();
+
+    act(() => {
+      result.current.openUserProfile("   ");
+    });
+    expect(result.current.selectedUid).toBeNull();
+  });
+
   it("opening a different uid while already open just swaps selectedUid (no stale intermediate close)", () => {
     const { result } = renderUserProfileSheetHook();
 

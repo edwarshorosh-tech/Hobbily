@@ -16,6 +16,14 @@ import { isAxiosError } from "axios";
 import { auth } from "../lib/firebase";
 import { api } from "./api";
 import { deviceTimeZone, localDateISO } from "../utils/dateUtils";
+import {
+  AiAssistantServiceErrorCode,
+  AiWorkerEndpointSummary,
+  WORKER_CODE_MAP,
+  WorkerErrorCode,
+  describeAiWorkerEndpoint,
+  isAiWorkerConfigured,
+} from "../utils/aiAssistantConfig";
 
 export type ParsedActivity = {
   title: string;
@@ -32,13 +40,7 @@ export type ChatReply =
   | { kind: "message"; text: string }
   | { kind: "action"; text: string; activity: ParsedActivity };
 
-export type AiAssistantServiceErrorCode =
-  | "invalid-request"
-  | "unauthenticated"
-  | "invalid-result"
-  | "service-unavailable"
-  | "network-error"
-  | "unknown";
+export type { AiAssistantServiceErrorCode };
 
 export class AiAssistantServiceError extends Error {
   code: AiAssistantServiceErrorCode;
@@ -49,24 +51,29 @@ export class AiAssistantServiceError extends Error {
   }
 }
 
-type WorkerErrorCode = "invalid_request" | "unauthenticated" | "invalid_result" | "service_unavailable" | "unknown";
-
 type WorkerResponse =
   | { ok: true; reply: ChatReply }
   | { ok: false; error: { code: WorkerErrorCode; message: string } };
 
-const WORKER_CODE_MAP: Record<WorkerErrorCode, AiAssistantServiceErrorCode> = {
-  invalid_request: "invalid-request",
-  unauthenticated: "unauthenticated",
-  invalid_result: "invalid-result",
-  service_unavailable: "service-unavailable",
-  unknown: "unknown",
-};
-
 const WORKER_URL = process.env.EXPO_PUBLIC_AI_WORKER_URL ?? "";
 
 /** Lets callers check upfront (e.g. to show a persistent notice) instead of only finding out via a thrown error. */
-export const isAiAssistantConfigured = Boolean(WORKER_URL);
+export const isAiAssistantConfigured = isAiWorkerConfigured(WORKER_URL);
+
+/**
+ * Development-only, secret-free diagnostics for comparing "why does AI work
+ * on one machine and not another" across two computers on the same commit —
+ * see .env.example for the required EXPO_PUBLIC_AI_WORKER_URL variable, and
+ * utils/aiAssistantConfig.ts for why only the hostname (never the full URL,
+ * a token, or any request content) is ever included here.
+ */
+export function getAiWorkerDiagnostics(): { configured: boolean; endpoint: AiWorkerEndpointSummary; hasAuthenticatedUser: boolean } {
+  return {
+    configured: isAiAssistantConfigured,
+    endpoint: describeAiWorkerEndpoint(WORKER_URL),
+    hasAuthenticatedUser: Boolean(auth.currentUser),
+  };
+}
 
 /** User-facing copy for service error codes — never surface raw backend/Gemini error text. */
 export function friendlyAiAssistantMessage(e: unknown): string {
