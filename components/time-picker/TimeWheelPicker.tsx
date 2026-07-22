@@ -166,12 +166,12 @@ function WheelColumn({
       <TouchableOpacity
         onPress={() => step(1)}
         disabled={disabled}
-        style={styles.stepBtn}
+        style={[styles.stepBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
         accessibilityRole="button"
         accessibilityLabel={`Increase ${accessibilityLabel}`}
         hitSlop={{ top: 4, bottom: 4, left: 12, right: 12 }}
       >
-        <Ionicons name="chevron-up" size={16} color={disabled ? colors.border : colors.secondaryText} />
+        <Ionicons name="chevron-up" size={20} color={disabled ? colors.border : colors.text} />
       </TouchableOpacity>
 
       <View
@@ -220,12 +220,12 @@ function WheelColumn({
       <TouchableOpacity
         onPress={() => step(-1)}
         disabled={disabled}
-        style={styles.stepBtn}
+        style={[styles.stepBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
         accessibilityRole="button"
         accessibilityLabel={`Decrease ${accessibilityLabel}`}
         hitSlop={{ top: 4, bottom: 4, left: 12, right: 12 }}
       >
-        <Ionicons name="chevron-down" size={16} color={disabled ? colors.border : colors.secondaryText} />
+        <Ionicons name="chevron-down" size={20} color={disabled ? colors.border : colors.text} />
       </TouchableOpacity>
     </View>
   );
@@ -334,7 +334,7 @@ export default function TimeWheelPicker({ value, onChange, colors, disabled, use
 const styles = StyleSheet.create({
   row: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4 },
   column: { alignItems: "center" },
-  stepBtn: { paddingVertical: 4, paddingHorizontal: 10 },
+  stepBtn: { paddingVertical: 4, paddingHorizontal: 10, borderRadius: 8, borderWidth: 1 },
   wheelWrap: { width: 64, position: "relative", overflow: "hidden" },
   selectionHighlight: {
     position: "absolute",
