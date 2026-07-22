@@ -4,41 +4,26 @@
  */
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity,
-  TextInput, Linking,
+  TextInput, Linking, ActivityIndicator,
 } from "react-native";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams } from "expo-router";
 import { useTheme } from "../../context/ThemeContext";
 import { useProfile } from "../../context/ProfileContext";
+import { useAuth } from "../../context/AuthContext";
+import { useFriends } from "../../context/FriendsContext";
 import SwipeableTab from "../../components/SwipeableTab";
 import BottomSheet from "../../components/BottomSheet";
+import FriendAvatar from "../../components/friends/FriendAvatar";
+import { useUserProfileSheet } from "../../hooks/useUserProfileSheet";
+import UserCardSheet from "../../components/user-card/UserCardSheet";
 import { brand } from "../../constants/colors";
-
-// ── Data ──────────────────────────────────────────────────────────────────────
-
-type Opportunity = {
-  id: string; name: string; organisation: string; category: string;
-  location: string; ageRange: string; cost: "Free" | "Subsidised" | "Paid";
-  description: string; highlights: string[];
-  contact?: string; website?: string; mapsQuery?: string;
-};
-
-const OPPORTUNITIES: Opportunity[] = [
-  { id: "1", name: "Youth Photography Workshop", organisation: "Tel Aviv Museum of Art", category: "Photography", location: "Tel Aviv", ageRange: "14–18", cost: "Subsidised", description: "A 10-week photography programme covering composition, lighting, and digital editing. Participants display their work in a final group exhibition.", highlights: ["Weekly 2h sessions", "Camera equipment provided", "Final exhibition"], contact: "education@tamuseum.org.il", website: "https://www.tamuseum.org.il", mapsQuery: "Tel Aviv Museum of Art, Tel Aviv" },
-  { id: "2", name: "Maktoob Youth Coding Bootcamp", organisation: "Maktoob / Google.org", category: "Coding", location: "Ramallah / Online", ageRange: "15–18", cost: "Free", description: "Intensive coding bootcamp teaching web development and entrepreneurship skills to Palestinian youth. Includes mentorship from tech professionals.", highlights: ["12-week programme", "Mentorship included", "Certificate on completion"], website: "https://www.maktoob.org" },
-  { id: "3", name: "Football for Peace Academy", organisation: "Peres Center for Peace", category: "Sports", location: "Various cities (IL/PA)", ageRange: "13–17", cost: "Free", description: "Mixed Israeli and Palestinian football teams train together to build teamwork, leadership, and coexistence skills through sport.", highlights: ["Co-ed and mixed teams", "Free kit provided", "Regional tournaments"], contact: "youth@peres-center.org" },
-  { id: "4", name: "Al-Kamandjati Music School", organisation: "Al-Kamandjati", category: "Music", location: "Ramallah / Dheisheh", ageRange: "13–18", cost: "Free", description: "Provides classical and Arabic music education to Palestinian youth, offering individual lessons, ensembles, and concerts.", highlights: ["Classical & Arabic music", "Instrument loans available", "Annual concerts"], website: "https://www.al-kamandjati.com", mapsQuery: "Al-Kamandjati Ramallah" },
-  { id: "5", name: "Young Creators Art Studio", organisation: "Jerusalem Open House for Art", category: "Drawing & Art", location: "Jerusalem", ageRange: "14–18", cost: "Subsidised", description: "Bi-weekly studio sessions in painting, drawing, and mixed-media art. Students exhibit work at the end of each semester.", highlights: ["Materials provided", "Bi-weekly sessions", "Semester exhibition"], contact: "studio@joha.org.il", mapsQuery: "Jerusalem Open House for Art" },
-  { id: "6", name: "Teen Film Lab", organisation: "Jerusalem Sam Spiegel Film School", category: "Film & Video", location: "Jerusalem", ageRange: "14–18", cost: "Subsidised", description: "A semester-long programme where teens write, direct, and edit their own short films. Equipment and editing suites are provided.", highlights: ["Camera & editing suite access", "Mentored by film students", "Showcase screening"], website: "https://www.jsfs.co.il", mapsQuery: "Sam Spiegel Film School Jerusalem" },
-  { id: "7", name: "Surf Club Youth Programme", organisation: "Israel Surf Association", category: "Sports", location: "Tel Aviv Beach", ageRange: "13–18", cost: "Subsidised", description: "Learn-to-surf and intermediate sessions on Tel Aviv beach every weekend. Board and wetsuit rental included in the registration fee.", highlights: ["Weekend morning sessions", "Equipment included", "Safety certification"], contact: "youth@israelsurf.org.il", mapsQuery: "Tel Aviv Beach, Tel Aviv" },
-  { id: "8", name: "Dance Fusion Workshop", organisation: "Vertigo Dance Company", category: "Dance", location: "Kibbutz Netiv HaLamed Heh", ageRange: "15–18", cost: "Subsidised", description: "Explore contemporary, hip-hop, and traditional dance forms with professional dancers. Summer and winter intensive options available.", highlights: ["Multi-style training", "Residential option", "Performance showcase"], website: "https://www.vertigo.org.il" },
-  { id: "9", name: "Kitchen Explorers Cooking Club", organisation: "Arab-Jewish Community Centre Jaffa", category: "Cooking", location: "Jaffa / Tel Aviv", ageRange: "13–17", cost: "Free", description: "Bi-weekly cooking sessions exploring Mediterranean, Middle Eastern, and fusion cuisine. All ingredients provided.", highlights: ["All ingredients provided", "Bi-weekly sessions", "Cultural exchange focus"], contact: "community@ajccjaffa.org", mapsQuery: "Arab-Jewish Community Centre Jaffa" },
-  { id: "10", name: "e-Sports and Game Design Camp", organisation: "Mifras Youth Tech Hub", category: "Gaming", location: "Haifa", ageRange: "13–18", cost: "Paid", description: "Multi-day camp covering competitive e-sports, basic game design in Unity, and streaming. Scholarships available for families with financial need.", highlights: ["Unity game design", "Streaming & content creation", "Scholarships available"], contact: "info@mifras.co.il", mapsQuery: "Haifa, Israel" },
-  { id: "11", name: "Young Writers Circle", organisation: "Tamer Institute for Community Education", category: "Reading", location: "Ramallah / Gaza", ageRange: "13–18", cost: "Free", description: "A monthly workshop for youth interested in creative writing, poetry, and storytelling in Arabic. Works are published in the institute's youth magazine.", highlights: ["Arabic creative writing", "Monthly sessions", "Published in youth magazine"], website: "https://www.tamerinst.org" },
-  { id: "12", name: "Robotics & STEM Club", organisation: "FIRST Israel / ORT Network", category: "Coding", location: "Multiple cities (IL)", ageRange: "14–18", cost: "Subsidised", description: "Join a FIRST Robotics team to build and compete with a robot at regional and international competitions.", highlights: ["International competitions", "Mentored by engineers", "ORT school network"], website: "https://www.firstisrael.org.il" },
-];
+import { Opportunity, OPPORTUNITIES } from "../../constants/opportunities";
+import { joinWorkshop, fetchFriendWorkshopParticipants, fetchUserWorkshops } from "../../services/workshopService";
+import { useAuthorProfiles } from "../../hooks/useAuthorProfiles";
+import { friendJoinedLabel } from "../../utils/friendActivityLabel";
 
 const CATEGORIES = ["All", "Saved", "Photography", "Coding", "Sports", "Music", "Drawing & Art", "Film & Video", "Dance", "Cooking", "Gaming", "Reading"];
 const COST_COLORS: Record<string, string> = { Free: brand.costFree, Subsidised: brand.costSubsidised, Paid: brand.costPaid };
@@ -53,14 +38,73 @@ function isNearCity(location: string, city: string): boolean {
 
 // ── Registration Modal ────────────────────────────────────────────────────────
 
-function RegistrationModal({ opp, onClose, colors }: { opp: Opportunity; onClose: () => void; colors: any }) {
+function RegistrationModal({
+  visible,
+  opp: oppProp,
+  onClose,
+  colors,
+  onJoined,
+}: {
+  visible: boolean;
+  opp: Opportunity | null;
+  onClose: () => void;
+  colors: any;
+  /** Called once the real participant record has been written — lets the parent update its own "you joined" state without a full refetch. */
+  onJoined: () => void;
+}) {
+  const { user } = useAuth();
+  const { profile } = useProfile();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [message, setMessage] = useState("");
   const [submitted, setSubmitted] = useState(false);
+  const [joining, setJoining] = useState(false);
+  const [joinError, setJoinError] = useState<string | null>(null);
+  // Same close-animation freeze as DetailModal — this used to be mounted/
+  // unmounted directly by the parent's `{registering && selected && <.../>}`,
+  // which skipped any close animation at all rather than letting
+  // BottomSheet's visible={false} play it out.
+  const lastOppRef = useRef<Opportunity | null>(null);
+  if (oppProp) lastOppRef.current = oppProp;
+  const opp = oppProp ?? lastOppRef.current;
+
+  // This component now stays mounted across opens (see the visible prop
+  // note above) instead of getting a fresh instance — and fresh useState —
+  // every time. Reset the form explicitly on every real open instead, so a
+  // previous submission/error never leaks into the next one.
+  useEffect(() => {
+    if (visible) {
+      setName("");
+      setEmail("");
+      setMessage("");
+      setSubmitted(false);
+      setJoinError(null);
+    }
+  }, [visible]);
+
+  if (!opp) return null;
+
+  async function handleSubmit() {
+    if (!name.trim() || !email.trim() || joining || !user || !opp) return;
+    setJoining(true);
+    setJoinError(null);
+    try {
+      // Registering interest *is* joining the workshop — a real participant
+      // record (services/workshopService.ts), not just a local "thank you"
+      // screen. This is what lets friends later see "you and Lara joined".
+      await joinWorkshop(opp.id, user.uid, profile.username || "explorer");
+      onJoined();
+      setSubmitted(true);
+    } catch (e) {
+      if (__DEV__) console.warn("[Opportunities] join failed", e);
+      setJoinError("Couldn't submit your registration. Please check your connection and try again.");
+    } finally {
+      setJoining(false);
+    }
+  }
 
   return (
-    <BottomSheet visible onClose={onClose} colors={colors} maxHeight="92%" avoidKeyboard>
+    <BottomSheet visible={visible} onClose={onClose} colors={colors} maxHeight="92%" avoidKeyboard>
           {submitted ? (
             <View style={{ alignItems: "center", paddingVertical: 16, gap: 12 }}>
               <Ionicons name="checkmark-circle" size={64} color={colors.success} />
@@ -83,15 +127,21 @@ function RegistrationModal({ opp, onClose, colors }: { opp: Opportunity; onClose
               <TextInput style={[styles.input, { backgroundColor: colors.inputBackground, borderColor: colors.border, color: colors.text }]} placeholder="your@email.com" placeholderTextColor={colors.secondaryText} value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" />
               <Text style={[styles.fieldLabel, { color: colors.secondaryText }]}>Message (optional)</Text>
               <TextInput style={[styles.input, { backgroundColor: colors.inputBackground, borderColor: colors.border, color: colors.text, height: 80, textAlignVertical: "top" }]} placeholder="Any questions or notes..." placeholderTextColor={colors.secondaryText} value={message} onChangeText={setMessage} multiline />
+              {joinError ? <Text style={{ color: colors.danger, fontSize: 12, marginBottom: 8 }}>{joinError}</Text> : null}
               <View style={{ flexDirection: "row", gap: 10, marginTop: 8 }}>
                 <TouchableOpacity onPress={onClose} style={[styles.cancelBtn, { borderColor: colors.border, flex: 1 }]}>
                   <Text style={{ color: colors.secondaryText, fontWeight: "600" }}>Cancel</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  onPress={() => { if (name.trim() && email.trim()) setSubmitted(true); }}
-                  style={[styles.actionBtn, { backgroundColor: colors.primary, flex: 2, opacity: (!name.trim() || !email.trim()) ? 0.4 : 1 }]}
+                  onPress={handleSubmit}
+                  disabled={!name.trim() || !email.trim() || joining}
+                  style={[styles.actionBtn, { backgroundColor: colors.primary, flex: 2, opacity: (!name.trim() || !email.trim() || joining) ? 0.4 : 1 }]}
                 >
-                  <Text style={{ color: "#fff", fontWeight: "700", fontSize: 15 }}>Submit</Text>
+                  {joining ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Text style={{ color: "#fff", fontWeight: "700", fontSize: 15 }}>Submit</Text>
+                  )}
                 </TouchableOpacity>
               </View>
             </ScrollView>
@@ -102,7 +152,17 @@ function RegistrationModal({ opp, onClose, colors }: { opp: Opportunity; onClose
 
 // ── Opportunity Card ──────────────────────────────────────────────────────────
 
-function OpportunityCard({ opp, saved, near, colors, onPress, onToggleSave }: { opp: Opportunity; saved: boolean; near: boolean; colors: any; onPress: () => void; onToggleSave: () => void }) {
+function OpportunityCard({
+  opp, saved, near, joined, friendProfiles, colors, onPress, onToggleSave, onPressFriends,
+}: {
+  opp: Opportunity; saved: boolean; near: boolean; joined: boolean;
+  /** Real publicProfiles of this user's friends who joined this workshop — up to a few, resolved via useAuthorProfiles. Empty when none did. */
+  friendProfiles: { uid: string; username: string; avatarUrl: string | null }[];
+  colors: any; onPress: () => void; onToggleSave: () => void; onPressFriends: () => void;
+}) {
+  const shownFriends = friendProfiles.slice(0, 3);
+  const friendOverflow = friendProfiles.length - shownFriends.length;
+
   return (
     <TouchableOpacity onPress={onPress} style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]} activeOpacity={0.82}>
       <View style={styles.cardTop}>
@@ -119,11 +179,33 @@ function OpportunityCard({ opp, saved, near, colors, onPress, onToggleSave }: { 
           </TouchableOpacity>
         </View>
       </View>
-      {near && (
-        <View style={[styles.nearBadge, { backgroundColor: colors.primary + "18" }]}>
-          <Ionicons name="location" size={11} color={colors.primary} style={{ marginRight: 3 }} />
-          <Text style={[styles.nearBadgeText, { color: colors.primary }]}>Near you</Text>
-        </View>
+      <View style={styles.badgeRow}>
+        {near && (
+          <View style={[styles.nearBadge, { backgroundColor: colors.primary + "18" }]}>
+            <Ionicons name="location" size={11} color={colors.primary} style={{ marginRight: 3 }} />
+            <Text style={[styles.nearBadgeText, { color: colors.primary }]}>Near you</Text>
+          </View>
+        )}
+        {joined && (
+          <View style={[styles.nearBadge, { backgroundColor: `${colors.success ?? brand.costFree}18` }]}>
+            <Ionicons name="checkmark-circle" size={11} color={colors.success ?? brand.costFree} style={{ marginRight: 3 }} />
+            <Text style={[styles.nearBadgeText, { color: colors.success ?? brand.costFree }]}>You joined</Text>
+          </View>
+        )}
+      </View>
+      {shownFriends.length > 0 && (
+        <TouchableOpacity onPress={(e) => { e.stopPropagation(); onPressFriends(); }} style={styles.friendJoinedRow}>
+          <View style={styles.avatarStack}>
+            {shownFriends.map((p, i) => (
+              <View key={p.uid} style={[styles.avatarStackItem, { marginLeft: i === 0 ? 0 : -10, zIndex: shownFriends.length - i, borderColor: colors.card }]}>
+                <FriendAvatar username={p.username} avatarUrl={p.avatarUrl} size={22} colors={colors} />
+              </View>
+            ))}
+          </View>
+          <Text style={[styles.friendJoinedText, { color: colors.secondaryText }]} numberOfLines={1}>
+            {friendJoinedLabel(shownFriends.map((p) => p.username || "A friend"), friendOverflow)}
+          </Text>
+        </TouchableOpacity>
       )}
       <Text style={[styles.cardDesc, { color: colors.secondaryText }]} numberOfLines={2}>{opp.description}</Text>
       <View style={styles.cardMeta}>
@@ -141,12 +223,38 @@ function OpportunityCard({ opp, saved, near, colors, onPress, onToggleSave }: { 
 
 // ── Detail Modal ──────────────────────────────────────────────────────────────
 
-function DetailModal({ opp, saved, onToggleSave, onRegister, onClose, colors }: { opp: Opportunity | null; saved: boolean; onToggleSave: () => void; onRegister: () => void; onClose: () => void; colors: any }) {
+function DetailModal({ opp: oppProp, saved, joined, onToggleSave, onRegister, onClose, colors }: { opp: Opportunity | null; saved: boolean; joined: boolean; onToggleSave: () => void; onRegister: () => void; onClose: () => void; colors: any }) {
+  // Freezes the last real opportunity through the close animation — oppProp
+  // going null (the parent's onClose clearing `selected`) used to unmount
+  // this component (and the literal `visible` it hardcoded true on
+  // BottomSheet) instantly, skipping the close animation entirely rather
+  // than just letting BottomSheet's own visible={false} play it out.
+  const lastOppRef = useRef<Opportunity | null>(null);
+  if (oppProp) lastOppRef.current = oppProp;
+  const opp = oppProp ?? lastOppRef.current;
+  // saved/joined are derived by the parent from `selected` (see the
+  // OpportunitiesScreen call site: `saved={selected ? saved.includes(...) :
+  // false}`) — the instant selected goes null to start the close animation,
+  // both would otherwise snap to false, flipping the heart icon to empty and
+  // "You're Registered" back to "Register Interest" while the sheet is still
+  // visibly sliding shut. Frozen the same way opp itself is, just above.
+  // Both refs are declared before the `if (!opp) return null` below —
+  // conditionally calling useRef only on the branch where opp is non-null
+  // would violate the rules of hooks (every hook must run on every render,
+  // regardless of any early return further down).
+  const lastSavedRef = useRef(false);
+  const lastJoinedRef = useRef(false);
+  if (oppProp) {
+    lastSavedRef.current = saved;
+    lastJoinedRef.current = joined;
+  }
+  const effectiveSaved = oppProp ? saved : lastSavedRef.current;
+  const effectiveJoined = oppProp ? joined : lastJoinedRef.current;
   if (!opp) return null;
   const openMaps = () => Linking.openURL(`https://maps.google.com/?q=${encodeURIComponent(opp.mapsQuery ?? opp.location)}`);
 
   return (
-    <BottomSheet visible onClose={onClose} colors={colors} maxHeight="92%">
+    <BottomSheet visible={!!oppProp} onClose={onClose} colors={colors} maxHeight="92%">
           <ScrollView showsVerticalScrollIndicator={false}>
             <View style={{ flexDirection: "row", alignItems: "flex-start", marginBottom: 12 }}>
               <View style={{ flex: 1 }}>
@@ -157,7 +265,7 @@ function DetailModal({ opp, saved, onToggleSave, onRegister, onClose, colors }: 
                 <Text style={[styles.modalOrg, { color: colors.primary }]}>{opp.organisation}</Text>
               </View>
               <TouchableOpacity onPress={onToggleSave} style={{ padding: 4, marginTop: 4 }}>
-                <Ionicons name={saved ? "heart" : "heart-outline"} size={28} color={saved ? "#EF4444" : colors.tabBarInactive} />
+                <Ionicons name={effectiveSaved ? "heart" : "heart-outline"} size={28} color={effectiveSaved ? "#EF4444" : colors.tabBarInactive} />
               </TouchableOpacity>
             </View>
 
@@ -212,8 +320,8 @@ function DetailModal({ opp, saved, onToggleSave, onRegister, onClose, colors }: 
 
           <View style={{ flexDirection: "row", gap: 10, paddingTop: 8 }}>
             <TouchableOpacity onPress={onRegister} style={[styles.actionBtn, { backgroundColor: colors.primary, flex: 2 }]}>
-              <Ionicons name="pencil-outline" size={16} color="#fff" style={{ marginRight: 6 }} />
-              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 15 }}>Register Interest</Text>
+              <Ionicons name={effectiveJoined ? "checkmark-circle-outline" : "pencil-outline"} size={16} color="#fff" style={{ marginRight: 6 }} />
+              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 15 }}>{effectiveJoined ? "You're Registered" : "Register Interest"}</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={onClose} style={[styles.cancelBtn, { borderColor: colors.border, flex: 1 }]}>
               <Text style={{ color: colors.secondaryText, fontWeight: "600" }}>Close</Text>
@@ -227,18 +335,66 @@ function DetailModal({ opp, saved, onToggleSave, onRegister, onClose, colors }: 
 
 export default function OpportunitiesScreen() {
   const { colors } = useTheme();
+  const { user } = useAuth();
   const { profile, saveProfile } = useProfile();
+  const { acceptedFriends } = useFriends();
   const params = useLocalSearchParams<{ category?: string }>();
   const [search, setSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState(params.category || "All");
   const [selected, setSelected] = useState<Opportunity | null>(null);
   const [registering, setRegistering] = useState(false);
+  const [myWorkshopIds, setMyWorkshopIds] = useState<Set<string>>(new Set());
+  const [friendsByWorkshop, setFriendsByWorkshop] = useState<Map<string, string[]>>(new Map());
+  const [friendActivityForList, setFriendActivityForList] = useState<{ workshop: Opportunity; uids: string[] } | null>(null);
+  const { selectedUid: cardUid, openUserProfile: openCard, closeUserProfile: closeCard } = useUserProfileSheet();
 
   // Deep-link support (e.g. from the Hidden Hobbies Quiz result screen) — re-apply
   // even if this tab was already mounted, since expo-router won't remount it.
   useEffect(() => {
     if (params.category) setActiveCategory(params.category);
   }, [params.category]);
+
+  // Real, persisted "which workshops did I join" — used for the "You joined"
+  // badge. Refreshed after every successful join (refreshMyWorkshops below),
+  // never a full-screen reload.
+  const refreshMyWorkshops = useCallback(async () => {
+    if (!user) return;
+    try {
+      const mine = await fetchUserWorkshops(user.uid);
+      setMyWorkshopIds(new Set(mine.map((w) => w.workshopId)));
+    } catch (e) {
+      if (__DEV__) console.warn("[Opportunities] failed to load your joined workshops", e);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    refreshMyWorkshops();
+  }, [refreshMyWorkshops]);
+
+  // Real "which of my friends joined which workshop" — one bounded batch
+  // query (services/workshopService.ts), never one query per friend/card.
+  useEffect(() => {
+    let cancelled = false;
+    fetchFriendWorkshopParticipants(acceptedFriends.map((f) => f.uid))
+      .then((map) => { if (!cancelled) setFriendsByWorkshop(map); })
+      .catch((e) => { if (__DEV__) console.warn("[Opportunities] failed to load friend workshop activity", e); });
+    return () => { cancelled = true; };
+  }, [acceptedFriends]);
+
+  const allFriendParticipantUids = useMemo(() => {
+    const set = new Set<string>();
+    friendsByWorkshop.forEach((uids) => uids.forEach((u) => set.add(u)));
+    return Array.from(set);
+  }, [friendsByWorkshop]);
+  const friendParticipantProfiles = useAuthorProfiles(allFriendParticipantUids);
+
+  function friendProfilesFor(workshopId: string) {
+    const uids = friendsByWorkshop.get(workshopId) ?? [];
+    return uids
+      .map((uid) => friendParticipantProfiles.get(uid))
+      .filter((p): p is NonNullable<typeof p> => Boolean(p))
+      .map((p) => ({ uid: p.uid, username: p.username, avatarUrl: p.avatarUrl }));
+  }
 
   const saved = profile.savedOpportunities ?? [];
   const city = profile.city ?? "";
@@ -322,7 +478,18 @@ export default function OpportunitiesScreen() {
               </View>
             ) : (
               filtered.map((opp) => (
-                <OpportunityCard key={opp.id} opp={opp} saved={saved.includes(opp.id)} near={isNearCity(opp.location, city)} colors={colors} onPress={() => setSelected(opp)} onToggleSave={() => toggleSave(opp.id)} />
+                <OpportunityCard
+                  key={opp.id}
+                  opp={opp}
+                  saved={saved.includes(opp.id)}
+                  near={isNearCity(opp.location, city)}
+                  joined={myWorkshopIds.has(opp.id)}
+                  friendProfiles={friendProfilesFor(opp.id)}
+                  colors={colors}
+                  onPress={() => setSelected(opp)}
+                  onToggleSave={() => toggleSave(opp.id)}
+                  onPressFriends={() => setFriendActivityForList({ workshop: opp, uids: friendsByWorkshop.get(opp.id) ?? [] })}
+                />
               ))
             )}
           </View>
@@ -334,8 +501,52 @@ export default function OpportunitiesScreen() {
           <View style={{ height: 40 }} />
         </ScrollView>
 
-        <DetailModal opp={selected} saved={selected ? saved.includes(selected.id) : false} onToggleSave={() => selected && toggleSave(selected.id)} onRegister={() => setRegistering(true)} onClose={() => setSelected(null)} colors={colors} />
-        {registering && selected && <RegistrationModal opp={selected} onClose={() => setRegistering(false)} colors={colors} />}
+        <DetailModal
+          opp={selected}
+          saved={selected ? saved.includes(selected.id) : false}
+          joined={selected ? myWorkshopIds.has(selected.id) : false}
+          onToggleSave={() => selected && toggleSave(selected.id)}
+          onRegister={() => setRegistering(true)}
+          onClose={() => setSelected(null)}
+          colors={colors}
+        />
+        <RegistrationModal
+          visible={registering}
+          opp={selected}
+          onClose={() => setRegistering(false)}
+          colors={colors}
+          onJoined={refreshMyWorkshops}
+        />
+
+        {/* Friends who joined this workshop — real participant uids resolved to profiles, never a fabricated list. */}
+        <BottomSheet visible={!!friendActivityForList} onClose={() => setFriendActivityForList(null)} colors={colors} maxHeight="60%">
+          {friendActivityForList && (
+            <>
+              <Text style={[styles.modalTitle, { color: colors.text, fontSize: 18 }]}>Friends who joined</Text>
+              <Text style={{ color: colors.secondaryText, fontSize: 13, marginBottom: 14 }}>{friendActivityForList.workshop.name}</Text>
+              <ScrollView>
+                {friendActivityForList.uids.map((uid) => {
+                  const p = friendParticipantProfiles.get(uid);
+                  if (!p) return null;
+                  return (
+                    <TouchableOpacity
+                      key={uid}
+                      onPress={() => openCard(uid)}
+                      style={{ flexDirection: "row", alignItems: "center", paddingVertical: 10, gap: 10 }}
+                      accessibilityRole="button"
+                      accessibilityLabel={`View ${p.username}'s profile`}
+                    >
+                      <FriendAvatar username={p.username} avatarUrl={p.avatarUrl} size={40} colors={colors} />
+                      <Text style={{ color: colors.text, fontSize: 15, fontWeight: "600" }}>{p.username}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            </>
+          )}
+        </BottomSheet>
+
+        <UserCardSheet uid={cardUid} colors={colors} onClose={closeCard} />
       </SafeAreaView>
     </SwipeableTab>
   );
@@ -362,8 +573,13 @@ const styles = StyleSheet.create({
   cardOrg: { fontSize: 13 },
   costBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, alignSelf: "flex-start" },
   costText: { fontSize: 11, fontWeight: "700" },
+  badgeRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   nearBadge: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, marginBottom: 8 },
   nearBadgeText: { fontSize: 11, fontWeight: "700" },
+  friendJoinedRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
+  avatarStack: { flexDirection: "row", alignItems: "center" },
+  avatarStackItem: { borderRadius: 12, borderWidth: 1.5 },
+  friendJoinedText: { fontSize: 12, fontWeight: "600", flexShrink: 1 },
   cardDesc: { fontSize: 13, lineHeight: 19, marginBottom: 10 },
   cardMeta: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginBottom: 8 },
   metaItem: { flexDirection: "row", alignItems: "center", gap: 3 },

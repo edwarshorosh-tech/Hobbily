@@ -8,6 +8,7 @@
  * shared with FriendSearchModal and the Planner Add/Edit Activity sheet,
  * which have their own layouts but the same open/close/gesture behavior.
  */
+import { useRef } from "react";
 import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, View, ViewStyle } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
@@ -39,6 +40,21 @@ export default function BottomSheet({ visible, onClose, colors, children, maxHei
   const backdropStyle = useAnimatedStyle(() => ({ opacity: backdropOpacity.value }));
   const sheetStyle = useAnimatedStyle(() => ({ transform: [{ translateY: sheetTranslate.value + dragY.value }] }));
 
+  // Freezes the last real content in place through the close animation.
+  // Callers commonly clear their own "which item is this sheet showing"
+  // state (setSelectedX(null)) in the very same action that starts the
+  // close (visible={false}) — without this, that state change reaches
+  // `children` on the next render and the sheet's *content* blanks to an
+  // empty/loading/fallback state while it's still visibly sliding down and
+  // fading out, which reads as "the page refreshed" even though nothing
+  // behind the sheet actually did. While visible, this always reflects the
+  // latest children (loading → loaded transitions etc. still update live);
+  // the instant visible flips false, it stops updating and just holds
+  // whatever was last shown until BottomSheet actually unmounts.
+  const frozenChildrenRef = useRef<React.ReactNode>(children);
+  if (visible) frozenChildrenRef.current = children;
+  const renderedChildren = visible ? children : frozenChildrenRef.current;
+
   if (!mounted) return null;
 
   const sheet = (
@@ -68,7 +84,7 @@ export default function BottomSheet({ visible, onClose, colors, children, maxHei
           <View style={[styles.handle, { backgroundColor: colors.border }]} />
         </View>
       </GestureDetector>
-      {children}
+      {renderedChildren}
     </Animated.View>
   );
 

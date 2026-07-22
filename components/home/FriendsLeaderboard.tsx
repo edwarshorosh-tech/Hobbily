@@ -5,7 +5,7 @@
  * mirrored currentStreak (from FriendsContext / publicProfiles). Ranking is
  * memoized outside JSX; friend profiles refresh on screen focus.
  */
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "@react-navigation/native";
@@ -19,6 +19,7 @@ import { useFriends } from "../../context/FriendsContext";
 import FriendAvatar from "../friends/FriendAvatar";
 import UserCardSheet from "../user-card/UserCardSheet";
 import { friendsWidgetProfileTarget } from "../../utils/profileNavigation";
+import { useUserProfileSheet } from "../../hooks/useUserProfileSheet";
 
 export type FriendLeaderboardEntry = {
   uid: string;
@@ -108,7 +109,7 @@ export default function FriendsLeaderboard({ colors }: { colors: ColorTokens }) 
   const { profile } = useProfile();
   const { currentStreak } = useProgress();
   const { acceptedFriends, isLoaded, loadError, refreshFriendProfiles } = useFriends();
-  const [cardUid, setCardUid] = useState<string | null>(null);
+  const { selectedUid: cardUid, openUserProfile: setCardUid, closeUserProfile: closeCardUid } = useUserProfileSheet();
 
   useFocusEffect(
     useCallback(() => {
@@ -236,7 +237,7 @@ export default function FriendsLeaderboard({ colors }: { colors: ColorTokens }) 
         )}
       </View>
 
-      <UserCardSheet uid={cardUid} colors={colors} onClose={() => setCardUid(null)} />
+      <UserCardSheet uid={cardUid} colors={colors} onClose={closeCardUid} />
     </View>
   );
 }

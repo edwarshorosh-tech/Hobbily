@@ -16,6 +16,7 @@ import { useAuthorProfiles } from "../hooks/useAuthorProfiles";
 import PostCard from "../components/PostCard";
 import PostCardSkeleton from "../components/post/PostCardSkeleton";
 import UserCardSheet from "../components/user-card/UserCardSheet";
+import { useUserProfileSheet } from "../hooks/useUserProfileSheet";
 import { Post } from "../types/Post";
 
 export default function FeedScreen() {
@@ -24,7 +25,7 @@ export default function FeedScreen() {
   const { posts, isLoading, loadError, hasMore, loadingMore, loadMore, refresh, deletePost } = usePosts();
   const authorProfiles = useAuthorProfiles(posts.map((p) => p.authorId));
   const [refreshing, setRefreshing] = useState(false);
-  const [cardUid, setCardUid] = useState<string | null>(null);
+  const { selectedUid: cardUid, openUserProfile: setCardUid, closeUserProfile: closeCardUid } = useUserProfileSheet();
 
   const handleRefresh = useCallback(() => {
     setRefreshing(true);
@@ -100,7 +101,7 @@ export default function FeedScreen() {
         />
       )}
 
-      <UserCardSheet uid={cardUid} colors={colors} onClose={() => setCardUid(null)} />
+      <UserCardSheet uid={cardUid} colors={colors} onClose={closeCardUid} />
     </SafeAreaView>
   );
 }

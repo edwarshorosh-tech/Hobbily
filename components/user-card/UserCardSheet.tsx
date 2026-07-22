@@ -2,7 +2,9 @@
  * UserCardSheet — the one reusable "who is this person" bottom sheet, opened
  * from every place a username/avatar is tappable: community chat, the
  * friends leaderboard, the friends list, incoming/outgoing requests, post
- * authors, comment authors, and community member lists.
+ * authors, comment authors, community member lists, and workshop
+ * participant lists. Every caller shares its open/close state via
+ * hooks/useUserProfileSheet.ts instead of its own local state.
  *
  * Callers only ever need to know a uid — this looks up the public profile
  * and the friendship relationship itself (services/friendsService.ts's
@@ -14,17 +16,18 @@
  * has chosen to show it) — never age, email, or anything from the private
  * users/{uid} document.
  *
- * Design: a compact social-profile preview, not a full-screen page. There's
- * no visible close (X) button — dismissal is swipe-down (the sheet's
- * handle), backdrop tap, or Android Back, all handled by BottomSheet; the
- * backdrop's own Pressable already carries accessibilityLabel="Close" as
- * the screen-reader-reachable dismiss action. Friend status is a small
- * badge next to the identity, not a full-width button — the only real
- * "action" surface is the actual next step available (send/accept a
- * request) or, for an existing friend, a small de-emphasized "Remove
- * Friend" link, never the visually dominant element on the sheet. Height is
- * capped, not fixed — a short profile (no bio, no hobbies, no featured
- * achievements) renders short; a fuller one scrolls within the cap.
+ * Design: a compact social-profile PREVIEW, not a full-screen page — it
+ * deliberately doesn't try to be everything: the hobby list is capped, no
+ * post feed is embedded, achievements only show the featured few. Anyone
+ * wanting more taps "View full profile", which opens app/user/[uid].tsx
+ * (Overview/Posts/Workshops tabs) — the preview and the full profile share
+ * the same hero language and stat grid rather than feeling like two
+ * unrelated designs. There's no visible close (X) button — dismissal is
+ * swipe-down (the sheet's handle), backdrop tap, or Android Back, all
+ * handled by BottomSheet; the backdrop's own Pressable already carries
+ * accessibilityLabel="Close" as the screen-reader-reachable dismiss action.
+ * Height is capped, not fixed — a short profile renders short; a fuller one
+ * scrolls within the cap.
  *
  * Featured achievement icons shown here are always rendered as "unlocked" —
  * firestore.rules only allows featuredAchievementIds to contain ids this
@@ -33,22 +36,25 @@
  * progress state to compute for someone else's card, and no need to read
  * their private progress/{uid} doc (which this viewer can't read anyway).
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Image, Modal, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { ColorTokens } from "../../context/ThemeContext";
 import { useAuth } from "../../context/AuthContext";
 import { friendlyMessage, useFriends } from "../../context/FriendsContext";
 import { FriendSearchResult } from "../../services/friendsService";
-import { brand } from "../../constants/colors";
 import BottomSheet from "../BottomSheet";
 import ConfirmModal from "../ConfirmModal";
 import FriendAvatar from "../friends/FriendAvatar";
 import TagChip from "../TagChip";
 import PersonalityBadge from "../PersonalityBadge";
 import AchievementDetailSheet from "../achievements/AchievementDetailSheet";
+import ProfileStatGrid, { StatCell } from "../profile/ProfileStatGrid";
 import { achievementDefById } from "../../constants/achievements";
 import { actionFor } from "../../utils/friendCardAction";
+import { previewWithOverflow } from "../../utils/previewList";
+import { useProfileActivityStats } from "../../hooks/useProfileActivityStats";
 
 type Props = {
   /** uid of the user to show, or null when the sheet should be closed. */
@@ -58,6 +64,7 @@ type Props = {
 };
 
 const AVATAR_SIZE = 96;
+const HOBBY_PREVIEW_COUNT = 6;
 
 export default function UserCardSheet({ uid, onClose, colors }: Props) {
   const { user } = useAuth();
@@ -72,19 +79,37 @@ export default function UserCardSheet({ uid, onClose, colors }: Props) {
   const [openAchievementId, setOpenAchievementId] = useState<string | null>(null);
 
   const visible = uid !== null;
+  const stats = useProfileActivityStats(uid);
+  // Last uid this sheet successfully loaded, and what it loaded — lets a
+  // reopen of the *same* uid show its content instantly (refreshing
+  // silently behind it) instead of flashing a loading spinner, per Stage 1's
+  // "use cached profile data immediately if available; update silently in
+  // the background" requirement.
+  const lastLoadedRef = useRef<{ uid: string; result: FriendSearchResult | null } | null>(null);
 
   useEffect(() => {
-    if (!uid) {
-      setResult(null);
-      return;
-    }
+    // uid going to null means the sheet is closing — BottomSheet is still
+    // playing its close animation for a beat after this. Deliberately NOT
+    // clearing `result` here: doing so used to make the sheet's own content
+    // flash to a loading/empty state mid-close-animation, which is exactly
+    // the "looks like it refreshed" symptom this is fixing. The content
+    // simply stays as it was, hidden by the time the animation finishes.
+    if (!uid) return;
+
     let cancelled = false;
-    setLoading(true);
     setLoadError(null);
     setActionError(null);
+    if (lastLoadedRef.current?.uid === uid) {
+      setResult(lastLoadedRef.current.result);
+      setLoading(false);
+    } else {
+      setResult(null);
+      setLoading(true);
+    }
     getUserCard(uid)
       .then((r) => {
         if (cancelled) return;
+        lastLoadedRef.current = { uid, result: r };
         setResult(r);
         setLoading(false);
       })
@@ -99,8 +124,13 @@ export default function UserCardSheet({ uid, onClose, colors }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uid]);
 
-  if (!visible) return null;
-
+  // No `if (!visible) return null` here — that used to unmount <BottomSheet>
+  // (and the Reanimated close animation it's mid-way through) the instant
+  // `uid` became null, instead of letting BottomSheet's own `mounted` state
+  // play the close animation out and unmount itself once it's actually
+  // done. Every other sheet in this app (AchievementDetailSheet,
+  // FriendSearchModal, ...) already leaves this entirely to BottomSheet;
+  // this component just had a leftover redundant gate.
   const profile = result?.profile ?? null;
   const { label, kind } = actionFor(result?.relationship ?? "none");
   const sendKey = profile ? `send:${profile.uid}` : "";
@@ -131,6 +161,22 @@ export default function UserCardSheet({ uid, onClose, colors }: Props) {
     if (!res.ok) setActionError(res.message);
     else setResult({ ...result!, relationship: "none", friendshipId: null });
   }
+
+  function openFullProfile() {
+    if (!uid) return;
+    onClose();
+    router.push(`/user/${uid}` as any);
+  }
+
+  const statCells: StatCell[] = [
+    { key: "communities", icon: "people-outline", label: "Communities", value: stats.communityCount },
+    { key: "workshops", icon: "school-outline", label: "Workshops", value: stats.workshopCount },
+    { key: "streak", icon: "flame", label: "Day streak", value: profile ? Math.max(0, profile.currentStreak || 0) : null },
+  ];
+
+  const { visible: visibleHobbies, overflowCount: hobbyOverflow } = profile
+    ? previewWithOverflow(profile.hobbies, HOBBY_PREVIEW_COUNT)
+    : { visible: [] as string[], overflowCount: 0 };
 
   return (
     <>
@@ -185,36 +231,37 @@ export default function UserCardSheet({ uid, onClose, colors }: Props) {
                 </View>
               ) : null}
 
-              <View style={styles.metaRow}>
-                {profile.city ? (
-                  <View style={styles.metaItem}>
-                    <Ionicons name="location-outline" size={14} color={colors.secondaryText} />
-                    <Text style={[styles.metaText, { color: colors.secondaryText }]}>{profile.city}</Text>
-                  </View>
-                ) : null}
+              {profile.city ? (
                 <View style={styles.metaItem}>
-                  <Ionicons name="flame" size={14} color={brand.streakFlame} />
-                  <Text style={[styles.metaText, { color: colors.secondaryText }]}>
-                    {Math.max(0, profile.currentStreak || 0)} day streak
-                  </Text>
+                  <Ionicons name="location-outline" size={14} color={colors.secondaryText} />
+                  <Text style={[styles.metaText, { color: colors.secondaryText }]}>{profile.city}</Text>
                 </View>
-              </View>
+              ) : null}
+            </View>
+
+            <View style={styles.section}>
+              <ProfileStatGrid cells={statCells} colors={colors} />
             </View>
 
             {profile.bio ? (
               <View style={styles.section}>
                 <Text style={[styles.sectionLabel, { color: colors.secondaryText }]}>About</Text>
-                <Text style={[styles.bio, { color: colors.text }]}>{profile.bio}</Text>
+                <Text style={[styles.bio, { color: colors.text }]} numberOfLines={4}>{profile.bio}</Text>
               </View>
             ) : null}
 
-            {profile.hobbies.length > 0 && (
+            {visibleHobbies.length > 0 && (
               <View style={styles.section}>
                 <Text style={[styles.sectionLabel, { color: colors.secondaryText }]}>Hobbies</Text>
                 <View style={styles.tagWrap}>
-                  {profile.hobbies.map((tag) => (
-                    <TagChip key={tag} label={tag} textColor="#fff" backgroundColor={colors.primary} />
+                  {visibleHobbies.map((tag) => (
+                    <TagChip key={tag} label={tag} textColor={colors.primary} backgroundColor={`${colors.primary}14`} />
                   ))}
+                  {hobbyOverflow > 0 && (
+                    <TouchableOpacity onPress={openFullProfile}>
+                      <TagChip label={`+${hobbyOverflow} more`} textColor={colors.secondaryText} backgroundColor={colors.card} />
+                    </TouchableOpacity>
+                  )}
                 </View>
               </View>
             )}
@@ -276,6 +323,16 @@ export default function UserCardSheet({ uid, onClose, colors }: Props) {
                 )}
               </TouchableOpacity>
             )}
+
+            <TouchableOpacity
+              onPress={openFullProfile}
+              style={[styles.viewProfileAction, { borderColor: colors.border }]}
+              accessibilityRole="button"
+              accessibilityLabel="View full profile"
+            >
+              <Text style={[styles.viewProfileText, { color: colors.text }]}>View full profile</Text>
+              <Ionicons name="arrow-forward" size={14} color={colors.text} />
+            </TouchableOpacity>
 
             {kind === "friends" && !isOwnUid && (
               <TouchableOpacity
@@ -354,8 +411,7 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   statusBadgeText: { fontSize: 12, fontWeight: "700" },
-  metaRow: { flexDirection: "row", flexWrap: "wrap", gap: 14, justifyContent: "center", marginTop: 10 },
-  metaItem: { flexDirection: "row", alignItems: "center", gap: 4, maxWidth: "100%" },
+  metaItem: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 10, maxWidth: "100%" },
   // No numberOfLines — a long city name wraps rather than being cut off.
   metaText: { fontSize: 13, flexShrink: 1 },
   section: { marginBottom: 16 },
@@ -367,7 +423,18 @@ const styles = StyleSheet.create({
   achievementChipText: { color: "#fff", fontSize: 13, fontWeight: "700", flexShrink: 1 },
   actionError: { fontSize: 12, textAlign: "center", marginBottom: 8 },
   primaryAction: { flexDirection: "row", paddingVertical: 14, borderRadius: 14, alignItems: "center", justifyContent: "center" },
-  removeAction: { flexDirection: "row", alignItems: "center", justifyContent: "center", paddingVertical: 10, marginTop: 2 },
+  viewProfileAction: {
+    flexDirection: "row",
+    gap: 6,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 10,
+  },
+  viewProfileText: { fontSize: 14, fontWeight: "700" },
+  removeAction: { flexDirection: "row", alignItems: "center", justifyContent: "center", paddingVertical: 10, marginTop: 6 },
   removeActionText: { fontSize: 13, fontWeight: "600" },
   avatarPreviewBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.9)", alignItems: "center", justifyContent: "center" },
   avatarPreviewImage: { width: "88%", aspectRatio: 1, borderRadius: 16 },

@@ -4,6 +4,7 @@
  * UserCardSheet). Uses the same BottomSheet shell as every other sheet in
  * the app rather than a bespoke modal.
  */
+import { useRef } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { ColorTokens } from "../../context/ThemeContext";
@@ -23,8 +24,28 @@ type Props = {
 
 export default function AchievementDetailSheet({ achievementId, onClose, colors, unlockedAchievements, currentStats }: Props) {
   const visible = achievementId !== null;
-  const def = achievementId ? achievementDefById(achievementId) : undefined;
-  const unlocked = def ? unlockedAchievements.find((a) => a.id === def.id) : undefined;
+  // Keeps showing the last real id's content through the close animation —
+  // achievementId going null would otherwise blank this sheet's content
+  // instantly (achievementDefById is a synchronous lookup, not async state,
+  // but the effect is the same visual bug as UserCardSheet's).
+  const lastIdRef = useRef<string | null>(null);
+  // Callers (UserCardSheet, Public Profile) recompute unlockedAchievements/
+  // currentStats from their own achievementId-keyed state too, so those
+  // props go stale/empty on the very same close the id does — freezing
+  // them here as well, not just the id, is what actually keeps the whole
+  // sheet's content stable through the close animation.
+  const lastUnlockedRef = useRef<Achievement[]>([]);
+  const lastStatsRef = useRef(currentStats);
+  if (achievementId) {
+    lastIdRef.current = achievementId;
+    lastUnlockedRef.current = unlockedAchievements;
+    lastStatsRef.current = currentStats;
+  }
+  const effectiveId = achievementId ?? lastIdRef.current;
+  const effectiveUnlocked = achievementId ? unlockedAchievements : lastUnlockedRef.current;
+  const effectiveStats = achievementId ? currentStats : lastStatsRef.current;
+  const def = effectiveId ? achievementDefById(effectiveId) : undefined;
+  const unlocked = def ? effectiveUnlocked.find((a) => a.id === def.id) : undefined;
 
   return (
     <BottomSheet visible={visible} onClose={onClose} colors={colors} maxHeight="70%">
@@ -58,13 +79,13 @@ export default function AchievementDetailSheet({ achievementId, onClose, colors,
               {(() => {
                 const progress = def.progress({
                   streakDays: [],
-                  totalSessions: currentStats.totalSessions,
-                  totalMinutes: currentStats.totalMinutes,
+                  totalSessions: effectiveStats.totalSessions,
+                  totalMinutes: effectiveStats.totalMinutes,
                   longestStreak: 0,
-                  achievements: unlockedAchievements,
+                  achievements: effectiveUnlocked,
                   streakFreezeAvailable: false,
                   streakFreezeLastGranted: "",
-                  currentStreak: currentStats.currentStreak,
+                  currentStreak: effectiveStats.currentStreak,
                 });
                 const pct = progress.target > 0 ? Math.min(1, progress.current / progress.target) : 0;
                 return (

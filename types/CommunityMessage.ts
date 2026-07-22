@@ -1,6 +1,15 @@
 /** Absent on every message sent before this field existed — always treated as "text" (see the fallback in app/(tabs)/community.tsx). */
 export type CommunityMessageType = "text" | "image" | "sticker";
 
+/** Denormalized enough to render a reply block without a second read — the canonical relation is still replyToMessageId, which tap-to-scroll and "deleted original" detection use, never this preview alone. */
+export type ReplyPreview = {
+  senderId: string;
+  senderDisplayName: string;
+  type: CommunityMessageType;
+  /** Empty for "sticker"/"image"-without-caption. */
+  textPreview: string;
+};
+
 /** A single message posted in a hobby channel */
 export type CommunityMessage = {
   id: string;
@@ -15,6 +24,9 @@ export type CommunityMessage = {
   imageStoragePath?: string;
   /** One of STICKER_PACK's ids (utils/stickers.ts) for "sticker" messages. */
   stickerId?: string;
+  /** The message this one replies to, if any. The canonical relation — replyPreview is just a denormalized display copy of it at send time, never trusted alone (e.g. for "was the original deleted" — that's answered by looking the id up in the loaded page, not the preview). */
+  replyToMessageId?: string;
+  replyPreview?: ReplyPreview;
   createdAt: string;
   /** Client-only, never persisted — true while this message is still writing to the server (Firestore's snapshot.metadata.hasPendingWrites), used to show a "Sending…" state. */
   pending?: boolean;
