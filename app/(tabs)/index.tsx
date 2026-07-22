@@ -20,9 +20,9 @@ import { localDateISO, parseLocalISO } from "../../utils/dateUtils";
 import { formatTime12h, formatTimeLabel, minutesToNormalizedTime, timeStringToMinutes } from "../../utils/time";
 import { Task } from "../../types/Task";
 import {
-  AiAssistantServiceError,
   ChatMessage,
   friendlyAiAssistantMessage,
+  getAiWorkerDiagnostics,
   isAiAssistantConfigured,
   sendChatMessage,
 } from "../../services/aiAssistantService";
@@ -119,7 +119,12 @@ function AIAssistantCard({
 
       pushMessage("assistant", reply.text ? `${reply.text} ${outcome}` : outcome);
     } catch (e) {
-      if (__DEV__) console.warn("[AIAssistantCard] sendChatMessage failed", e);
+      // Sanitized (see getAiWorkerDiagnostics/utils/aiAssistantConfig.ts —
+      // hostname only, never the full URL, never a token) so this is safe to
+      // paste when comparing "why does this work on my teammate's machine
+      // but not mine" — the answer is almost always `configured: false`,
+      // meaning this machine's .env is missing EXPO_PUBLIC_AI_WORKER_URL.
+      if (__DEV__) console.warn("[AIAssistantCard] sendChatMessage failed", e, getAiWorkerDiagnostics());
       pushMessage("assistant", friendlyAiAssistantMessage(e), true);
     } finally {
       setLoading(false);

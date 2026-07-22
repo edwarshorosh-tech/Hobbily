@@ -43,9 +43,18 @@ export function useSwipeToCloseSheet(visible: boolean, onClose: () => void) {
   const dragY = useSharedValue(0);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
-
-  // Stable across renders (unlike onClose itself) so the UI-thread worklets
-  // below can safely runOnJS() it without capturing a stale closure.
+  // commitClose (below) is a worklet — it must never capture onCloseRef
+  // itself, only a stable JS function. A worklet closing over a plain
+  // mutable ref object causes Reanimated to convert that ref into a
+  // "shareable" the instant the worklet is created; the `onCloseRef.current
+  // = onClose` line above then mutates that same object from the JS thread
+  // on every render, which is exactly what produces
+  // "[Worklets] Tried to modify key `current` of an object which has been
+  // already passed to a worklet" (repeated once per re-render). triggerClose
+  // has a stable identity (created once, via useRef) and only ever runs via
+  // runOnJS — i.e. entirely on the JS thread — so reading onCloseRef.current
+  // inside it is a normal JS property read/write, never crossing the
+  // worklet boundary.
   const triggerClose = useRef(() => onCloseRef.current()).current;
 
   useEffect(() => {

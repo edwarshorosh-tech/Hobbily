@@ -25,6 +25,8 @@ import { useState, useRef, useEffect, useMemo } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
+import * as Haptics from "expo-haptics";
+import * as Clipboard from "expo-clipboard";
 import { useTheme } from "../../context/ThemeContext";
 import { useCommunity } from "../../context/CommunityContext";
 import { useProfile } from "../../context/ProfileContext";
@@ -35,10 +37,11 @@ import UserCardSheet from "../../components/user-card/UserCardSheet";
 import FriendAvatar from "../../components/friends/FriendAvatar";
 import BottomSheet from "../../components/BottomSheet";
 import { useAuthorProfiles } from "../../hooks/useAuthorProfiles";
-import { Channel, CommunityMessage, CommunityMembership } from "../../types/CommunityMessage";
+import { Channel, CommunityMessage, CommunityMembership, CommunityMessageType } from "../../types/CommunityMessage";
 import { uploadChannelImage, AvatarServiceError, avatarErrorMessage } from "../../services/storageService";
 import { STICKER_PACK, QUICK_EMOJI, stickerById } from "../../utils/stickers";
 import { subscribeToChannelMembers } from "../../services/communityService";
+import { useUserProfileSheet } from "../../hooks/useUserProfileSheet";
 
 // Stable reference for "no messages yet" so useMemo below it doesn't see a
 // new array on every render when messages[channel.id] is undefined.
@@ -129,17 +132,73 @@ type BubbleProps = {
   onAuthorPress?: () => void;
   /** Resolved live from publicProfiles by ChannelView's useAuthorProfiles — undefined while still loading, never a value cached on the message itself. */
   avatarUrl?: string | null;
+  onLongPress?: () => void;
+  /** True briefly right after a reply-preview tap scrolled here — a transient highlight, not persisted state. */
+  highlighted?: boolean;
+  /** Whether the original message this one replies to is still present in the currently-loaded page — drives "tap to view" vs "Original message unavailable". */
+  replyTargetLoaded?: boolean;
+  onPressReplyPreview?: () => void;
 };
 
-function MessageBubble({ msg, isMine, colors, onDelete, onAuthorPress, avatarUrl }: BubbleProps) {
+function MessageBubble({ msg, isMine, colors, onDelete, onAuthorPress, avatarUrl, onLongPress, highlighted, replyTargetLoaded, onPressReplyPreview }: BubbleProps) {
   const [imagePreviewVisible, setImagePreviewVisible] = useState(false);
   const time = new Date(msg.createdAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
   const sticker = msg.type === "sticker" && msg.stickerId ? stickerById(msg.stickerId) : undefined;
   const isSticker = msg.type === "sticker" && !!sticker;
   const isImage = msg.type === "image" && !!msg.imageUrl;
 
+  const bubbleContent = (
+    <>
+      {isSticker ? (
+        <View style={styles.stickerBubble}>
+          <Text style={styles.stickerEmoji}>{sticker!.emoji}</Text>
+        </View>
+      ) : isImage ? (
+        <>
+          <TouchableOpacity onPress={() => setImagePreviewVisible(true)} onLongPress={onLongPress} delayLongPress={400} accessibilityRole="button" accessibilityLabel="View full-size photo">
+            <Image source={{ uri: msg.imageUrl }} style={styles.imageBubble} resizeMode="cover" />
+          </TouchableOpacity>
+          {msg.text ? (
+            <Pressable
+              onLongPress={onLongPress}
+              delayLongPress={400}
+              style={[
+                styles.bubble,
+                { marginTop: 4 },
+                isMine ? { backgroundColor: colors.primary } : { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 },
+              ]}
+            >
+              <Text style={[styles.bubbleText, { color: isMine ? "#fff" : colors.text }]}>{msg.text}</Text>
+            </Pressable>
+          ) : null}
+          <Modal visible={imagePreviewVisible} transparent animationType="fade" onRequestClose={() => setImagePreviewVisible(false)}>
+            <Pressable style={styles.imagePreviewBackdrop} onPress={() => setImagePreviewVisible(false)} accessibilityLabel="Close photo preview">
+              <Image source={{ uri: msg.imageUrl }} style={styles.imagePreviewFull} resizeMode="contain" />
+            </Pressable>
+          </Modal>
+        </>
+      ) : (
+        <Pressable
+          onLongPress={onLongPress}
+          delayLongPress={400}
+          style={({ pressed }) => [
+            styles.bubble,
+            isMine
+              ? { backgroundColor: colors.primary }
+              : { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 },
+            pressed && { opacity: 0.85 },
+          ]}
+        >
+          <Text style={[styles.bubbleText, { color: isMine ? "#fff" : colors.text }]}>
+            {msg.text}
+          </Text>
+        </Pressable>
+      )}
+    </>
+  );
+
   return (
-    <View style={[styles.bubbleWrapper, isMine && styles.bubbleWrapperMine]}>
+    <View style={[styles.bubbleWrapper, isMine && styles.bubbleWrapperMine, highlighted && { backgroundColor: `${colors.primary}12`, borderRadius: 14 }]}>
       {!isMine && (
         <TouchableOpacity
           onPress={onAuthorPress}
@@ -158,46 +217,22 @@ function MessageBubble({ msg, isMine, colors, onDelete, onAuthorPress, avatarUrl
           </TouchableOpacity>
         )}
 
-        {isSticker ? (
-          <View style={styles.stickerBubble}>
-            <Text style={styles.stickerEmoji}>{sticker!.emoji}</Text>
-          </View>
-        ) : isImage ? (
-          <>
-            <TouchableOpacity onPress={() => setImagePreviewVisible(true)} accessibilityRole="button" accessibilityLabel="View full-size photo">
-              <Image source={{ uri: msg.imageUrl }} style={styles.imageBubble} resizeMode="cover" />
-            </TouchableOpacity>
-            {msg.text ? (
-              <View
-                style={[
-                  styles.bubble,
-                  { marginTop: 4 },
-                  isMine ? { backgroundColor: colors.primary } : { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 },
-                ]}
-              >
-                <Text style={[styles.bubbleText, { color: isMine ? "#fff" : colors.text }]}>{msg.text}</Text>
-              </View>
-            ) : null}
-            <Modal visible={imagePreviewVisible} transparent animationType="fade" onRequestClose={() => setImagePreviewVisible(false)}>
-              <Pressable style={styles.imagePreviewBackdrop} onPress={() => setImagePreviewVisible(false)} accessibilityLabel="Close photo preview">
-                <Image source={{ uri: msg.imageUrl }} style={styles.imagePreviewFull} resizeMode="contain" />
-              </Pressable>
-            </Modal>
-          </>
-        ) : (
-          <View
-            style={[
-              styles.bubble,
-              isMine
-                ? { backgroundColor: colors.primary }
-                : { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 },
-            ]}
+        {msg.replyToMessageId && msg.replyPreview && (
+          <TouchableOpacity
+            onPress={onPressReplyPreview}
+            disabled={!replyTargetLoaded}
+            style={[styles.replyBlock, { backgroundColor: colors.card, borderLeftColor: colors.primary }]}
+            accessibilityRole={replyTargetLoaded ? "button" : undefined}
+            accessibilityLabel={replyTargetLoaded ? `View original message from ${msg.replyPreview.senderDisplayName}` : "Original message unavailable"}
           >
-            <Text style={[styles.bubbleText, { color: isMine ? "#fff" : colors.text }]}>
-              {msg.text}
+            <Text style={[styles.replyBlockSender, { color: colors.primary }]} numberOfLines={1}>{msg.replyPreview.senderDisplayName}</Text>
+            <Text style={[styles.replyBlockText, { color: colors.secondaryText }]} numberOfLines={1}>
+              {msg.replyPreview.type === "sticker" ? "Sticker" : msg.replyPreview.type === "image" ? "📷 Photo" : msg.replyPreview.textPreview}
             </Text>
-          </View>
+          </TouchableOpacity>
         )}
+
+        {bubbleContent}
 
         <View style={[styles.bubbleMeta, isMine && { justifyContent: "flex-end" }]}>
           {msg.pending ? (
@@ -259,7 +294,7 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
   const [draft, setDraft] = useState("");
   const [selection, setSelection] = useState({ start: 0, end: 0 });
   const [sendError, setSendError] = useState<string | null>(null);
-  const [cardUid, setCardUid] = useState<string | null>(null);
+  const { selectedUid: cardUid, openUserProfile: setCardUid, closeUserProfile: closeCardUid } = useUserProfileSheet();
   const [pendingImage, setPendingImage] = useState<{ uri: string; mimeType?: string } | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
@@ -269,6 +304,10 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
   const [membersVisible, setMembersVisible] = useState(false);
   const [members, setMembers] = useState<CommunityMembership[] | null>(null);
   const [membersError, setMembersError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<CommunityMessage | null>(null);
+  const [replyTarget, setReplyTarget] = useState<CommunityMessage | null>(null);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  const [copyFeedback, setCopyFeedback] = useState(false);
   const flatRef = useRef<FlatList>(null);
 
   // Real member roster — only subscribed while the sheet is actually open,
@@ -295,9 +334,67 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
   const allMessages = messages[channel.id] ?? EMPTY_MESSAGES;
   const authorProfiles = useAuthorProfiles(allMessages.map((m) => m.authorId));
   const listItems = useMemo(() => buildChatListItems(allMessages), [allMessages]);
+  // Which loaded page position each message is at — used both to scroll a
+  // tapped reply-preview to its original, and to know whether that original
+  // is even loaded (vs. "Original message unavailable").
+  const messageIndexById = useMemo(() => {
+    const map = new Map<string, number>();
+    listItems.forEach((item, i) => {
+      if (item.kind === "message") map.set(item.msg.id, i);
+    });
+    return map;
+  }, [listItems]);
+  const messageById = useMemo(() => {
+    const map = new Map<string, CommunityMessage>();
+    allMessages.forEach((m) => map.set(m.id, m));
+    return map;
+  }, [allMessages]);
 
   const isJoined = joinedChannelIds.includes(channel.id);
   const joinPending = pendingChannelIds.has(channel.id);
+
+  function scrollToMessage(id: string) {
+    const index = messageIndexById.get(id);
+    if (index === undefined) return;
+    try {
+      flatRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.5 });
+    } catch {
+      // Virtualization sometimes can't jump straight there — onScrollToIndexFailed below retries.
+    }
+    setHighlightedMessageId(id);
+    setTimeout(() => setHighlightedMessageId((cur) => (cur === id ? null : cur)), 1500);
+  }
+
+  function handleLongPressMessage(msg: CommunityMessage) {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => undefined);
+    setActionMessage(msg);
+  }
+
+  function startReply() {
+    if (!actionMessage) return;
+    setReplyTarget(actionMessage);
+    setActionMessage(null);
+  }
+
+  async function handleCopyMessage() {
+    const target = actionMessage;
+    setActionMessage(null);
+    if (!target || target.type === "sticker" || !target.text) return;
+    try {
+      await Clipboard.setStringAsync(target.text);
+      setCopyFeedback(true);
+      setTimeout(() => setCopyFeedback(false), 1500);
+    } catch (e) {
+      if (__DEV__) console.warn("[Community] copy failed", e);
+    }
+  }
+
+  function handleDeleteFromMenu() {
+    const target = actionMessage;
+    setActionMessage(null);
+    if (!target) return;
+    deleteMessage(channel.id, target.id).catch(() => setSendError("Couldn't delete that message. Please try again."));
+  }
 
   async function ensureJoined(): Promise<boolean> {
     if (isJoined) return true;
@@ -323,7 +420,8 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
     setSendError(null);
     if (!(await ensureJoined())) return;
     try {
-      await sendMessage(channel.id, { type: "sticker", stickerId });
+      await sendMessage(channel.id, { type: "sticker", stickerId, replyTo: buildReplyTo() });
+      setReplyTarget(null);
       setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 100);
     } catch {
       setSendError("Couldn't send that sticker. Please check your connection and try again.");
@@ -349,19 +447,34 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
     }
   }
 
+  function buildReplyTo() {
+    if (!replyTarget) return undefined;
+    return {
+      messageId: replyTarget.id,
+      preview: {
+        senderId: replyTarget.authorId ?? "",
+        senderDisplayName: replyTarget.author,
+        type: (replyTarget.type ?? "text") as CommunityMessageType,
+        textPreview: replyTarget.type === "sticker" ? "" : replyTarget.text.slice(0, 200),
+      },
+    };
+  }
+
   async function handleSend() {
     const text = draft.trim();
     if (!text && !pendingImage) return;
     setSendError(null);
     if (!(await ensureJoined())) return;
+    const replyTo = buildReplyTo();
 
     if (pendingImage) {
       setUploadingImage(true);
       try {
         const { url, storagePath } = await uploadChannelImage(channel.id, user!.uid, pendingImage.uri, pendingImage.mimeType);
-        await sendMessage(channel.id, { type: "image", imageUrl: url, imageStoragePath: storagePath, caption: text || undefined });
+        await sendMessage(channel.id, { type: "image", imageUrl: url, imageStoragePath: storagePath, caption: text || undefined, replyTo });
         setPendingImage(null);
         setDraft("");
+        setReplyTarget(null);
         setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 100);
       } catch (e) {
         const code = e instanceof AvatarServiceError ? e.code : "unknown";
@@ -374,8 +487,9 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
 
     setSendingText(true);
     try {
-      await sendMessage(channel.id, { type: "text", text });
+      await sendMessage(channel.id, { type: "text", text, replyTo });
       setDraft("");
+      setReplyTarget(null);
       setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 100);
     } catch {
       setSendError("Couldn't send that message. Please check your connection and try again.");
@@ -454,6 +568,11 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
             </Text>
           </View>
         }
+        onScrollToIndexFailed={(info) => {
+          setTimeout(() => {
+            flatRef.current?.scrollToIndex({ index: Math.min(info.index, info.highestMeasuredFrameIndex), animated: true });
+          }, 100);
+        }}
         renderItem={({ item }) =>
           item.kind === "separator" ? (
             <View style={styles.dateSeparatorRow}>
@@ -476,12 +595,16 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
               }
               onAuthorPress={item.msg.authorId ? () => setCardUid(item.msg.authorId!) : undefined}
               avatarUrl={item.msg.authorId ? authorProfiles.get(item.msg.authorId)?.avatarUrl : null}
+              onLongPress={() => handleLongPressMessage(item.msg)}
+              highlighted={item.msg.id === highlightedMessageId}
+              replyTargetLoaded={!!item.msg.replyToMessageId && messageById.has(item.msg.replyToMessageId)}
+              onPressReplyPreview={item.msg.replyToMessageId ? () => scrollToMessage(item.msg.replyToMessageId!) : undefined}
             />
           )
         }
       />
 
-      <UserCardSheet uid={cardUid} onClose={() => setCardUid(null)} colors={colors} />
+      <UserCardSheet uid={cardUid} onClose={closeCardUid} colors={colors} />
 
       {imageError && (
         <View style={[styles.chatErrorBanner, { backgroundColor: colors.danger + "18", borderColor: colors.danger, marginBottom: 0 }]}>
@@ -501,6 +624,28 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
               <Ionicons name="close-circle" size={20} color={colors.secondaryText} />
             </TouchableOpacity>
           )}
+        </View>
+      )}
+
+      {copyFeedback && (
+        <View style={[styles.copyToast, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <Ionicons name="checkmark-circle" size={14} color={colors.primary} />
+          <Text style={[styles.copyToastText, { color: colors.text }]}>Copied to clipboard</Text>
+        </View>
+      )}
+
+      {replyTarget && (
+        <View style={[styles.replyBar, { borderTopColor: colors.border, backgroundColor: colors.card }]}>
+          <View style={[styles.replyBarAccent, { backgroundColor: colors.primary }]} />
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={[styles.replyBarSender, { color: colors.primary }]} numberOfLines={1}>Replying to {replyTarget.author}</Text>
+            <Text style={[styles.replyBarPreview, { color: colors.secondaryText }]} numberOfLines={1}>
+              {replyTarget.type === "sticker" ? "Sticker" : replyTarget.type === "image" ? "📷 Photo" : replyTarget.text}
+            </Text>
+          </View>
+          <TouchableOpacity onPress={() => setReplyTarget(null)} accessibilityRole="button" accessibilityLabel="Cancel reply" hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Ionicons name="close" size={18} color={colors.secondaryText} />
+          </TouchableOpacity>
         </View>
       )}
 
@@ -641,6 +786,33 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
             })
           )}
         </ScrollView>
+      </BottomSheet>
+
+      {/* Long-press message actions — every action shown here actually
+          works (rule: no decorative actions). Reporting was left out
+          entirely rather than added as a non-functional button, since no
+          report/moderation system exists anywhere in this app yet. */}
+      <BottomSheet visible={!!actionMessage} onClose={() => setActionMessage(null)} colors={colors} maxHeight="40%">
+        {actionMessage && (
+          <View style={{ gap: 4 }}>
+            <TouchableOpacity onPress={startReply} style={styles.actionMenuRow} accessibilityRole="button" accessibilityLabel="Reply">
+              <Ionicons name="arrow-undo-outline" size={19} color={colors.text} />
+              <Text style={[styles.actionMenuText, { color: colors.text }]}>Reply</Text>
+            </TouchableOpacity>
+            {actionMessage.type !== "sticker" && actionMessage.text ? (
+              <TouchableOpacity onPress={handleCopyMessage} style={styles.actionMenuRow} accessibilityRole="button" accessibilityLabel="Copy text">
+                <Ionicons name="copy-outline" size={19} color={colors.text} />
+                <Text style={[styles.actionMenuText, { color: colors.text }]}>Copy</Text>
+              </TouchableOpacity>
+            ) : null}
+            {actionMessage.authorId && actionMessage.authorId === user?.uid && (
+              <TouchableOpacity onPress={handleDeleteFromMenu} style={styles.actionMenuRow} accessibilityRole="button" accessibilityLabel="Delete message">
+                <Ionicons name="trash-outline" size={19} color={colors.danger} />
+                <Text style={[styles.actionMenuText, { color: colors.danger }]}>Delete</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
       </BottomSheet>
     </KeyboardAvoidingView>
   );
@@ -952,6 +1124,21 @@ const styles = StyleSheet.create({
   bubbleText: { fontSize: 14, lineHeight: 20 },
   bubbleMeta: { flexDirection: "row", alignItems: "center", marginTop: 2, paddingHorizontal: 4 },
   bubbleTime: { fontSize: 10 },
+
+  replyBlock: { borderLeftWidth: 3, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 5, marginBottom: 3 },
+  replyBlockSender: { fontSize: 11, fontWeight: "700" },
+  replyBlockText: { fontSize: 12, marginTop: 1 },
+
+  copyToast: { flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "center", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, borderWidth: 1, marginBottom: 4 },
+  copyToastText: { fontSize: 12, fontWeight: "600" },
+
+  replyBar: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 12, paddingVertical: 8, borderTopWidth: 1 },
+  replyBarAccent: { width: 3, height: 30, borderRadius: 2 },
+  replyBarSender: { fontSize: 12, fontWeight: "700" },
+  replyBarPreview: { fontSize: 12, marginTop: 1 },
+
+  actionMenuRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 12 },
+  actionMenuText: { fontSize: 15, fontWeight: "600" },
 
   stickerBubble: { alignItems: "center", justifyContent: "center", paddingVertical: 4 },
   stickerEmoji: { fontSize: 56, lineHeight: 64 },

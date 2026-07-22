@@ -45,6 +45,7 @@ async function main() {
   const uidA = "alice";
   const uidB = "bob";
   const uidC = "carol";
+  const uidD = "dave";
   const pairAB = "alice_bob"; // "alice" < "bob"
 
   // Seed a pending alice -> bob request and alice's public profile, bypassing rules.
@@ -74,6 +75,7 @@ async function main() {
   const aliceDb = testEnv.authenticatedContext(uidA).firestore();
   const bobDb = testEnv.authenticatedContext(uidB).firestore();
   const carolDb = testEnv.authenticatedContext(uidC).firestore();
+  const daveDb = testEnv.authenticatedContext(uidD).firestore();
   const anonDb = testEnv.unauthenticatedContext().firestore();
 
   console.log("Friendships:");
@@ -313,6 +315,59 @@ async function main() {
         featuredAchievementIds: ["first_session", "streak_3", "first_session", "streak_3"],
         updatedAt: serverTimestamp(),
       })
+    );
+  });
+
+  console.log("Public profile currentStreak bootstrap (avatar-upload regression):");
+
+  // Regression coverage for the bug where a brand-new publicProfiles/{uid}
+  // document could never come into existence at all: profileService.ts's
+  // saveProfile()/ensurePublicProfileFresh()/updateAvatarUrl() never include
+  // currentStreak (only ProgressContext.tsx's separate streak-mirror effect
+  // does), and request.resource.data reflects the full post-merge document —
+  // so requiring currentStreak unconditionally rejected every one of these
+  // real writes on a document that didn't already have it. Each check below
+  // uses the exact payload shape the real service functions send.
+  await check("first-ever public profile write without currentStreak succeeds (saveProfile/ensurePublicProfileFresh's real shape)", async () => {
+    await assertSucceeds(
+      setDoc(
+        doc(daveDb, "publicProfiles", uidD),
+        {
+          uid: uidD,
+          username: "dave",
+          usernameNormalized: "dave",
+          city: "",
+          avatarUrl: null,
+          bio: "",
+          hobbies: [],
+          featuredAchievementIds: [],
+          personalityTypeId: null,
+          personalityTypeName: null,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      )
+    );
+  });
+
+  await check("currentStreak-only merge onto that now-existing doc succeeds (ProgressContext's mirror-write shape)", async () => {
+    await assertSucceeds(
+      setDoc(doc(daveDb, "publicProfiles", uidD), { currentStreak: 0, updatedAt: serverTimestamp() }, { merge: true })
+    );
+  });
+
+  await check("avatarUrl-only merge afterward succeeds and preserves currentStreak (updateAvatarUrl's real shape)", async () => {
+    await assertSucceeds(
+      setDoc(doc(daveDb, "publicProfiles", uidD), { avatarUrl: "https://example.com/avatar.jpg", updatedAt: serverTimestamp() }, { merge: true })
+    );
+    const snap = await getDoc(doc(daveDb, "publicProfiles", uidD));
+    if (snap.data().avatarUrl !== "https://example.com/avatar.jpg") throw new Error("avatarUrl was not persisted");
+    if (snap.data().currentStreak !== 0) throw new Error("currentStreak was lost by the merge");
+  });
+
+  await check("an invalid currentStreak value is still rejected when present", async () => {
+    await assertFails(
+      setDoc(doc(daveDb, "publicProfiles", uidD), { currentStreak: -1, updatedAt: serverTimestamp() }, { merge: true })
     );
   });
 

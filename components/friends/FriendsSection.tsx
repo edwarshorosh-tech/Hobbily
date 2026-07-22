@@ -16,6 +16,7 @@ import FriendAvatar from "./FriendAvatar";
 import { brand } from "../../constants/colors";
 import FriendSearchModal from "./FriendSearchModal";
 import UserCardSheet from "../user-card/UserCardSheet";
+import { useUserProfileSheet } from "../../hooks/useUserProfileSheet";
 
 type Props = {
   colors: ColorTokens;
@@ -28,7 +29,7 @@ export default function FriendsSection({ colors, autoOpenRequests, onAutoOpenHan
   const { acceptedFriends, incomingRequests, isLoaded, loadError } = useFriends();
   const [searchModalVisible, setSearchModalVisible] = useState(false);
   const [searchModalInitialTab, setSearchModalInitialTab] = useState<"find" | "requests">("find");
-  const [previewUid, setPreviewUid] = useState<string | null>(null);
+  const { selectedUid: previewUid, openUserProfile: setPreviewUid, closeUserProfile: closePreview } = useUserProfileSheet();
 
   useEffect(() => {
     if (!autoOpenRequests) return;
@@ -136,7 +137,7 @@ export default function FriendsSection({ colors, autoOpenRequests, onAutoOpenHan
         colors={colors}
         initialTab={searchModalInitialTab}
       />
-      <UserCardSheet uid={previewUid} colors={colors} onClose={() => setPreviewUid(null)} />
+      <UserCardSheet uid={previewUid} colors={colors} onClose={closePreview} />
     </View>
   );
 }
