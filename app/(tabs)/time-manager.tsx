@@ -265,12 +265,20 @@ function DayStrip({ selected, onSelect, onShiftWeek, colors, taskCounts }: DaySt
       {/* Week navigation — shifts the selected date itself by 7 days, so the
           day strip, header subtitle, and Week at a Glance all stay in sync. */}
       <View style={styles.weekNav}>
-        <TouchableOpacity onPress={() => onShiftWeek(-7)} style={styles.weekNavBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Ionicons name="chevron-back" size={18} color={colors.secondaryText} />
+        <TouchableOpacity
+          onPress={() => onShiftWeek(-7)}
+          style={[styles.weekNavBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Ionicons name="chevron-back" size={22} color={colors.text} />
         </TouchableOpacity>
         <Text style={[styles.weekLabel, { color: colors.text }]}>{weekLabel}</Text>
-        <TouchableOpacity onPress={() => onShiftWeek(7)} style={styles.weekNavBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-          <Ionicons name="chevron-forward" size={18} color={colors.secondaryText} />
+        <TouchableOpacity
+          onPress={() => onShiftWeek(7)}
+          style={[styles.weekNavBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Ionicons name="chevron-forward" size={22} color={colors.text} />
         </TouchableOpacity>
       </View>
 
@@ -1100,7 +1108,7 @@ const styles = StyleSheet.create({
   dayStrip: { paddingBottom: 4 },
   dayStripGrid: { flexDirection: "row", gap: 4, marginTop: 8 },
   weekNav: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 4 },
-  weekNavBtn: { padding: 6 },
+  weekNavBtn: { paddingHorizontal: 8, paddingVertical: 6, borderRadius: 8, borderWidth: 1 },
   weekLabel: { fontSize: 13, fontWeight: "700" },
   streakMini: { flexDirection: "row", alignItems: "center", gap: 6, marginHorizontal: 16, marginTop: 12, padding: 10, borderRadius: 10, borderWidth: 1 },
   streakMiniText: { fontSize: 13, fontWeight: "600" },

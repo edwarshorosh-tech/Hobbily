@@ -28,6 +28,7 @@ import { PublicProfile } from "../../types/PublicProfile";
 import BottomSheet from "../BottomSheet";
 import FriendAvatar from "./FriendAvatar";
 import UserCardSheet from "../user-card/UserCardSheet";
+import { useUserProfileSheet } from "../../hooks/useUserProfileSheet";
 
 type Tab = "find" | "requests";
 
@@ -362,7 +363,15 @@ function FindFriendsPane({ colors, onOpenCard }: { colors: ColorTokens; onOpenCa
   }
 
   return (
-    <View style={styles.pane}>
+    // Was a plain View — with no scrollable ancestor, "People You May Know"
+    // below (rendered directly as a column of rows, not its own FlatList)
+    // simply got clipped by the sheet's maxHeight once it had more than a
+    // couple of recommendations, with no way to reach the rest. RequestsPane
+    // right below already gets this right; matching that here rather than
+    // inventing a second scrolling approach. keyboardShouldPersistTaps
+    // "handled" so tapping a recommendation's Add/profile row doesn't first
+    // require a separate tap to dismiss the search input's keyboard.
+    <ScrollView style={styles.pane} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
       <View style={[styles.searchInputRow, { backgroundColor: colors.inputBackground, borderColor: colors.border }]}>
         <Ionicons name="search" size={18} color={colors.secondaryText} />
         <TextInput
@@ -418,7 +427,7 @@ function FindFriendsPane({ colors, onOpenCard }: { colors: ColorTokens; onOpenCa
         <SearchResultCard result={result} colors={colors} onResultChange={setResult} onOpenCard={onOpenCard} />
       )}
       {state === "idle" && query.trim() === "" && <PeopleYouMayKnow colors={colors} onOpenCard={onOpenCard} />}
-    </View>
+    </ScrollView>
   );
 }
 
@@ -563,7 +572,7 @@ function RequestsPane({ colors, onOpenCard }: { colors: ColorTokens; onOpenCard:
 export default function FriendSearchModal({ visible, onClose, colors, initialTab = "find" }: Props) {
   const { incomingRequests } = useFriends();
   const [tab, setTab] = useState<Tab>("find");
-  const [cardUid, setCardUid] = useState<string | null>(null);
+  const { selectedUid: cardUid, openUserProfile: setCardUid, closeUserProfile: closeCardUid } = useUserProfileSheet();
 
   useEffect(() => {
     if (visible) setTab(initialTab);
@@ -632,7 +641,7 @@ export default function FriendSearchModal({ visible, onClose, colors, initialTab
         )}
       </BottomSheet>
 
-      <UserCardSheet uid={cardUid} colors={colors} onClose={() => setCardUid(null)} />
+      <UserCardSheet uid={cardUid} colors={colors} onClose={closeCardUid} />
     </>
   );
 }

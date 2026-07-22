@@ -12,7 +12,7 @@ import { createContext, useContext, useState, useEffect, useRef, useCallback, us
 import {
   collection, doc, addDoc, deleteDoc, query, orderBy, limit, onSnapshot,
 } from "firebase/firestore";
-import { Channel, CommunityMessage } from "../types/CommunityMessage";
+import { Channel, CommunityMessage, ReplyPreview } from "../types/CommunityMessage";
 import { useAuth } from "./AuthContext";
 import { useProfile } from "./ProfileContext";
 import { db } from "../lib/firebase";
@@ -38,10 +38,14 @@ export const DEFAULT_CHANNELS: Channel[] = [
 
 export type JoinChannelResult = { ok: true } | { ok: false; message: string };
 
-export type SendMessagePayload =
+export type SendMessagePayload = (
   | { type: "text"; text: string }
   | { type: "image"; imageUrl: string; imageStoragePath: string; caption?: string }
-  | { type: "sticker"; stickerId: string };
+  | { type: "sticker"; stickerId: string }
+) & {
+  /** The message being replied to — its id (the canonical relation) plus a denormalized preview for display. Omitted for a non-reply send. */
+  replyTo?: { messageId: string; preview: ReplyPreview };
+};
 
 type CommunityContextType = {
   channels: Channel[];
@@ -210,6 +214,7 @@ export function CommunityProvider({ children }: { children: React.ReactNode }) {
       authorId: user.uid,
       author: profile.username || "You",
       createdAt: new Date().toISOString(),
+      ...(payload.replyTo ? { replyToMessageId: payload.replyTo.messageId, replyPreview: payload.replyTo.preview } : {}),
     };
     const doc =
       payload.type === "text"

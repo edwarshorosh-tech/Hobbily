@@ -90,7 +90,11 @@ export const darkTheme: ColorTokens = {
   text: "#EDEFFB",
   secondaryText: "#9BA1D4",
   border: "#26316E",
-  primary: "#4C5FD1",
+  // A genuinely vivid, saturated electric blue/indigo — not just a slightly
+  // brighter tint of the old muted #4C5FD1, but a real jump in intensity so
+  // primary actions (Save, Join, Send, Add, the active tab) read as clearly
+  // bold against the dark navy background, not just "a bit brighter blue."
+  primary: "#3D5AFE",
   secondary: "#1B2456",
   accent: "#FF8A8A",
   danger: "#FF8A8A",
@@ -98,7 +102,7 @@ export const darkTheme: ColorTokens = {
   dangerBorder: "#5C2430",
   success: "#34D399",
   tabBar: "#101A4A",
-  tabBarActive: "#4C5FD1",
+  tabBarActive: "#3D5AFE",
   tabBarInactive: "#5C6399",
   inputBackground: "#0B123A",
   // Unchanged from TagChip's previous hardcoded "tinted" variant values —

@@ -43,6 +43,7 @@ import { Achievement } from "../../types/Progress";
 import { ACHIEVEMENT_DEFS, AchievementDef, MAX_FEATURED_ACHIEVEMENTS } from "../../constants/achievements";
 import AchievementDetailSheet from "../../components/achievements/AchievementDetailSheet";
 import LocalitySearchInput from "../../components/LocalitySearchInput";
+import { useUserProfileSheet } from "../../hooks/useUserProfileSheet";
 import { brand } from "../../constants/colors";
 import { shouldFocusFriendsWidget } from "../../utils/profileNavigation";
 
@@ -405,7 +406,7 @@ export default function ProfileScreen() {
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [removeAvatarConfirmVisible, setRemoveAvatarConfirmVisible] = useState(false);
-  const [cardUid, setCardUid] = useState<string | null>(null);
+  const { selectedUid: cardUid, openUserProfile: setCardUid, closeUserProfile: closeCardUid } = useUserProfileSheet();
 
   // "Add Friends" from the Home leaderboard's empty state deep-links here
   // with ?tab=overview&focus=friends — this scrolls to and briefly
@@ -1258,7 +1259,7 @@ export default function ProfileScreen() {
         onCancel={() => setRemoveAvatarConfirmVisible(false)}
       />
 
-      <UserCardSheet uid={cardUid} colors={colors} onClose={() => setCardUid(null)} />
+      <UserCardSheet uid={cardUid} colors={colors} onClose={closeCardUid} />
 
       <AchievementDetailSheet
         achievementId={selectedAchievementId}

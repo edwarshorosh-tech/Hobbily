@@ -181,6 +181,25 @@ service cloud.firestore {
           );
       }
 
+      // currentStreak is mirrored in by ProgressContext.tsx separately from
+      // every other field here (see services/profileService.ts) — it is
+      // NEVER present in the very first write that creates this document
+      // (onboarding's saveProfile(), or ProfileContext's ensurePublicProfileFresh
+      // backfill). Requiring it unconditionally made that first write invalid
+      // (request.resource.data reflects the full post-merge document, which
+      // has no currentStreak key yet), so the document could never come into
+      // existence at all — the exact bug behind "avatar upload succeeds in
+      // Storage but the profile document never gets a usable avatar": both
+      // writes in updateAvatarUrl's batch share one atomic commit, so the
+      // publicProfiles half failing this check rolled back the users/{uid}
+      // half too. Only validate type/range when the field is actually present,
+      // matching the isValidFeaturedAchievements/isValidPersonalityType pattern
+      // just below.
+      function isValidCurrentStreak(data) {
+        return !('currentStreak' in data)
+          || ((data.currentStreak is int || data.currentStreak is float) && data.currentStreak >= 0);
+      }
+
       function isValidPublicProfile() {
         let data = request.resource.data;
         return data.uid == uid
@@ -189,7 +208,7 @@ service cloud.firestore {
           && data.usernameNormalized == data.username.lower()
           && data.city is string && data.city.size() <= 60
           && (data.avatarUrl == null || (data.avatarUrl is string && data.avatarUrl.size() <= 500))
-          && (data.currentStreak is int || data.currentStreak is float) && data.currentStreak >= 0
+          && isValidCurrentStreak(data)
           && data.bio is string && data.bio.size() <= 300
           && data.hobbies is list && data.hobbies.size() <= 20
           && data.updatedAt == request.time
@@ -330,6 +349,30 @@ service cloud.firestore {
         && request.resource.data.status == 'joined'
         && membershipId == request.resource.data.channelId + '_' + request.auth.uid
         && request.resource.data.username is string;
+
+      allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
+
+      allow update: if false;
+    }
+
+    // ── Workshop participation ─────────────────────────────────────────────────
+    // workshopParticipants/{workshopId}_{uid} — the real, server-side record
+    // of "this user joined this workshop/opportunity" (see
+    // services/workshopService.ts). Same deterministic-id/no-duplicate-join
+    // pattern as communityMemberships just above. The opportunity catalog
+    // itself is static app content (app/(tabs)/opportunities.tsx), not a
+    // Firestore collection — only participation needs a real backend.
+    match /workshopParticipants/{participantId} {
+      function isSignedIn() { return request.auth != null; }
+
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.status == 'joined'
+        && participantId == request.resource.data.workshopId + '_' + request.auth.uid
+        && request.resource.data.username is string
+        && request.resource.data.joinedAt is string;
 
       allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
 
@@ -540,13 +583,35 @@ service cloud.firestore {
         );
       }
 
+      // Both fields always written together (see context/CommunityContext.tsx's
+      // sendMessage). exists() at this exact channel's messages subcollection
+      // path is what enforces "reply target belongs to the same community" —
+      // a replyToMessageId from a different channel simply can't exist at this
+      // path, so there's nothing extra to check for that.
+      function isValidReply(data) {
+        return (('replyToMessageId' in data) == ('replyPreview' in data))
+          && (
+            !('replyToMessageId' in data)
+            || (
+              data.replyToMessageId is string && data.replyToMessageId.size() > 0
+              && data.replyPreview.senderId is string
+              && data.replyPreview.senderDisplayName is string && data.replyPreview.senderDisplayName.size() > 0
+              && data.replyPreview.type in ['text', 'image', 'sticker']
+              && data.replyPreview.textPreview is string && data.replyPreview.textPreview.size() <= 2000
+              && data.replyPreview.keys().hasOnly(['senderId', 'senderDisplayName', 'type', 'textPreview'])
+              && exists(/databases/$(database)/documents/channels/$(channelId)/messages/$(data.replyToMessageId))
+            )
+          );
+      }
+
       allow read: if isSignedIn();
 
       allow create: if isSignedIn()
         && isValidBaseFields(request.resource.data)
         && isValidMessageByType(request.resource.data)
+        && isValidReply(request.resource.data)
         && request.resource.data.keys().hasOnly(
-          ['channelId', 'authorId', 'author', 'text', 'createdAt', 'type', 'imageUrl', 'imageStoragePath', 'stickerId']
+          ['channelId', 'authorId', 'author', 'text', 'createdAt', 'type', 'imageUrl', 'imageStoragePath', 'stickerId', 'replyToMessageId', 'replyPreview']
         );
 
       // Only the sender may delete their own message; legacy messages with
