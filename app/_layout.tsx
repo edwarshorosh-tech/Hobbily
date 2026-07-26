@@ -3,6 +3,8 @@ import { StatusBar } from "expo-status-bar";
 import { ThemeProvider, useTheme } from "../context/ThemeContext";
 import { AuthProvider, useAuth } from "../context/AuthContext";
 import { ProfileProvider, useProfile } from "../context/ProfileContext";
+import { TourTargetsProvider } from "../context/TourTargetsContext";
+import { OnboardingTourProvider } from "../context/OnboardingTourContext";
 import { PostsProvider, usePosts } from "../context/PostsContext";
 import { TimeProvider, useTime } from "../context/TimeContext";
 import { CommunityProvider } from "../context/CommunityContext";
@@ -129,6 +131,8 @@ export default function RootLayout() {
       <TipsResetProvider>
       <AuthProvider>
         <ProfileProvider>
+        <TourTargetsProvider>
+        <OnboardingTourProvider>
           {/* ThemeProvider reads useProfile() for the signed-in user's saved
               theme preference (see context/ThemeContext.tsx priority order),
               so it must sit below ProfileProvider in the tree. */}
@@ -145,6 +149,8 @@ export default function RootLayout() {
               </TimeProvider>
             </PostsProvider>
           </ThemeProvider>
+        </OnboardingTourProvider>
+        </TourTargetsProvider>
         </ProfileProvider>
       </AuthProvider>
       </TipsResetProvider>

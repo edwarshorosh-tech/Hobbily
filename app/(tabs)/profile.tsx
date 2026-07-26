@@ -46,6 +46,7 @@ import LocalitySearchInput from "../../components/LocalitySearchInput";
 import { useUserProfileSheet } from "../../hooks/useUserProfileSheet";
 import { brand } from "../../constants/colors";
 import { shouldFocusFriendsWidget } from "../../utils/profileNavigation";
+import { useOnboardingTourController } from "../../context/OnboardingTourContext";
 
 // Overview hobbies: how many chips to show before collapsing behind "Show all".
 const HOBBIES_PREVIEW_COUNT = 8;
@@ -371,7 +372,8 @@ type TabId = "overview" | "posts" | "badges" | "settings";
 
 export default function ProfileScreen() {
   const { colors, isDark, toggleTheme } = useTheme();
-  const { profile, saveProfile, updateAvatar, updatePersonalityVisibility } = useProfile();
+  const { profile, saveProfile, updateAvatar, updatePersonalityVisibility, resetOnboardingTour } = useProfile();
+  const { startTour } = useOnboardingTourController();
   const [personalityVisibilitySaving, setPersonalityVisibilitySaving] = useState(false);
   const { achievements, currentStreak, totalSessions, totalMinutes } = useProgress();
   const [selectedAchievementId, setSelectedAchievementId] = useState<string | null>(null);
@@ -640,6 +642,18 @@ export default function ProfileScreen() {
     resetDailyBanner(); // restore the planner daily reminder banner
     setTipsResetDone(true);
     setTimeout(() => setTipsResetDone(false), 2000);
+  }
+
+  /**
+   * Replays the post-signup spotlight walkthrough on demand. Clears
+   * hasSeenOnboardingTour (so it reads as "not yet seen" again, same field
+   * the original post-signup trigger checks) and shows the tour via the
+   * shared OnboardingTourContext — its own step 1 navigates back to Home
+   * itself, so this doesn't need to separately leave Settings.
+   */
+  function handleReplayTour() {
+    resetOnboardingTour();
+    startTour();
   }
 
   const { posts: myPosts, isLoading: myPostsLoading, loadError: myPostsError, hasMore: myPostsHasMore, loadingMore: myPostsLoadingMore, loadMore: loadMoreMyPosts } = useAuthorPosts(user?.uid ?? null);
@@ -1115,6 +1129,19 @@ export default function ProfileScreen() {
                 {tipsResetDone && (
                   <Ionicons name="checkmark-circle" size={18} color="#10B981" />
                 )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.actionRow, { backgroundColor: colors.card, borderColor: colors.border }]}
+                onPress={handleReplayTour}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="sparkles-outline" size={18} color={colors.primary} />
+                <View style={{ flex: 1, marginLeft: 10 }}>
+                  <Text style={[styles.actionRowLabel, { color: colors.text }]}>Replay App Tour</Text>
+                  <Text style={[styles.actionRowSub, { color: colors.secondaryText }]}>
+                    See Bubble's walkthrough of Hobbily's key features again
+                  </Text>
+                </View>
               </TouchableOpacity>
 
               <Text style={[styles.sectionTitle, { color: colors.text, marginTop: 4 }]}>Account</Text>

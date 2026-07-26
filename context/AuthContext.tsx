@@ -8,6 +8,7 @@ import {
   reauthenticateWithCredential,
   EmailAuthProvider,
   onAuthStateChanged,
+  getAdditionalUserInfo,
 } from "firebase/auth";
 import {
   doc, deleteDoc, getDoc, getDocs, collection, query, where,
@@ -25,7 +26,8 @@ type AuthContextType = {
   user: User | null;
   /** True once the Firebase auth state has been determined (may still be null) */
   isAuthLoaded: boolean;
-  signUp: (email: string, password: string) => Promise<void>;
+  /** Resolves to Firebase's own `isNewUser` flag (from getAdditionalUserInfo) — true for every successful call in practice, since createUserWithEmailAndPassword throws auth/email-already-in-use rather than succeeding for an existing email. Callers use this to trigger new-account-only flows (e.g. the post-signup OnboardingTour) without having to re-derive "is this a fresh account" themselves. */
+  signUp: (email: string, password: string) => Promise<boolean>;
   signIn: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
   /** Re-authenticates, deletes Firestore profile + progress data, then deletes the Firebase Auth user. */
@@ -47,7 +49,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   async function signUp(email: string, password: string) {
-    await createUserWithEmailAndPassword(auth, email, password);
+    const credential = await createUserWithEmailAndPassword(auth, email, password);
+    return getAdditionalUserInfo(credential)?.isNewUser ?? true;
   }
 
   async function signIn(email: string, password: string) {

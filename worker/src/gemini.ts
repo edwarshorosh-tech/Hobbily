@@ -10,7 +10,7 @@
  * Free-tier model, as requested — never silently upgraded to a paid model.
  */
 import { WorkerError } from "./errors";
-import { ADD_ACTIVITY_TOOL_NAME, RawToolArgs, buildTools } from "./prompt";
+import { ADD_ACTIVITY_TOOL_NAME, DELETE_TASK_TOOL_NAME, RawToolArgs, RawDeleteArgs, buildTools } from "./prompt";
 
 const MODEL = "gemini-3.1-flash-lite";
 const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
@@ -19,7 +19,8 @@ export type ChatTurn = { role: "user" | "model"; text: string };
 
 export type GeminiReply =
   | { kind: "message"; text: string }
-  | { kind: "action"; text: string; args: RawToolArgs };
+  | { kind: "add_activity"; text: string; args: RawToolArgs }
+  | { kind: "delete_task"; text: string; args: RawDeleteArgs };
 
 type GeminiPart = { text?: string; functionCall?: { name?: string; args?: unknown } };
 type GeminiResponse = {
@@ -45,7 +46,7 @@ export async function runChatTurn(
       }),
     });
   } catch {
-    throw new WorkerError("service_unavailable", "The AI assistant is temporarily unavailable. Please try again in a moment.");
+    throw new WorkerError("service_unavailable", "Bubble is temporarily unavailable. Please try again in a moment.");
   }
 
   if (!res.ok) {
@@ -58,12 +59,12 @@ export async function runChatTurn(
     // requests-per-minute cap), and any other non-2xx — all surface as the
     // same controlled, user-safe error rather than leaking Google's own
     // error body to the client.
-    throw new WorkerError("service_unavailable", "The AI assistant is temporarily unavailable. Please try again in a moment.");
+    throw new WorkerError("service_unavailable", "Bubble is temporarily unavailable. Please try again in a moment.");
   }
 
   const data = (await res.json().catch(() => null)) as GeminiResponse | null;
   if (!data) {
-    throw new WorkerError("service_unavailable", "The AI assistant is temporarily unavailable. Please try again in a moment.");
+    throw new WorkerError("service_unavailable", "Bubble is temporarily unavailable. Please try again in a moment.");
   }
 
   if (data.promptFeedback?.blockReason) {
@@ -72,7 +73,7 @@ export async function runChatTurn(
 
   const parts = data.candidates?.[0]?.content?.parts ?? [];
   if (parts.length === 0) {
-    throw new WorkerError("service_unavailable", "The AI assistant is temporarily unavailable. Please try again in a moment.");
+    throw new WorkerError("service_unavailable", "Bubble is temporarily unavailable. Please try again in a moment.");
   }
 
   const textParts = parts
@@ -82,16 +83,20 @@ export async function runChatTurn(
     .trim();
 
   // A response can carry both text and a function call in the same turn —
-  // the function call is what actually schedules something, so it wins;
-  // any accompanying text is kept as the reply shown alongside the action.
-  const call = parts.find((p) => p.functionCall && p.functionCall.name === ADD_ACTIVITY_TOOL_NAME);
+  // the function call is what actually schedules/removes something, so it
+  // wins; any accompanying text is kept as the reply shown alongside it.
+  const call = parts.find(
+    (p) => p.functionCall && (p.functionCall.name === ADD_ACTIVITY_TOOL_NAME || p.functionCall.name === DELETE_TASK_TOOL_NAME)
+  );
   if (call?.functionCall) {
-    const args = (call.functionCall.args ?? {}) as RawToolArgs;
-    return { kind: "action", text: textParts, args };
+    if (call.functionCall.name === DELETE_TASK_TOOL_NAME) {
+      return { kind: "delete_task", text: textParts, args: (call.functionCall.args ?? {}) as RawDeleteArgs };
+    }
+    return { kind: "add_activity", text: textParts, args: (call.functionCall.args ?? {}) as RawToolArgs };
   }
 
   if (!textParts) {
-    throw new WorkerError("service_unavailable", "The AI assistant is temporarily unavailable. Please try again in a moment.");
+    throw new WorkerError("service_unavailable", "Bubble is temporarily unavailable. Please try again in a moment.");
   }
   return { kind: "message", text: textParts };
 }

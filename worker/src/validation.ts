@@ -4,7 +4,7 @@
  * flow. Every field is re-checked against a strict shape; nothing from the
  * model is trusted as-is.
  */
-import { RawToolArgs } from "./prompt";
+import { RawDeleteArgs, RawToolArgs } from "./prompt";
 import { WorkerError } from "./errors";
 
 export type ValidatedActivity = {
@@ -44,4 +44,19 @@ export function validateActivity(raw: RawToolArgs, todayISO: string): ValidatedA
   const clampedDuration = Math.min(MAX_DURATION, Math.max(MIN_DURATION, duration));
 
   return { title, type, date: raw.date, time: raw.time, duration: clampedDuration };
+}
+
+/**
+ * Validates a delete_task call's taskId against the set of ids this same
+ * turn's CURRENT SCHEDULE actually listed (see prompt.ts's formatSchedule) —
+ * Gemini is never trusted to have invented or correctly recalled an id on
+ * its own, so any id outside that known set is rejected exactly like an
+ * out-of-range field on validateActivity above.
+ */
+export function validateDeleteArgs(raw: RawDeleteArgs, knownTaskIds: ReadonlySet<string>): { taskId: string } {
+  const taskId = typeof raw.taskId === "string" ? raw.taskId.trim() : "";
+  if (!taskId || !knownTaskIds.has(taskId)) {
+    throw new WorkerError("invalid_result", "I couldn't match that to anything in your schedule — try naming it more specifically.");
+  }
+  return { taskId };
 }

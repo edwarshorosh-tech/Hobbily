@@ -20,6 +20,7 @@ import FriendAvatar from "../friends/FriendAvatar";
 import UserCardSheet from "../user-card/UserCardSheet";
 import { friendsWidgetProfileTarget } from "../../utils/profileNavigation";
 import { useUserProfileSheet } from "../../hooks/useUserProfileSheet";
+import { useTourTarget } from "../../context/TourTargetsContext";
 
 export type FriendLeaderboardEntry = {
   uid: string;
@@ -110,6 +111,7 @@ export default function FriendsLeaderboard({ colors }: { colors: ColorTokens }) 
   const { currentStreak } = useProgress();
   const { acceptedFriends, isLoaded, loadError, refreshFriendProfiles } = useFriends();
   const { selectedUid: cardUid, openUserProfile: setCardUid, closeUserProfile: closeCardUid } = useUserProfileSheet();
+  const tourRef = useTourTarget("addFriends");
 
   useFocusEffect(
     useCallback(() => {
@@ -178,6 +180,7 @@ export default function FriendsLeaderboard({ colors }: { colors: ColorTokens }) 
               Your friends&apos; streaks will appear here.
             </Text>
             <TouchableOpacity
+              ref={tourRef}
               onPress={() => router.push(friendsWidgetProfileTarget())}
               style={[styles.emptyAction, { borderColor: colors.primary }]}
               accessibilityRole="button"

@@ -26,6 +26,7 @@ import PracticeTimerModal from "../../components/PracticeTimerModal";
 import BottomSheet from "../../components/BottomSheet";
 import TimeWheelPicker from "../../components/time-picker/TimeWheelPicker";
 import ConfirmModal from "../../components/ConfirmModal";
+import { useTourTarget } from "../../context/TourTargetsContext";
 import { Task } from "../../types/Task";
 import { addDaysISO, localDateISO, parseLocalISO, startOfWeekISO } from "../../utils/dateUtils";
 import {
@@ -879,6 +880,7 @@ export default function TimeManagerScreen() {
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [timerVisible, setTimerVisible] = useState(false);
   const [timerTask, setTimerTask] = useState<{ title: string; duration: number } | null>(null);
+  const tourRef = useTourTarget("plannerAddActivity");
 
   const dayTasks = tasks
     .filter((t) => t.date === selectedDate)
@@ -1003,6 +1005,7 @@ export default function TimeManagerScreen() {
                   Add an activity for {formatLongDate(selectedDate)}.
                 </Text>
                 <TouchableOpacity
+                  ref={tourRef}
                   onPress={openAdd}
                   style={[styles.emptyAddBtn, { backgroundColor: colors.primary }]}
                   accessibilityRole="button"
@@ -1043,6 +1046,7 @@ export default function TimeManagerScreen() {
         {dayTasks.length > 0 && (
           <View style={styles.floatingRow}>
             <TouchableOpacity
+              ref={tourRef}
               onPress={openAdd}
               style={[styles.floatBtn, styles.addFloatBtn, { backgroundColor: colors.card, borderColor: colors.primary }]}
               accessibilityRole="button"

@@ -22,8 +22,15 @@ import * as Haptics from "expo-haptics";
 import { useTheme, ColorTokens } from "../context/ThemeContext";
 import { TAB_BAR_CONTENT_HEIGHT } from "../hooks/useTabBarHeight";
 import { resolveTabIcon } from "../utils/tabBarIcons";
+import { useTourTarget, TourTargetId } from "../context/TourTargetsContext";
 
 const ANIM_DURATION = 200;
+
+/** The only two tab routes the post-signup OnboardingTour spotlights — see components/OnboardingTour.tsx. Every other route resolves to null (no registration, see useTourTarget's null-is-a-no-op contract). */
+const TOUR_TARGET_BY_ROUTE: Partial<Record<string, TourTargetId>> = {
+  community: "communityTab",
+  opportunities: "exploreTab",
+};
 
 function TabItem({
   routeName,
@@ -40,6 +47,7 @@ function TabItem({
   colors: ColorTokens;
   reduceMotion: boolean;
 }) {
+  const tourRef = useTourTarget(TOUR_TARGET_BY_ROUTE[routeName] ?? null);
   const progress = useSharedValue(isFocused ? 1 : 0);
 
   useEffect(() => {
@@ -67,6 +75,7 @@ function TabItem({
 
   return (
     <Pressable
+      ref={tourRef}
       onPress={onPress}
       style={styles.item}
       accessibilityRole="button"

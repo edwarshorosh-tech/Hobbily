@@ -1,21 +1,26 @@
 /**
  * aiAssistantService
- * The only place the Expo client talks to the AI Assistant backend. Calls
- * the Cloudflare Worker (worker/) — never Gemini directly, and never carries
- * the Gemini API key. Authenticates with the current user's Firebase ID
- * token (short-lived, already available via the Auth SDK — no separate
+ * The only place the Expo client talks to the AI Assistant (Bubble) backend.
+ * Calls the Cloudflare Worker (worker/) — never Gemini directly, and never
+ * carries the Gemini API key. Authenticates with the current user's Firebase
+ * ID token (short-lived, already available via the Auth SDK — no separate
  * credential to manage).
  *
  * The Worker is stateless — conversational memory lives here, as a plain
- * array the caller resends on every turn (see sendChatMessage). Callers pass
- * a returned "action" reply's ParsedActivity straight into the existing
- * TimeContext.addTask() — this file does not write to Firestore itself and
- * does not define a second activity model.
+ * array the caller resends on every turn (see sendChatMessage). The caller
+ * also resends its current task list on every turn — grounding context only
+ * (never written by this file), letting the Worker's prompt resolve "cancel
+ * my soccer practice" to a real id (see worker/src/prompt.ts's
+ * formatSchedule). Callers pass a returned "add_activity" reply's
+ * ParsedActivity into the existing TimeContext.addTask(), and a "delete_task"
+ * reply's taskId into TimeContext.deleteTask() — this file does not write to
+ * Firestore/AsyncStorage itself and does not define a second activity model.
  */
 import { isAxiosError } from "axios";
 import { auth } from "../lib/firebase";
 import { api } from "./api";
 import { deviceTimeZone, localDateISO } from "../utils/dateUtils";
+import { Task } from "../types/Task";
 import {
   AiAssistantServiceErrorCode,
   AiWorkerEndpointSummary,
@@ -33,14 +38,29 @@ export type ParsedActivity = {
   duration: number;
 };
 
+/** The lean subset of a Task actually needed as schedule grounding context — never the full stored record (completed/createdAt are irrelevant to the assistant). */
+export type ScheduleTaskSummary = {
+  id: string;
+  title: string;
+  type: "task" | "hobby";
+  date: string;
+  time: string;
+  duration: number;
+};
+
 export type ChatRole = "user" | "assistant";
 export type ChatMessage = { role: ChatRole; text: string };
 
 export type ChatReply =
   | { kind: "message"; text: string }
-  | { kind: "action"; text: string; activity: ParsedActivity };
+  | { kind: "add_activity"; text: string; activity: ParsedActivity }
+  | { kind: "delete_task"; text: string; taskId: string };
 
 export type { AiAssistantServiceErrorCode };
+
+function toScheduleSummary(tasks: Task[]): ScheduleTaskSummary[] {
+  return tasks.map((t) => ({ id: t.id, title: t.title, type: t.type, date: t.date, time: t.time, duration: t.duration }));
+}
 
 export class AiAssistantServiceError extends Error {
   code: AiAssistantServiceErrorCode;
@@ -83,16 +103,19 @@ export function friendlyAiAssistantMessage(e: unknown): string {
 
 /**
  * Sends the running conversation (oldest first, ending with the newest user
- * message) to the Worker and returns Gemini's reply — either a plain message
- * or a confirmed "add to calendar" action with a validated activity. The
- * Worker itself keeps no session state; this array *is* the assistant's
- * memory, so the caller must keep appending to and resending it turn to turn.
+ * message) plus the user's current task list to the Worker and returns
+ * Gemini's reply — a plain message, a confirmed "add to calendar" action
+ * with a validated activity, or a confirmed "remove from calendar" action
+ * with a validated taskId. The Worker itself keeps no session state; the
+ * history array *is* the assistant's memory, so the caller must keep
+ * appending to and resending it turn to turn — `tasks` is passed fresh every
+ * call instead, since it's just the current schedule snapshot, not memory.
  */
-export async function sendChatMessage(history: ChatMessage[]): Promise<ChatReply> {
+export async function sendChatMessage(history: ChatMessage[], tasks: Task[]): Promise<ChatReply> {
   if (!WORKER_URL) {
     throw new AiAssistantServiceError(
       "service-unavailable",
-      "The AI assistant isn't set up yet. Add activities manually for now."
+      "Bubble isn't set up yet. Add activities manually for now."
     );
   }
 
@@ -116,6 +139,7 @@ export async function sendChatMessage(history: ChatMessage[]): Promise<ChatReply
         idToken,
         timezone: deviceTimeZone(),
         todayISO: localDateISO(),
+        tasks: toScheduleSummary(tasks),
       },
       { timeout: 30000 }
     );

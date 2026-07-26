@@ -15,6 +15,8 @@ import SwipeableTab from "../../components/SwipeableTab";
 import TipBanner, { TIP_KEYS } from "../../components/TipBanner";
 import FriendsLeaderboard from "../../components/home/FriendsLeaderboard";
 import NotificationBell from "../../components/notifications/NotificationBell";
+import { useTourTarget } from "../../context/TourTargetsContext";
+import MascotAvatar, { MascotNameBadge } from "../../components/MascotAvatar";
 import { useRef, useState } from "react";
 import { localDateISO, parseLocalISO } from "../../utils/dateUtils";
 import { formatTime12h, formatTimeLabel, minutesToNormalizedTime, timeStringToMinutes } from "../../utils/time";
@@ -56,16 +58,21 @@ type ChatRole = "user" | "assistant";
 
 function AIAssistantCard({
   colors,
+  tasks,
   addTask,
+  deleteTask,
 }: {
   colors: any;
+  tasks: Task[];
   addTask: (task: Omit<Task, "id" | "createdAt">) => Promise<TaskSaveResult>;
+  deleteTask: (id: string) => Promise<void>;
 }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const nextId = useRef(0);
   const scrollRef = useRef<ScrollView>(null);
+  const tourRef = useTourTarget("aiAssistant");
 
   function pushMessage(role: ChatRole, text: string, isError = false) {
     nextId.current += 1;
@@ -88,14 +95,28 @@ function AIAssistantCard({
     ];
 
     try {
-      const reply = await sendChatMessage(history);
+      const reply = await sendChatMessage(history, tasks);
 
       if (reply.kind === "message") {
         pushMessage("assistant", reply.text);
         return;
       }
 
-      // A confirmed action — actually write it through the same addTask()
+      if (reply.kind === "delete_task") {
+        // The Worker already validated taskId against the schedule snapshot
+        // this same request sent — but that snapshot could be a turn stale
+        // (e.g. deleted manually elsewhere meanwhile), so re-check against
+        // the live list before reporting success.
+        const target = tasks.find((t) => t.id === reply.taskId);
+        const outcome = target
+          ? `Removed "${target.title}" from your schedule.`
+          : "That's already gone from your schedule.";
+        if (target) await deleteTask(reply.taskId);
+        pushMessage("assistant", reply.text ? `${reply.text} ${outcome}` : outcome);
+        return;
+      }
+
+      // A confirmed add — actually write it through the same addTask()
       // path the manual Add Activity sheet uses, then report the real
       // outcome (which might differ from what Gemini assumed, e.g. a
       // conflict it couldn't have known about) so the transcript — and the
@@ -132,19 +153,23 @@ function AIAssistantCard({
   }
 
   return (
-    <View style={[styles.aiCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+    <View ref={tourRef} collapsable={false} style={[styles.aiCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
       <View style={styles.aiHeaderRow}>
-        <Ionicons name="sparkles-outline" size={18} color={colors.primary} />
-        <Text style={[styles.aiTitle, { color: colors.text }]}>AI Assistant</Text>
+        <MascotAvatar size={32} />
+        <View style={{ marginLeft: 8 }}>
+          <MascotNameBadge />
+          <Text style={[styles.aiSubtitleSmall, { color: colors.secondaryText }]}>Your AI Guide</Text>
+        </View>
       </View>
       <Text style={[styles.aiSubtitle, { color: colors.secondaryText }]}>
-        Chat naturally — ask a question, talk through your plans, or say "add it" and I'll schedule it.
+        Chat naturally with Bubble — ask a question, talk through your plans, say "add it" to schedule
+        something, or "cancel it" to remove something from your calendar.
       </Text>
       {!isAiAssistantConfigured && (
         <View style={[styles.aiNotConfiguredBanner, { backgroundColor: colors.background, borderColor: colors.border }]}>
           <Ionicons name="information-circle-outline" size={14} color={colors.secondaryText} />
           <Text style={[styles.aiNotConfiguredText, { color: colors.secondaryText }]}>
-            The AI assistant isn't set up yet — add activities manually for now.
+            Bubble isn't set up yet — add activities manually for now.
           </Text>
         </View>
       )}
@@ -243,7 +268,7 @@ function TodayTaskRow({ id, title, time, duration, completed, type, colors }: { 
 export default function HomeScreen() {
   const { colors } = useTheme();
   const { profile } = useProfile();
-  const { tasks, addTask } = useTime();
+  const { tasks, addTask, deleteTask } = useTime();
 
   const today = todayISO();
   const todayTasks = tasks
@@ -285,14 +310,14 @@ export default function HomeScreen() {
 
           <TipBanner
             storageKey={TIP_KEYS.homeGettingStarted}
-            text="Add your first activity with AI, or explore communities near you."
+            text="Chat with Bubble to add your first activity, or explore communities near you."
             icon="sparkles-outline"
             colors={colors}
           />
 
           <View style={styles.content}>
             {/* AI Assistant */}
-            <AIAssistantCard colors={colors} addTask={addTask} />
+            <AIAssistantCard colors={colors} tasks={tasks} addTask={addTask} deleteTask={deleteTask} />
 
             {/* Today's schedule */}
             <View style={styles.section}>
@@ -410,9 +435,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: 14,
   },
-  aiHeaderRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  aiTitle: { fontSize: 15, fontWeight: "700" },
-  aiSubtitle: { fontSize: 12, marginTop: 4, marginBottom: 10 },
+  aiHeaderRow: { flexDirection: "row", alignItems: "center" },
+  aiSubtitleSmall: { fontSize: 11, fontWeight: "600", marginTop: 2 },
+  aiSubtitle: { fontSize: 12, marginTop: 8, marginBottom: 10 },
   aiNotConfiguredBanner: {
     flexDirection: "row",
     alignItems: "flex-start",
