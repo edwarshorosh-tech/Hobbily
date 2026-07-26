@@ -20,6 +20,16 @@ import { uploadPostImage, deletePostImage } from "../../services/storageService"
 import PrimaryButton from "../../components/PrimaryButton";
 import TagChip from "../../components/TagChip";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { checkText, moderationErrorMessage, shouldLogModerationEvent } from "../../services/moderationService";
+import { recordModerationEvent } from "../../services/moderationEventService";
+
+// Matches app/create-post.tsx's own client-side caps (and firestore.rules'
+// server-side title cap of 200) — editing a post previously had NO length
+// limit at all here, client or server (the create path's own rules branch
+// doesn't re-validate on update), so an edit could silently produce a post
+// far longer than one ever created fresh.
+const TITLE_MAX = 100;
+const BODY_MAX = 1000;
 
 export default function EditPost() {
   const { colors } = useTheme();
@@ -41,6 +51,7 @@ export default function EditPost() {
   const [imageUri, setImageUri] = useState<string | null>(existing?.imageUrl || null);
   const [imageError, setImageError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [attemptedSave, setAttemptedSave] = useState(false);
 
   // Tracks which tag chip is in the "pending delete" state
   const [pendingTag, setPendingTag] = useState<string | null>(null);
@@ -58,6 +69,19 @@ export default function EditPost() {
   // non-undefined past the guard above, but TS doesn't carry that narrowing
   // into nested function declarations.
   const post = existing;
+
+  /** Re-derived on every render (cheap, pure, no I/O) so Save disables/re-enables live as the user edits — same pattern as app/create-post.tsx. */
+  const moderationViolation = (() => {
+    const t = checkText(title);
+    if (!t.allowed) return t;
+    const b = checkText(body);
+    if (!b.allowed) return b;
+    for (const tag of tags) {
+      const r = checkText(tag);
+      if (!r.allowed) return r;
+    }
+    return null;
+  })();
 
   /** Adds a non-duplicate tag to the list */
   function addTag() {
@@ -106,7 +130,14 @@ export default function EditPost() {
 
   /** Validates inputs, persists the edit (sets editedAt), then goes back */
   async function handleSave() {
+    setAttemptedSave(true);
     if (!title.trim() || !body.trim() || saving) return;
+    if (moderationViolation) {
+      if (user && shouldLogModerationEvent(moderationViolation.severity)) {
+        recordModerationEvent({ userId: user.uid, surface: "edit_post", entityId: id, category: moderationViolation.category, severity: moderationViolation.severity });
+      }
+      return;
+    }
     setSaving(true);
     setImageError(null);
     try {
@@ -140,6 +171,7 @@ export default function EditPost() {
           onChangeText={setTitle}
           placeholder="Post title"
           placeholderTextColor={colors.secondaryText}
+          maxLength={TITLE_MAX}
         />
 
         <Text style={[styles.label, { color: colors.text }]}>Body</Text>
@@ -150,7 +182,12 @@ export default function EditPost() {
           onChangeText={setBody}
           placeholder="Write your post..."
           placeholderTextColor={colors.secondaryText}
+          maxLength={BODY_MAX}
         />
+
+        {attemptedSave && moderationViolation ? (
+          <Text style={[styles.hint, { color: colors.danger, fontStyle: "normal" }]}>{moderationErrorMessage("content")}</Text>
+        ) : null}
 
         {/* ── Photo ────────────────────────────────────────── */}
         <Text style={[styles.label, { color: colors.text }]}>Photo</Text>

@@ -28,7 +28,7 @@ import * as ImagePicker from "expo-image-picker";
 import * as Haptics from "expo-haptics";
 import * as Clipboard from "expo-clipboard";
 import { useTheme } from "../../context/ThemeContext";
-import { useCommunity } from "../../context/CommunityContext";
+import { useCommunity, MAX_MESSAGE_LENGTH, CommunityMessageTooLongError } from "../../context/CommunityContext";
 import { useProfile } from "../../context/ProfileContext";
 import { useAuth } from "../../context/AuthContext";
 import SwipeableTab from "../../components/SwipeableTab";
@@ -40,8 +40,10 @@ import { useAuthorProfiles } from "../../hooks/useAuthorProfiles";
 import { Channel, CommunityMessage, CommunityMembership, CommunityMessageType } from "../../types/CommunityMessage";
 import { uploadChannelImage, AvatarServiceError, avatarErrorMessage } from "../../services/storageService";
 import { STICKER_PACK, QUICK_EMOJI, stickerById } from "../../utils/stickers";
-import { subscribeToChannelMembers } from "../../services/communityService";
+import { subscribeToChannelMembers, subscribeToChannelMessages } from "../../services/communityService";
 import { useUserProfileSheet } from "../../hooks/useUserProfileSheet";
+import InlinePageDisclaimer from "../../components/disclaimers/InlinePageDisclaimer";
+import { ModerationBlockedError, moderationErrorMessage } from "../../services/moderationService";
 
 // Stable reference for "no messages yet" so useMemo below it doesn't see a
 // new array on every render when messages[channel.id] is undefined.
@@ -326,12 +328,54 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
 
   const memberProfiles = useAuthorProfiles((members ?? []).map((m) => m.uid));
 
+  // Closes the Members sheet before opening UserCardSheet, instead of
+  // stacking a second native Modal on top of one still animating closed
+  // (BottomSheet keeps its Modal mounted through its ~180ms close animation
+  // — see useSwipeToCloseSheet's CLOSE_DURATION). Two simultaneous Modals is
+  // the documented New-Architecture/Fabric "touches get dropped inside a
+  // Modal's separate native window" failure mode (see the comment at the
+  // top of hooks/useSwipeToCloseSheet.ts) — this is what made tapping a
+  // member either silently do nothing or leave the screen unresponsive.
+  function openMemberProfile(uid: string) {
+    setMembersVisible(false);
+    setTimeout(() => setCardUid(uid), 200);
+  }
+
+  const isJoined = joinedChannelIds.includes(channel.id);
+  const joinPending = pendingChannelIds.has(channel.id);
+
+  // Non-members can read a public channel's messages too (firestore.rules
+  // never required membership to read — see subscribeToChannelMessages's own
+  // comment) — CommunityContext's own listeners only ever cover *joined*
+  // channels by design (they're mounted app-wide for the whole session), so
+  // a separate, scoped subscription opens here just for the channel this
+  // screen is actually showing, and tears down the moment the viewer joins
+  // (CommunityContext's own listener takes over) or navigates away.
+  const [nonMemberMessages, setNonMemberMessages] = useState<CommunityMessage[] | null>(null);
+  const [nonMemberError, setNonMemberError] = useState<string | null>(null);
+  const [nonMemberRetryKey, setNonMemberRetryKey] = useState(0);
+  useEffect(() => {
+    if (isJoined) {
+      setNonMemberMessages(null);
+      setNonMemberError(null);
+      return;
+    }
+    setNonMemberError(null);
+    const unsub = subscribeToChannelMessages(
+      channel.id,
+      (msgs) => setNonMemberMessages(msgs),
+      (e) => setNonMemberError(e.message)
+    );
+    return unsub;
+  }, [isJoined, channel.id, nonMemberRetryKey]);
+
   // Real Firestore messages only — no seeded/placeholder conversation. An
   // empty channel shows a real "No messages yet" state (below) instead of
   // fake sample dialogue, and every avatar always has a real authorId to
   // open UserCardSheet with (seed messages had none, which is why avatars
   // silently did nothing in a channel that hadn't been chatted in yet).
-  const allMessages = messages[channel.id] ?? EMPTY_MESSAGES;
+  const allMessages = isJoined ? messages[channel.id] ?? EMPTY_MESSAGES : nonMemberMessages ?? EMPTY_MESSAGES;
+  const messagesStillLoading = !isJoined && nonMemberMessages === null && !nonMemberError;
   const authorProfiles = useAuthorProfiles(allMessages.map((m) => m.authorId));
   const listItems = useMemo(() => buildChatListItems(allMessages), [allMessages]);
   // Which loaded page position each message is at — used both to scroll a
@@ -349,9 +393,6 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
     allMessages.forEach((m) => map.set(m.id, m));
     return map;
   }, [allMessages]);
-
-  const isJoined = joinedChannelIds.includes(channel.id);
-  const joinPending = pendingChannelIds.has(channel.id);
 
   function scrollToMessage(id: string) {
     const index = messageIndexById.get(id);
@@ -415,6 +456,13 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
     setSelection({ start: caret, end: caret });
   }
 
+  /** Maps a sendMessage() rejection to a real, specific message — moderation and length rejections have their own clear copy rather than falling into the generic network-error text. */
+  function sendErrorMessage(e: unknown, fallback: string): string {
+    if (e instanceof ModerationBlockedError) return moderationErrorMessage("content");
+    if (e instanceof CommunityMessageTooLongError) return e.message;
+    return fallback;
+  }
+
   async function handleSendSticker(stickerId: string) {
     setTrayVisible(false);
     setSendError(null);
@@ -423,8 +471,8 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
       await sendMessage(channel.id, { type: "sticker", stickerId, replyTo: buildReplyTo() });
       setReplyTarget(null);
       setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 100);
-    } catch {
-      setSendError("Couldn't send that sticker. Please check your connection and try again.");
+    } catch (e) {
+      setSendError(sendErrorMessage(e, "Couldn't send that sticker. Please check your connection and try again."));
     }
   }
 
@@ -477,8 +525,14 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
         setReplyTarget(null);
         setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 100);
       } catch (e) {
-        const code = e instanceof AvatarServiceError ? e.code : "unknown";
-        setImageError(avatarErrorMessage(code) || "Couldn't send that photo. Please try again.");
+        if (e instanceof ModerationBlockedError) {
+          setImageError(moderationErrorMessage("content"));
+        } else if (e instanceof CommunityMessageTooLongError) {
+          setImageError(e.message);
+        } else {
+          const code = e instanceof AvatarServiceError ? e.code : "unknown";
+          setImageError(avatarErrorMessage(code) || "Couldn't send that photo. Please try again.");
+        }
       } finally {
         setUploadingImage(false);
       }
@@ -491,8 +545,8 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
       setDraft("");
       setReplyTarget(null);
       setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 100);
-    } catch {
-      setSendError("Couldn't send that message. Please check your connection and try again.");
+    } catch (e) {
+      setSendError(sendErrorMessage(e, "Couldn't send that message. Please check your connection and try again."));
     } finally {
       setSendingText(false);
     }
@@ -560,13 +614,33 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
         ListEmptyComponent={
-          <View style={styles.emptyChatState}>
-            <Ionicons name="chatbubbles-outline" size={32} color={colors.secondaryText} />
-            <Text style={[styles.emptyChatTitle, { color: colors.text }]}>No messages yet</Text>
-            <Text style={[styles.emptyChatSubtitle, { color: colors.secondaryText }]}>
-              {isJoined ? "Be the first to say something in this community." : "Join the community to start the conversation."}
-            </Text>
-          </View>
+          messagesStillLoading ? (
+            <View style={styles.emptyChatState}>
+              <ActivityIndicator size="small" color={colors.secondaryText} />
+            </View>
+          ) : nonMemberError ? (
+            <View style={styles.emptyChatState}>
+              <Ionicons name="cloud-offline-outline" size={32} color={colors.secondaryText} />
+              <Text style={[styles.emptyChatTitle, { color: colors.text }]}>Couldn&apos;t load messages</Text>
+              <Text style={[styles.emptyChatSubtitle, { color: colors.secondaryText }]}>{nonMemberError}</Text>
+              <TouchableOpacity
+                onPress={() => { setNonMemberError(null); setNonMemberMessages(null); setNonMemberRetryKey((k) => k + 1); }}
+                style={[styles.joinSmallBtn, { backgroundColor: colors.primary, marginTop: 12 }]}
+                accessibilityRole="button"
+                accessibilityLabel="Retry loading messages"
+              >
+                <Text style={{ color: "#fff", fontWeight: "700", fontSize: 13 }}>Retry</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={styles.emptyChatState}>
+              <Ionicons name="chatbubbles-outline" size={32} color={colors.secondaryText} />
+              <Text style={[styles.emptyChatTitle, { color: colors.text }]}>No messages yet</Text>
+              <Text style={[styles.emptyChatSubtitle, { color: colors.secondaryText }]}>
+                {isJoined ? "Be the first to say something in this community." : "Join to be the first to start the conversation."}
+              </Text>
+            </View>
+          )
         }
         onScrollToIndexFailed={(info) => {
           setTimeout(() => {
@@ -649,53 +723,79 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
         </View>
       )}
 
-      {/* Composer — one coherent rounded pill (attachment + emoji/sticker +
-          input + send) instead of a wide flat bar with a disconnected
-          circular send button floating outside it. */}
-      <View style={[styles.composerBar, { borderTopColor: colors.border, backgroundColor: colors.background }]}>
-        <View style={[styles.composerPill, { backgroundColor: colors.inputBackground, borderColor: colors.border }]}>
+      {/* Reading is open to any signed-in user (see subscribeToChannelMessages),
+          but posting is a member action — this replaces the composer
+          entirely for a non-member rather than leaving a freely-typable
+          input that only fails (or silently auto-joins) on send. */}
+      {isJoined ? (
+        // Composer — one coherent rounded pill (attachment + emoji/sticker +
+        // input + send) instead of a wide flat bar with a disconnected
+        // circular send button floating outside it.
+        <View style={[styles.composerBar, { borderTopColor: colors.border, backgroundColor: colors.background }]}>
+          <View style={[styles.composerPill, { backgroundColor: colors.inputBackground, borderColor: colors.border }]}>
+            <TouchableOpacity
+              onPress={handlePickImage}
+              style={styles.composerIconBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Attach a photo"
+            >
+              <Ionicons name="add-circle-outline" size={24} color={colors.secondaryText} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setTrayVisible(true)}
+              style={styles.composerIconBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Emoji and stickers"
+            >
+              <Ionicons name="happy-outline" size={22} color={colors.secondaryText} />
+            </TouchableOpacity>
+            <TextInput
+              style={[styles.chatInput, { color: colors.text }]}
+              placeholder="Message..."
+              placeholderTextColor={colors.secondaryText}
+              value={draft}
+              onChangeText={setDraft}
+              onSelectionChange={(e) => setSelection(e.nativeEvent.selection)}
+              onSubmitEditing={handleSend}
+              returnKeyType="send"
+              multiline
+              maxLength={MAX_MESSAGE_LENGTH}
+            />
+          </View>
           <TouchableOpacity
-            onPress={handlePickImage}
-            style={styles.composerIconBtn}
+            onPress={handleSend}
+            style={[styles.sendBtn, { backgroundColor: colors.primary }, !canSend && { opacity: 0.4 }]}
+            disabled={!canSend}
             accessibilityRole="button"
-            accessibilityLabel="Attach a photo"
+            accessibilityLabel="Send"
           >
-            <Ionicons name="add-circle-outline" size={24} color={colors.secondaryText} />
+            {uploadingImage || sendingText ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Ionicons name="send" size={18} color="#fff" />
+            )}
           </TouchableOpacity>
-          <TouchableOpacity
-            onPress={() => setTrayVisible(true)}
-            style={styles.composerIconBtn}
-            accessibilityRole="button"
-            accessibilityLabel="Emoji and stickers"
-          >
-            <Ionicons name="happy-outline" size={22} color={colors.secondaryText} />
-          </TouchableOpacity>
-          <TextInput
-            style={[styles.chatInput, { color: colors.text }]}
-            placeholder={isJoined ? "Message..." : "Join to send messages..."}
-            placeholderTextColor={colors.secondaryText}
-            value={draft}
-            onChangeText={setDraft}
-            onSelectionChange={(e) => setSelection(e.nativeEvent.selection)}
-            onSubmitEditing={handleSend}
-            returnKeyType="send"
-            multiline
-          />
         </View>
-        <TouchableOpacity
-          onPress={handleSend}
-          style={[styles.sendBtn, { backgroundColor: colors.primary }, !canSend && { opacity: 0.4 }]}
-          disabled={!canSend}
-          accessibilityRole="button"
-          accessibilityLabel="Send"
-        >
-          {uploadingImage || sendingText ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <Ionicons name="send" size={18} color="#fff" />
-          )}
-        </TouchableOpacity>
-      </View>
+      ) : (
+        <View style={[styles.joinPromptBar, { borderTopColor: colors.border, backgroundColor: colors.background }]}>
+          <Text style={[styles.joinPromptText, { color: colors.secondaryText }]}>
+            Join this community to post and participate in discussions.
+          </Text>
+          <TouchableOpacity
+            onPress={() => joinChannel(channel.id).then((r) => { if (!r.ok) setSendError(r.message); })}
+            disabled={joinPending}
+            style={[styles.joinPromptBtn, { backgroundColor: colors.primary, opacity: joinPending ? 0.6 : 1 }]}
+            accessibilityRole="button"
+            accessibilityLabel={`Join ${channel.name}`}
+          >
+            {joinPending ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 14 }}>Join community</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Emoji/sticker tray — shared BottomSheet, not a second sheet system. */}
       <BottomSheet visible={trayVisible} onClose={() => setTrayVisible(false)} colors={colors} maxHeight="55%">
@@ -767,7 +867,7 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
                 <TouchableOpacity
                   key={m.id}
                   style={styles.memberRow}
-                  onPress={() => setCardUid(m.uid)}
+                  onPress={() => openMemberProfile(m.uid)}
                   accessibilityRole="button"
                   accessibilityLabel={`View ${m.username}'s profile`}
                 >
@@ -862,6 +962,10 @@ export default function CommunityScreen() {
     {/* Bottom inset excluded — the Tabs navigator's own tab bar already
         reserves it (see hooks/useTabBarHeight.ts). */}
     <SafeAreaView edges={["top", "left", "right"]} style={[styles.container, { backgroundColor: colors.background }]}>
+      <View style={styles.disclaimerPad}>
+        <InlinePageDisclaimer screenKey="/community" colors={colors} />
+      </View>
+
       {/* Header */}
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <View>
@@ -1003,6 +1107,7 @@ export default function CommunityScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  disclaimerPad: { paddingHorizontal: 16, paddingTop: 10 },
   header: {
     paddingHorizontal: 20,
     paddingVertical: 16,
@@ -1164,6 +1269,20 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderTopWidth: 1,
     gap: 8,
+  },
+  joinPromptBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    gap: 10,
+  },
+  joinPromptText: { flex: 1, fontSize: 13, lineHeight: 18 },
+  joinPromptBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 12,
   },
   composerPill: {
     flex: 1,

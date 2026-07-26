@@ -22,6 +22,7 @@ import { HOBBY_OPTIONS } from "../constants/hobbies";
 import { onboardingTheme, onboardingCardShadow } from "../constants/colors";
 import LocalitySearchInput from "../components/LocalitySearchInput";
 import { validateCustomHobby } from "../utils/hobbyValidation";
+import { checkText, moderationErrorMessage } from "../services/moderationService";
 
 const TOTAL_STEPS = 6;
 
@@ -484,7 +485,11 @@ function StepInterests({ colors, contentWidth, selected, onToggle, canNext, onNe
     ? HOBBY_OPTIONS.filter((h) => h.label.toLowerCase().includes(trimmedQuery.toLowerCase()))
     : HOBBY_OPTIONS;
   const noMatches = trimmedQuery.length > 0 && filteredHobbies.length === 0;
-  const customError = trimmedQuery.length > 0 ? validateCustomHobby(trimmedQuery, selected) : null;
+  const customError =
+    trimmedQuery.length > 0
+      ? validateCustomHobby(trimmedQuery, selected) ??
+        (checkText(trimmedQuery).allowed ? null : moderationErrorMessage("profile_field"))
+      : null;
 
   function addCustomHobby() {
     if (customError) return;

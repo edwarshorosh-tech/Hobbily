@@ -25,14 +25,20 @@ import {
   doc,
   deleteDoc,
   getCountFromServer,
+  getDocs,
+  limit,
   onSnapshot,
+  orderBy,
   query,
   setDoc,
   where,
   Unsubscribe,
 } from "firebase/firestore";
-import { CommunityMembership } from "../types/CommunityMessage";
+import { CommunityMembership, CommunityMessage } from "../types/CommunityMessage";
 import { mapFirebaseError } from "./firebaseErrors";
+
+/** Bounded page cap — matches CommunityContext's own joined-channel message listener (see its own comment); no unbounded full-history read on either path. */
+const MESSAGE_PAGE_SIZE = 200;
 
 const MEMBERSHIPS = "communityMemberships";
 
@@ -117,6 +123,24 @@ export async function fetchUserCommunityCount(uid: string): Promise<number> {
 }
 
 /**
+ * One-shot real list of the communities a given user has joined — reuses the
+ * exact same uid+status index as fetchUserCommunityCount/
+ * subscribeToMyMemberships above (no new Firestore index needed). Powers
+ * app/profile-activity/[uid].tsx's Communities list for any uid, not just
+ * the signed-in user — firestore.rules already allows any signed-in user to
+ * read communityMemberships/{id} docs.
+ */
+export async function fetchUserCommunities(uid: string): Promise<CommunityMembership[]> {
+  try {
+    const q = query(collection(db, MEMBERSHIPS), where("uid", "==", uid), where("status", "==", "joined"));
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => ({ id: d.id, ...d.data() } as CommunityMembership));
+  } catch (e) {
+    throw mapError(e);
+  }
+}
+
+/**
  * Live-subscribes to every joined member of one channel — the real roster,
  * not just "am I in it" (subscribeToMyMemberships above). firestore.rules
  * lets any signed-in user read communityMemberships/{id} docs (needed for
@@ -142,6 +166,33 @@ export function subscribeToChannelMembers(
       members.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       onChange(members);
     },
+    (err) => onError?.(mapError(err))
+  );
+}
+
+/**
+ * Live-subscribes to one channel's messages without requiring membership.
+ * firestore.rules already allows any signed-in user to read
+ * channels/{channelId}/messages (no membership check in the read rule) —
+ * the same trust level subscribeToChannelMembers above already relies on
+ * for the roster. CommunityContext's own message listeners deliberately
+ * only ever subscribe channels the current user has *joined* (they're
+ * mounted app-wide and kept alive for the "sending…" pending-write signal —
+ * see CommunityContext.tsx's own comment), so this is a separate, scoped
+ * subscription a screen can open just for the one channel it's currently
+ * showing, whether or not the viewer has joined it yet — without the
+ * app-root provider having to hold a live listener on every public channel
+ * all the time.
+ */
+export function subscribeToChannelMessages(
+  channelId: string,
+  onChange: (messages: CommunityMessage[]) => void,
+  onError?: (e: CommunityServiceError) => void
+): Unsubscribe {
+  const q = query(collection(db, "channels", channelId, "messages"), orderBy("createdAt", "asc"), limit(MESSAGE_PAGE_SIZE));
+  return onSnapshot(
+    q,
+    (snap) => onChange(snap.docs.map((d) => ({ id: d.id, ...d.data() } as CommunityMessage))),
     (err) => onError?.(mapError(err))
   );
 }

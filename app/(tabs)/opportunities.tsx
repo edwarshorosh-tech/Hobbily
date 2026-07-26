@@ -18,12 +18,17 @@ import SwipeableTab from "../../components/SwipeableTab";
 import BottomSheet from "../../components/BottomSheet";
 import FriendAvatar from "../../components/friends/FriendAvatar";
 import { useUserProfileSheet } from "../../hooks/useUserProfileSheet";
+import InlinePageDisclaimer from "../../components/disclaimers/InlinePageDisclaimer";
 import UserCardSheet from "../../components/user-card/UserCardSheet";
 import { brand } from "../../constants/colors";
 import { Opportunity, OPPORTUNITIES } from "../../constants/opportunities";
 import { joinWorkshop, fetchFriendWorkshopParticipants, fetchUserWorkshops } from "../../services/workshopService";
 import { useAuthorProfiles } from "../../hooks/useAuthorProfiles";
 import { friendJoinedLabel } from "../../utils/friendActivityLabel";
+import { withTimeout, TimeoutError } from "../../utils/withTimeout";
+
+/** A genuine network hang here (no response at all) must not hold the Submit button's spinner forever — see withTimeout's own doc comment. joinWorkshop's deterministic doc id makes a retry after a timeout safe (never creates a duplicate). */
+const JOIN_TIMEOUT_MS = 20_000;
 
 const CATEGORIES = ["All", "Saved", "Photography", "Coding", "Sports", "Music", "Drawing & Art", "Film & Video", "Dance", "Cooking", "Gaming", "Reading"];
 const COST_COLORS: Record<string, string> = { Free: brand.costFree, Subsidised: brand.costSubsidised, Paid: brand.costPaid };
@@ -71,7 +76,11 @@ function RegistrationModal({
   // This component now stays mounted across opens (see the visible prop
   // note above) instead of getting a fresh instance — and fresh useState —
   // every time. Reset the form explicitly on every real open instead, so a
-  // previous submission/error never leaks into the next one.
+  // previous submission/error never leaks into the next one. `joining` is
+  // included here too: without it, a submit that never settled (a genuine
+  // network hang — see withTimeout below) left the Submit button spinning
+  // and permanently disabled for the rest of the session, even after the
+  // sheet was closed and reopened.
   useEffect(() => {
     if (visible) {
       setName("");
@@ -79,6 +88,7 @@ function RegistrationModal({
       setMessage("");
       setSubmitted(false);
       setJoinError(null);
+      setJoining(false);
     }
   }, [visible]);
 
@@ -92,12 +102,19 @@ function RegistrationModal({
       // Registering interest *is* joining the workshop — a real participant
       // record (services/workshopService.ts), not just a local "thank you"
       // screen. This is what lets friends later see "you and Lara joined".
-      await joinWorkshop(opp.id, user.uid, profile.username || "explorer");
+      // Wrapped in withTimeout so a stalled connection can't hold `joining`
+      // true forever — joinWorkshop's deterministic doc id (workshopId_uid)
+      // makes a retry after a timeout safe, never a duplicate registration.
+      await withTimeout(joinWorkshop(opp.id, user.uid, profile.username || "explorer"), JOIN_TIMEOUT_MS);
       onJoined();
       setSubmitted(true);
     } catch (e) {
       if (__DEV__) console.warn("[Opportunities] join failed", e);
-      setJoinError("Couldn't submit your registration. Please check your connection and try again.");
+      setJoinError(
+        e instanceof TimeoutError
+          ? e.message
+          : "Couldn't submit your registration. Please check your connection and try again."
+      );
     } finally {
       setJoining(false);
     }
@@ -134,8 +151,8 @@ function RegistrationModal({
                 </TouchableOpacity>
                 <TouchableOpacity
                   onPress={handleSubmit}
-                  disabled={!name.trim() || !email.trim() || joining}
-                  style={[styles.actionBtn, { backgroundColor: colors.primary, flex: 2, opacity: (!name.trim() || !email.trim() || joining) ? 0.4 : 1 }]}
+                  disabled={!name.trim() || !email.trim() || joining || !user}
+                  style={[styles.actionBtn, { backgroundColor: colors.primary, flex: 2, opacity: (!name.trim() || !email.trim() || joining || !user) ? 0.4 : 1 }]}
                 >
                   {joining ? (
                     <ActivityIndicator size="small" color="#fff" />
@@ -428,6 +445,10 @@ export default function OpportunitiesScreen() {
       {/* Bottom inset excluded — the Tabs navigator's own tab bar already
           reserves it (see hooks/useTabBarHeight.ts). */}
       <SafeAreaView edges={["top", "left", "right"]} style={[styles.container, { backgroundColor: colors.background }]}>
+        <View style={styles.disclaimerPad}>
+          <InlinePageDisclaimer screenKey="/opportunities" colors={colors} />
+        </View>
+
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
           <View style={styles.headerTopRow}>
             <Text style={[styles.headerTitle, { color: colors.text }]}>Explore</Text>
@@ -554,6 +575,7 @@ export default function OpportunitiesScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  disclaimerPad: { paddingHorizontal: 16, paddingTop: 10 },
   header: { paddingHorizontal: 20, paddingTop: 14, paddingBottom: 12, borderBottomWidth: 1, gap: 4 },
   headerTopRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
   headerTitle: { fontSize: 26, fontWeight: "800", letterSpacing: -0.5 },

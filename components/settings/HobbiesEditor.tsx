@@ -11,6 +11,8 @@ import { StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-nativ
 import { Ionicons } from "@expo/vector-icons";
 import { ColorTokens } from "../../context/ThemeContext";
 import { HOBBY_OPTIONS } from "../../constants/hobbies";
+import { validateCustomHobby } from "../../utils/hobbyValidation";
+import { checkText, moderationErrorMessage } from "../../services/moderationService";
 
 export const MAX_HOBBIES = 20;
 
@@ -25,7 +27,14 @@ type Props = {
 
 export default function HobbiesEditor({ hobbies, onChange, colors, disabled = false, title = "My Hobbies" }: Props) {
   const [query, setQuery] = useState("");
-  const [duplicateNotice, setDuplicateNotice] = useState("");
+  // Was "duplicateNotice" — only ever showed a hand-rolled duplicate check,
+  // inconsistent with onboarding's custom-hobby field (app/onboarding.tsx),
+  // which already runs length/punctuation/duplicate checks via
+  // utils/hobbyValidation.ts for the exact same underlying profile.hobbies
+  // field. Unified onto that same validator (plus a moderation check on
+  // top) so a hobby typed here can't be shorter/longer/punctuation-only in
+  // a way onboarding would have rejected.
+  const [addError, setAddError] = useState("");
 
   const atLimit = hobbies.length >= MAX_HOBBIES;
 
@@ -40,12 +49,19 @@ export default function HobbiesEditor({ hobbies, onChange, colors, disabled = fa
   function addHobby(label: string) {
     const trimmed = label.trim();
     if (!trimmed || disabled || atLimit) return;
-    if (hobbies.some((h) => h.toLowerCase() === trimmed.toLowerCase())) {
-      setDuplicateNotice(`"${trimmed}" is already in your hobbies.`);
+    const validationError = validateCustomHobby(trimmed, hobbies);
+    if (validationError) {
+      setAddError(validationError);
       setQuery("");
       return;
     }
-    setDuplicateNotice("");
+    const check = checkText(trimmed);
+    if (!check.allowed) {
+      setAddError(moderationErrorMessage("profile_field"));
+      setQuery("");
+      return;
+    }
+    setAddError("");
     onChange([...hobbies, trimmed]);
     setQuery("");
   }
@@ -73,7 +89,7 @@ export default function HobbiesEditor({ hobbies, onChange, colors, disabled = fa
           value={query}
           onChangeText={(text) => {
             setQuery(text);
-            setDuplicateNotice("");
+            setAddError("");
           }}
           onSubmitEditing={() => addHobby(query)}
           returnKeyType="done"
@@ -91,8 +107,8 @@ export default function HobbiesEditor({ hobbies, onChange, colors, disabled = fa
         )}
       </View>
 
-      {duplicateNotice ? (
-        <Text style={[styles.duplicateNotice, { color: colors.danger }]}>{duplicateNotice}</Text>
+      {addError ? (
+        <Text style={[styles.duplicateNotice, { color: colors.danger }]}>{addError}</Text>
       ) : null}
 
       {hobbies.length > 0 ? (

@@ -13,7 +13,7 @@ import {
   Animated,
   ActivityIndicator,
 } from "react-native";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../../context/ThemeContext";
@@ -28,7 +28,8 @@ import TimeWheelPicker from "../../components/time-picker/TimeWheelPicker";
 import ConfirmModal from "../../components/ConfirmModal";
 import { useTourTarget } from "../../context/TourTargetsContext";
 import { Task } from "../../types/Task";
-import { addDaysISO, localDateISO, parseLocalISO, startOfWeekISO } from "../../utils/dateUtils";
+import { RecurrenceRule } from "../../types/Recurrence";
+import { addDaysISO, deviceTimeZone, localDateISO, parseLocalISO, startOfWeekISO } from "../../utils/dateUtils";
 import {
   NormalizedTime,
   computeDefaultStart,
@@ -41,6 +42,10 @@ import {
   timeStringToMinutes,
 } from "../../utils/time";
 import { DEFAULT_DURATION_MINUTES, formatDuration } from "../../utils/duration";
+import { getOccurrencesForRange, Occurrence, OccurrenceDeleteScope, OccurrenceEditScope } from "../../services/recurrenceService";
+import RepeatSettings, { RepeatPreset } from "../../components/planner/RepeatSettings";
+import OccurrenceScopeSheet from "../../components/planner/OccurrenceScopeSheet";
+import InlinePageDisclaimer from "../../components/disclaimers/InlinePageDisclaimer";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 // All date math below is local-calendar-day based (utils/dateUtils.ts) and
@@ -71,26 +76,55 @@ function formatLongDate(iso: string): string {
   return d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
 }
 
+// ── Repeat preset <-> weekday-set mapping ────────────────────────────────────
+// Kept in one place so RepeatSettings' preset chips and a rule loaded back
+// from storage always agree on what "Weekdays"/"Weekend" mean.
+
+const WEEKDAYS_SET = [1, 2, 3, 4, 5];
+const WEEKEND_SET = [6, 7];
+
+function sameWeekdaySet(a: number[], b: number[]): boolean {
+  if (a.length !== b.length) return false;
+  const sa = [...a].sort();
+  const sb = [...b].sort();
+  return sa.every((v, i) => v === sb[i]);
+}
+
+/** Which preset (if any) a saved rule's weekdays/type matches — "custom" for anything else. */
+function presetForRule(rule: RecurrenceRule): RepeatPreset {
+  if (rule.type === "daily") return "daily";
+  if (sameWeekdaySet(rule.weekdays, WEEKDAYS_SET)) return "weekdays";
+  if (sameWeekdaySet(rule.weekdays, WEEKEND_SET)) return "weekend";
+  return "custom";
+}
+
+function weekdaysForPreset(preset: RepeatPreset, customWeekdays: number[]): number[] {
+  if (preset === "weekdays") return WEEKDAYS_SET;
+  if (preset === "weekend") return WEEKEND_SET;
+  if (preset === "custom") return customWeekdays;
+  return []; // "daily" — RecurrenceRule.type === "daily" doesn't consult weekdays at all
+}
+
 // ── Task Row ──────────────────────────────────────────────────────────────────
 
 type TaskRowProps = {
-  task: Task;
+  occurrence: Occurrence;
   colors: ReturnType<typeof useTheme>["colors"];
   onToggle: () => void;
   onEdit: () => void;
   onDelete: () => void;
 };
 
-function TaskRow({ task, colors, onToggle, onEdit, onDelete }: TaskRowProps) {
-  const isHobby = task.type === "hobby";
-  const timeResult = formatTimeLabel(task.time, { taskId: task.id });
+function TaskRow({ occurrence, colors, onToggle, onEdit, onDelete }: TaskRowProps) {
+  const isHobby = occurrence.type === "hobby";
+  const timeResult = formatTimeLabel(occurrence.time, { taskId: occurrence.occurrenceId });
   // Shown as a "start – end" range (e.g. "11:20 AM – 12:00 PM") rather than
   // start time + a separate duration figure. Falls back to just the start
   // label (including its "Time not set" fallback) when there's no valid
   // start to compute an end from.
-  const startMinutes = timeStringToMinutes(task.time);
+  const startMinutes = timeStringToMinutes(occurrence.time);
   const endTime = startMinutes !== null
-    ? minutesToNormalizedTime(Math.min(LAST_MINUTE_OF_DAY, startMinutes + task.duration))
+    ? minutesToNormalizedTime(Math.min(LAST_MINUTE_OF_DAY, startMinutes + occurrence.duration))
     : null;
   const timeRangeLabel = timeResult.ok && endTime ? `${timeResult.label} – ${formatTime12h(endTime)}` : timeResult.label;
   return (
@@ -98,7 +132,7 @@ function TaskRow({ task, colors, onToggle, onEdit, onDelete }: TaskRowProps) {
       style={[
         styles.taskRow,
         { backgroundColor: colors.card, borderColor: colors.border },
-        task.completed && { opacity: 0.55 },
+        occurrence.completed && { opacity: 0.55 },
       ]}
     >
       {/* Colour accent bar */}
@@ -111,23 +145,28 @@ function TaskRow({ task, colors, onToggle, onEdit, onDelete }: TaskRowProps) {
 
       <TouchableOpacity onPress={onToggle} style={styles.checkbox}>
         <Ionicons
-          name={task.completed ? "checkmark-circle" : "ellipse-outline"}
+          name={occurrence.completed ? "checkmark-circle" : "ellipse-outline"}
           size={26}
-          color={task.completed ? colors.primary : colors.tabBarInactive}
+          color={occurrence.completed ? colors.primary : colors.tabBarInactive}
         />
       </TouchableOpacity>
 
       <View style={styles.taskInfo}>
-        <Text
-          style={[
-            styles.taskTitle,
-            { color: colors.text },
-            task.completed && styles.strikethrough,
-          ]}
-          numberOfLines={1}
-        >
-          {task.title}
-        </Text>
+        <View style={styles.taskTitleRow}>
+          <Text
+            style={[
+              styles.taskTitle,
+              { color: colors.text },
+              occurrence.completed && styles.strikethrough,
+            ]}
+            numberOfLines={1}
+          >
+            {occurrence.title}
+          </Text>
+          {occurrence.isRecurring && (
+            <Ionicons name="repeat" size={13} color={colors.secondaryText} style={{ marginLeft: 5 }} accessibilityLabel="Repeating activity" />
+          )}
+        </View>
         <View style={styles.taskMeta}>
           <View
             style={[
@@ -304,13 +343,13 @@ function DayStrip({ selected, onSelect, onShiftWeek, colors, taskCounts }: DaySt
 // ── Week Overview (zoomed-out schedule) ──────────────────────────────────────
 
 type WeekOverviewProps = {
-  tasks: Task[];
+  occurrences: Occurrence[];
   selected: string;
   onSelect: (iso: string) => void;
   colors: ReturnType<typeof useTheme>["colors"];
 };
 
-function WeekOverview({ tasks, selected, onSelect, colors }: WeekOverviewProps) {
+function WeekOverview({ occurrences, selected, onSelect, colors }: WeekOverviewProps) {
   // "Zoomed out" toggles the glance list from the current week to the whole
   // calendar month containing the selected date — same row layout, just more
   // of them; the page's own ScrollView handles the extra length.
@@ -339,8 +378,8 @@ function WeekOverview({ tasks, selected, onSelect, colors }: WeekOverviewProps) 
         </TouchableOpacity>
       </View>
       {days.map((iso, i) => {
-        const dayTasks = tasks
-          .filter((t) => t.date === iso)
+        const dayTasks = occurrences
+          .filter((o) => o.date === iso)
           .sort((a, b) => (timeStringToMinutes(a.time) ?? Infinity) - (timeStringToMinutes(b.time) ?? Infinity));
         const d = parseLocalISO(iso);
         const isSelected = iso === selected;
@@ -392,16 +431,38 @@ function WeekOverview({ tasks, selected, onSelect, colors }: WeekOverviewProps) 
 
 // ── Add / Edit Task Modal ─────────────────────────────────────────────────────
 
+/**
+ * What's being edited, if anything. `occurrence`/`scope` are present only
+ * when the user chose a this/following/all scope for one occurrence of a
+ * recurring series (see OccurrenceScopeSheet) — a plain one-off edit only
+ * ever carries `task`.
+ */
+export type EditingContext = {
+  task: Task;
+  occurrence?: Occurrence;
+  scope?: OccurrenceEditScope;
+};
+
+type TaskFormResult = {
+  title: string;
+  type: "task" | "hobby";
+  date: string;
+  time: string;
+  duration: number;
+  repeatEnabled: boolean;
+  recurrenceRule: RecurrenceRule | null;
+};
+
 type TaskModalProps = {
   visible: boolean;
   onClose: () => void;
-  /** Called with full field values; id is present when editing. Resolves to a conflict if the slot overlaps an existing task. */
-  onSave: (fields: Omit<Task, "id" | "createdAt">, editId?: string) => Promise<TaskSaveResult>;
+  /** Resolves to a conflict if the slot overlaps an existing task. The caller (not this component) decides which TimeContext function the result maps to — create, plain edit, or a scoped occurrence edit. */
+  onSave: (fields: TaskFormResult) => Promise<TaskSaveResult>;
   defaultDate: string;
   colors: ReturnType<typeof useTheme>["colors"];
   hobbies: string[];
-  /** Pass a task to open in edit mode, undefined for add mode */
-  editingTask?: Task | null;
+  /** Pass to open in edit mode, undefined/null for add mode. */
+  editing?: EditingContext | null;
   /** For the inline date picker's "has tasks" dots — same map the Planner's own day strip uses. */
   taskCounts: Record<string, number>;
   /** Called with the saved task's date right after a successful save, so the Planner view behind the sheet jumps to show it — the whole point of picking a different date in here is to see the task land there. */
@@ -453,8 +514,19 @@ function snapshotFromTask(task: Task): TaskFormSnapshot {
   return { title: task.title, type: task.type, date: task.date, time, endTime: deriveEndTime(time, task.duration) };
 }
 
-function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, editingTask, taskCounts, onDateCommitted }: TaskModalProps) {
-  const isEdit = !!editingTask;
+function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, editing, taskCounts, onDateCommitted }: TaskModalProps) {
+  const isEdit = !!editing;
+  // A single occurrence's own calendar date is fixed — "this"/"following"
+  // pin down which date is being split off, and "all" edits the series'
+  // template without retroactively moving its start. Only a brand-new
+  // activity or a plain one-off task's date is actually movable here.
+  const dateEditable = !editing?.occurrence;
+  // Repeat only makes sense to show for: a brand-new activity, a plain
+  // one-off being edited (can still be turned into a new series), or an
+  // existing occurrence edited with "following"/"all". "this" always
+  // produces a one-off by definition (see recurrenceService.ts) — showing an
+  // editable Repeat toggle there would just be confusing.
+  const repeatSectionVisible = editing?.scope !== "this";
 
   const [title, setTitle] = useState("");
   const [type, setType] = useState<"task" | "hobby">("task");
@@ -469,17 +541,46 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
   const [datePickerOpen, setDatePickerOpen] = useState(false);
   const [startPickerOpen, setStartPickerOpen] = useState(false);
   const [endPickerOpen, setEndPickerOpen] = useState(false);
+  const [repeatEnabled, setRepeatEnabled] = useState(false);
+  const [repeatPreset, setRepeatPreset] = useState<RepeatPreset>("daily");
+  const [customWeekdays, setCustomWeekdays] = useState<number[]>([]);
+  const [endsMode, setEndsMode] = useState<"never" | "on_date">("never");
+  const [untilDate, setUntilDate] = useState<string | null>(null);
+  const [untilPickerOpen, setUntilPickerOpen] = useState(false);
   const titleInputRef = useRef<TextInput>(null);
   const initialSnapshot = useRef<TaskFormSnapshot | null>(null);
 
   const timeString = formatTimeString(time);
   // Pure, re-derived every render — never cached in state — so it can never
   // go stale or need its own reset/sync logic (see isDateTimeInPast).
-  const isPastSelection = isPastDateTime(date, timeString);
+  // Mirrors TimeContext's editOccurrence: for scope "all" the seeded date is
+  // just wherever the user happened to open the sheet from (possibly a past
+  // occurrence), not a new date being scheduled — the series keeps its
+  // existing startsOn/history untouched, so there's nothing to reject as
+  // "past" here either. Without this exception, editing a recurring series'
+  // template from a past occurrence would show a "can't schedule in the
+  // past" error and permanently disable Save, even though the save itself
+  // was never going to be rejected.
+  const isPastSelection = editing?.scope !== "all" && isPastDateTime(date, timeString);
   // Duration is never its own state — it's always start/end re-derived, so
   // the two wheels can never disagree with what actually gets saved.
   const duration = normalizedTimeToMinutes(endTime) - normalizedTimeToMinutes(time);
   const isEndBeforeOrEqualStart = duration <= 0;
+
+  const customDaysError = repeatEnabled && repeatPreset === "custom" && customWeekdays.length === 0 ? "Select at least one day." : null;
+  const untilDateError = repeatEnabled && endsMode === "on_date" && !untilDate ? "Choose an end date." : null;
+  const previewRule: RecurrenceRule | null =
+    repeatEnabled && !customDaysError
+      ? {
+          type: repeatPreset === "daily" ? "daily" : "weekly",
+          interval: 1,
+          weekdays: weekdaysForPreset(repeatPreset, customWeekdays),
+          timeZone: deviceTimeZone(),
+          startsOn: date,
+          ends: endsMode,
+          until: endsMode === "on_date" ? untilDate : null,
+        }
+      : null;
 
   // isPastSelection is only ever recomputed when this component re-renders.
   // Without this, a value that was valid when the sheet opened would stay
@@ -498,13 +599,42 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
   // at module load, never reusing a stale value from a previous open.
   useEffect(() => {
     if (!visible) return;
-    const snapshot = editingTask ? snapshotFromTask(editingTask) : buildDefaultSnapshot(defaultDate);
+
+    let snapshot: TaskFormSnapshot;
+    let seedRule: RecurrenceRule | null = null;
+
+    if (editing?.occurrence) {
+      const occ = editing.occurrence;
+      const occTime = parseTimeString(occ.time) ?? { hour: 9, minute: 0 };
+      snapshot = { title: occ.title, type: occ.type, date: occ.date, time: occTime, endTime: deriveEndTime(occTime, occ.duration) };
+      if (editing.scope !== "this") seedRule = editing.task.recurrence ?? null;
+    } else if (editing?.task) {
+      snapshot = snapshotFromTask(editing.task);
+    } else {
+      snapshot = buildDefaultSnapshot(defaultDate);
+    }
+
     initialSnapshot.current = snapshot;
     setTitle(snapshot.title);
     setType(snapshot.type);
     setDate(snapshot.date);
     setTime(snapshot.time);
     setEndTime(snapshot.endTime);
+
+    if (seedRule) {
+      setRepeatEnabled(true);
+      setRepeatPreset(presetForRule(seedRule));
+      setCustomWeekdays(presetForRule(seedRule) === "custom" ? seedRule.weekdays : []);
+      setEndsMode(seedRule.ends);
+      setUntilDate(seedRule.until);
+    } else {
+      setRepeatEnabled(false);
+      setRepeatPreset("daily");
+      setCustomWeekdays([]);
+      setEndsMode("never");
+      setUntilDate(null);
+    }
+
     setConflict(null);
     setPastError(false);
     setSaveError(null);
@@ -513,8 +643,9 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
     setDatePickerOpen(false);
     setStartPickerOpen(false);
     setEndPickerOpen(false);
+    setUntilPickerOpen(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, editingTask?.id]);
+  }, [visible, editing?.occurrence?.occurrenceId ?? editing?.task?.id ?? null, editing?.scope]);
 
   const isDirty =
     !!initialSnapshot.current &&
@@ -540,6 +671,10 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
     onClose();
   }
 
+  function toggleCustomWeekday(day: number) {
+    setCustomWeekdays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day].sort((a, b) => a - b)));
+  }
+
   async function handleSave() {
     if (saving) return;
     if (!title.trim()) {
@@ -547,22 +682,21 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
       return;
     }
     if (isPastSelection || isEndBeforeOrEqualStart) return;
+    if (customDaysError || untilDateError) return;
 
     setSaving(true);
     setConflict(null);
     setPastError(false);
     setSaveError(null);
-    const result = await onSave(
-      {
-        title: title.trim(),
-        type,
-        date,
-        time: timeString,
-        duration,
-        completed: editingTask?.completed ?? false,
-      },
-      editingTask?.id
-    );
+    const result = await onSave({
+      title: title.trim(),
+      type,
+      date,
+      time: timeString,
+      duration,
+      repeatEnabled,
+      recurrenceRule: previewRule,
+    });
     setSaving(false);
     if (result.ok) {
       onDateCommitted(date);
@@ -680,27 +814,41 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
               this sheet to that date on success, so the newly scheduled
               activity is immediately visible without a manual navigate. */}
           <Text style={[styles.fieldLabel, { color: colors.secondaryText }]}>Date</Text>
-          <TouchableOpacity
-            onPress={() => setDatePickerOpen((v) => !v)}
-            disabled={saving}
-            style={[styles.modalInput, styles.dateDisplay, { backgroundColor: colors.inputBackground, borderColor: datePickerOpen ? colors.primary : colors.border }]}
-            accessibilityRole="button"
-            accessibilityLabel={`Date, ${formatLongDate(date)}. Double tap to change.`}
-            accessibilityState={{ expanded: datePickerOpen }}
-          >
-            <Ionicons name="calendar-outline" size={16} color={colors.secondaryText} style={{ marginRight: 8 }} />
-            <Text style={{ color: colors.text, fontSize: 15, fontWeight: "600", flex: 1 }}>{formatLongDate(date)}</Text>
-            <Ionicons name={datePickerOpen ? "chevron-up" : "chevron-down"} size={16} color={colors.secondaryText} />
-          </TouchableOpacity>
-          {datePickerOpen && (
-            <View style={styles.inlineDatePicker}>
-              <DayStrip
-                selected={date}
-                onSelect={(iso) => { setDate(iso); setConflict(null); setPastError(false); setDatePickerOpen(false); }}
-                onShiftWeek={(deltaDays) => setDate((d) => addDaysISO(d, deltaDays))}
-                colors={colors}
-                taskCounts={taskCounts}
-              />
+          {dateEditable ? (
+            <>
+              <TouchableOpacity
+                onPress={() => setDatePickerOpen((v) => !v)}
+                disabled={saving}
+                style={[styles.modalInput, styles.dateDisplay, { backgroundColor: colors.inputBackground, borderColor: datePickerOpen ? colors.primary : colors.border }]}
+                accessibilityRole="button"
+                accessibilityLabel={`Date, ${formatLongDate(date)}. Double tap to change.`}
+                accessibilityState={{ expanded: datePickerOpen }}
+              >
+                <Ionicons name="calendar-outline" size={16} color={colors.secondaryText} style={{ marginRight: 8 }} />
+                <Text style={{ color: colors.text, fontSize: 15, fontWeight: "600", flex: 1 }}>{formatLongDate(date)}</Text>
+                <Ionicons name={datePickerOpen ? "chevron-up" : "chevron-down"} size={16} color={colors.secondaryText} />
+              </TouchableOpacity>
+              {datePickerOpen && (
+                <View style={styles.inlineDatePicker}>
+                  <DayStrip
+                    selected={date}
+                    onSelect={(iso) => { setDate(iso); setConflict(null); setPastError(false); setDatePickerOpen(false); }}
+                    onShiftWeek={(deltaDays) => setDate((d) => addDaysISO(d, deltaDays))}
+                    colors={colors}
+                    taskCounts={taskCounts}
+                  />
+                </View>
+              )}
+            </>
+          ) : (
+            // A single occurrence's date is the pivot of the this/following
+            // split (or, for "all", the series' unchanged start) — not
+            // movable from here. Shown read-only rather than hidden outright
+            // so it's still clear which day is being edited.
+            <View style={[styles.modalInput, styles.dateDisplay, { backgroundColor: colors.inputBackground, borderColor: colors.border, opacity: 0.7 }]}>
+              <Ionicons name="calendar-outline" size={16} color={colors.secondaryText} style={{ marginRight: 8 }} />
+              <Text style={{ color: colors.text, fontSize: 15, fontWeight: "600", flex: 1 }}>{formatLongDate(date)}</Text>
+              <Ionicons name="lock-closed-outline" size={14} color={colors.secondaryText} />
             </View>
           )}
 
@@ -770,6 +918,42 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
           <Text style={[styles.fieldLabel, { color: isEndBeforeOrEqualStart ? colors.danger : colors.secondaryText, marginTop: 6 }]}>
             {isEndBeforeOrEqualStart ? "End time must be after start time." : `Duration: ${formatDuration(duration)}`}
           </Text>
+
+          {repeatSectionVisible && (
+            <>
+              <RepeatSettings
+                enabled={repeatEnabled}
+                onToggleEnabled={setRepeatEnabled}
+                preset={repeatPreset}
+                onPresetChange={setRepeatPreset}
+                customWeekdays={customWeekdays}
+                onToggleCustomWeekday={toggleCustomWeekday}
+                endsMode={endsMode}
+                onEndsModeChange={setEndsMode}
+                untilDateLabel={untilDate ? formatLongDate(untilDate) : null}
+                onRequestPickUntilDate={() => setUntilPickerOpen((v) => !v)}
+                previewRule={previewRule}
+                startTime={time}
+                colors={colors}
+                disabled={saving}
+                customDaysError={customDaysError}
+              />
+              {endsMode === "on_date" && untilPickerOpen && (
+                <View style={styles.inlineDatePicker}>
+                  <DayStrip
+                    selected={untilDate ?? date}
+                    onSelect={(iso) => { setUntilDate(iso); setUntilPickerOpen(false); }}
+                    onShiftWeek={(deltaDays) => setUntilDate((d) => addDaysISO(d ?? date, deltaDays))}
+                    colors={colors}
+                    taskCounts={taskCounts}
+                  />
+                </View>
+              )}
+              {untilDateError && !untilPickerOpen && (
+                <Text style={[styles.errorHint, { color: colors.danger }]}>{untilDateError}</Text>
+              )}
+            </>
+          )}
 
           {/* Past-time warning — includes a one-tap fix so recovering from an
               invalid past time never depends on precisely re-dragging the
@@ -870,6 +1054,7 @@ export default function TimeManagerScreen() {
   const { colors } = useTheme();
   const {
     tasks, addTask, updateTask, deleteTask, toggleComplete,
+    editOccurrence, deleteOccurrence, toggleOccurrenceComplete,
     showDailyBanner, dismissDailyBanner,
   } = useTime();
   const { profile } = useProfile();
@@ -877,23 +1062,38 @@ export default function TimeManagerScreen() {
 
   const [selectedDate, setSelectedDate] = useState(todayISO());
   const [modalVisible, setModalVisible] = useState(false);
-  const [editingTask, setEditingTask] = useState<Task | null>(null);
+  const [editingContext, setEditingContext] = useState<EditingContext | null>(null);
+  const [scopeSheet, setScopeSheet] = useState<{ occurrence: Occurrence; mode: "edit" | "delete" } | null>(null);
   const [timerVisible, setTimerVisible] = useState(false);
   const [timerTask, setTimerTask] = useState<{ title: string; duration: number } | null>(null);
   const tourRef = useTourTarget("plannerAddActivity");
 
-  const dayTasks = tasks
-    .filter((t) => t.date === selectedDate)
+  // A generous but bounded window around the selected date — comfortably
+  // covers everything the day list, day-strip dots, and Week/Month at a
+  // Glance can show at once (a calendar month never needs more than ~31
+  // days either side of whichever day within it is selected). Recomputing
+  // this is cheap: getOccurrencesForRange is O(range_days × series_count),
+  // and it's the one and only place occurrences get expanded — nothing here
+  // ever materializes or stores individual occurrence rows.
+  const occurrenceRangeStart = addDaysISO(selectedDate, -35);
+  const occurrenceRangeEnd = addDaysISO(selectedDate, 35);
+  const occurrences = useMemo(
+    () => getOccurrencesForRange({ tasks, rangeStart: occurrenceRangeStart, rangeEnd: occurrenceRangeEnd }),
+    [tasks, occurrenceRangeStart, occurrenceRangeEnd]
+  );
+
+  const dayTasks = occurrences
+    .filter((o) => o.date === selectedDate)
     .sort((a, b) => a.time.localeCompare(b.time));
 
   const taskCounts: Record<string, number> = {};
-  tasks.forEach((t) => { taskCounts[t.date] = (taskCounts[t.date] ?? 0) + 1; });
+  occurrences.forEach((o) => { taskCounts[o.date] = (taskCounts[o.date] ?? 0) + 1; });
 
-  const completedToday = dayTasks.filter((t) => t.completed).length;
+  const completedToday = dayTasks.filter((o) => o.completed).length;
   const totalToday = dayTasks.length;
 
   function openAdd() {
-    setEditingTask(null);
+    setEditingContext(null);
     setModalVisible(true);
   }
 
@@ -902,20 +1102,106 @@ export default function TimeManagerScreen() {
     setSelectedDate((d) => addDaysISO(d, deltaDays));
   }
 
-  function openEdit(task: Task) {
-    setEditingTask(task);
-    setModalVisible(true);
+  function openEditOccurrence(occurrence: Occurrence) {
+    if (occurrence.isRecurring) {
+      setScopeSheet({ occurrence, mode: "edit" });
+    } else {
+      setEditingContext({ task: occurrence.task });
+      setModalVisible(true);
+    }
   }
 
-  async function handleSave(fields: Omit<Task, "id" | "createdAt">, editId?: string) {
-    return editId ? updateTask(editId, fields) : addTask(fields);
+  function handleDeleteOccurrence(occurrence: Occurrence) {
+    if (occurrence.isRecurring) {
+      setScopeSheet({ occurrence, mode: "delete" });
+    } else {
+      deleteTask(occurrence.task.id);
+    }
   }
 
-  async function handleToggle(task: Task) {
-    await toggleComplete(task.id);
+  function handleScopeChosen(scope: OccurrenceEditScope | OccurrenceDeleteScope) {
+    if (!scopeSheet) return;
+    const { occurrence, mode } = scopeSheet;
+    setScopeSheet(null);
+    if (mode === "edit") {
+      setEditingContext({ task: occurrence.task, occurrence, scope: scope as OccurrenceEditScope });
+      setModalVisible(true);
+    } else {
+      deleteOccurrence(occurrence, scope as OccurrenceDeleteScope);
+    }
+  }
+
+  /**
+   * Maps the modal's plain field bundle onto the right TimeContext call —
+   * create, a whole one-off edit, or one of the this/following/all scoped
+   * occurrence edits (including the "user turned Repeat off while editing an
+   * existing series" branches, which each scope defines differently rather
+   * than guessing a single meaning — see the Repeat 4 spec this implements).
+   */
+  async function handleModalSave(fields: {
+    title: string;
+    type: "task" | "hobby";
+    date: string;
+    time: string;
+    duration: number;
+    repeatEnabled: boolean;
+    recurrenceRule: RecurrenceRule | null;
+  }): Promise<TaskSaveResult> {
+    const editing = editingContext;
+
+    if (editing?.occurrence && editing.scope) {
+      const { occurrence, scope, task: base } = editing;
+      if (!fields.repeatEnabled) {
+        if (scope === "following") {
+          // Must be one atomic call, not a separate deleteOccurrence(...)
+          // followed by addTask(...): each TimeContext mutator closes over
+          // the `tasks` snapshot from this render, so a second call made
+          // before TimeContext re-renders would silently overwrite the
+          // first one's persisted result. Passing newRule=null tells
+          // applyOccurrenceEdit's "following" branch to split off a plain
+          // one-off (no recurrence) in the same array transform that
+          // truncates the old series.
+          return editOccurrence(occurrence, "following", { title: fields.title, type: fields.type, time: fields.time, duration: fields.duration }, null);
+        }
+        if (scope === "all") {
+          return updateTask(base.id, {
+            title: fields.title, type: fields.type, time: fields.time, duration: fields.duration,
+            recurrence: undefined, seriesId: undefined, exceptions: undefined, completions: undefined,
+          });
+        }
+        // scope === "this" already always produces a one-off — falls through below.
+      }
+      if (scope !== "this" && fields.repeatEnabled && fields.recurrenceRule) {
+        return editOccurrence(occurrence, scope, { title: fields.title, type: fields.type, time: fields.time, duration: fields.duration }, fields.recurrenceRule);
+      }
+      return editOccurrence(occurrence, scope, { title: fields.title, type: fields.type, time: fields.time, duration: fields.duration });
+    }
+
+    if (editing?.task) {
+      // Plain one-off edit — or turning it into a brand-new series.
+      return updateTask(editing.task.id, {
+        title: fields.title, type: fields.type, date: fields.date, time: fields.time, duration: fields.duration,
+        ...(fields.repeatEnabled && fields.recurrenceRule ? { recurrence: fields.recurrenceRule, seriesId: editing.task.id } : { recurrence: undefined, seriesId: undefined }),
+      });
+    }
+
+    // Creating new.
+    return addTask({
+      title: fields.title, type: fields.type, date: fields.date, time: fields.time, duration: fields.duration, completed: false,
+      ...(fields.repeatEnabled && fields.recurrenceRule ? { recurrence: fields.recurrenceRule } : null),
+    });
+  }
+
+  async function handleToggleOccurrence(occurrence: Occurrence) {
+    if (occurrence.isRecurring) {
+      await toggleOccurrenceComplete(occurrence);
+      if (!occurrence.completed) await recordSession(occurrence.duration);
+      return;
+    }
+    await toggleComplete(occurrence.task.id);
     // Record a session when completing a hobby/task for the first time
-    if (!task.completed) {
-      await recordSession(task.duration);
+    if (!occurrence.completed) {
+      await recordSession(occurrence.duration);
     }
   }
 
@@ -925,6 +1211,10 @@ export default function TimeManagerScreen() {
           reserves it (see hooks/useTabBarHeight.ts); reserving it again here
           would just add an empty gap above the tab bar. */}
       <SafeAreaView edges={["top", "left", "right"]} style={[styles.container, { backgroundColor: colors.background }]}>
+        <View style={styles.disclaimerPad}>
+          <InlinePageDisclaimer screenKey="/time-manager" colors={colors} />
+        </View>
+
         {/* Header — compact, left-aligned. The subtitle always derives from
             selectedDate, so it can never contradict the visible month/week
             below (e.g. "Today · July 2026" while August is on screen). */}
@@ -1016,14 +1306,14 @@ export default function TimeManagerScreen() {
                 </TouchableOpacity>
               </View>
             ) : (
-              dayTasks.map((task) => (
+              dayTasks.map((occurrence) => (
                 <TaskRow
-                  key={task.id}
-                  task={task}
+                  key={occurrence.occurrenceId}
+                  occurrence={occurrence}
                   colors={colors}
-                  onToggle={() => handleToggle(task)}
-                  onEdit={() => openEdit(task)}
-                  onDelete={() => deleteTask(task.id)}
+                  onToggle={() => handleToggleOccurrence(occurrence)}
+                  onEdit={() => openEditOccurrence(occurrence)}
+                  onDelete={() => handleDeleteOccurrence(occurrence)}
                 />
               ))
             )}
@@ -1032,7 +1322,7 @@ export default function TimeManagerScreen() {
           {/* Week overview */}
           <View style={styles.sectionPad}>
             <WeekOverview
-              tasks={tasks}
+              occurrences={occurrences}
               selected={selectedDate}
               onSelect={setSelectedDate}
               colors={colors}
@@ -1072,13 +1362,21 @@ export default function TimeManagerScreen() {
         <TaskModal
           visible={modalVisible}
           onClose={() => setModalVisible(false)}
-          onSave={handleSave}
+          onSave={handleModalSave}
           defaultDate={selectedDate}
           colors={colors}
           hobbies={profile.hobbies}
-          editingTask={editingTask}
+          editing={editingContext}
           taskCounts={taskCounts}
           onDateCommitted={setSelectedDate}
+        />
+
+        <OccurrenceScopeSheet
+          visible={!!scopeSheet}
+          onClose={() => setScopeSheet(null)}
+          onChoose={handleScopeChosen}
+          colors={colors}
+          mode={scopeSheet?.mode ?? "edit"}
         />
 
         <PracticeTimerModal
@@ -1096,6 +1394,7 @@ export default function TimeManagerScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  disclaimerPad: { paddingHorizontal: 16, paddingTop: 10 },
   header: {
     paddingHorizontal: 20,
     paddingVertical: 14,
@@ -1161,7 +1460,8 @@ const styles = StyleSheet.create({
   taskAccent: { width: 4, alignSelf: "stretch" },
   checkbox: { marginHorizontal: 12 },
   taskInfo: { flex: 1, paddingVertical: 12 },
-  taskTitle: { fontSize: 15, fontWeight: "600", marginBottom: 5 },
+  taskTitleRow: { flexDirection: "row", alignItems: "center", marginBottom: 5 },
+  taskTitle: { fontSize: 15, fontWeight: "600", flexShrink: 1 },
   strikethrough: { textDecorationLine: "line-through" },
   taskMeta: { flexDirection: "row", alignItems: "center", gap: 4 },
   typeBadge: { flexDirection: "row", alignItems: "center", paddingHorizontal: 7, paddingVertical: 2, borderRadius: 8 },
@@ -1279,6 +1579,7 @@ const styles = StyleSheet.create({
   conflictWarningText: { flex: 1, fontSize: 13, fontWeight: "600", lineHeight: 18 },
   fixTimeBtn: { alignSelf: "flex-start", paddingVertical: 4 },
   fixTimeBtnText: { fontSize: 13, fontWeight: "700", textDecorationLine: "underline" },
+  errorHint: { fontSize: 12, fontWeight: "600", marginTop: 4 },
   modalActions: { flexDirection: "row", gap: 12, marginTop: 16 },
   modalCancelBtn: {
     flex: 1,

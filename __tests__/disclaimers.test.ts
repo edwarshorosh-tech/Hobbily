@@ -30,4 +30,14 @@ describe("disclaimers registry", () => {
       expect(results[i - 1].priority).toBeGreaterThanOrEqual(results[i].priority);
     }
   });
+
+  // Every main tab screen mounts its own InlinePageDisclaimer with a fixed
+  // screenKey (see app/(tabs)/*.tsx) — each of those keys must resolve to a
+  // real, active entry or that screen silently shows nothing.
+  it("every main tab route has at least one active disclaimer", () => {
+    const mainTabRoutes = ["/", "/time-manager", "/community", "/opportunities", "/profile"];
+    for (const route of mainTabRoutes) {
+      expect(disclaimersForRoute(route).length).toBeGreaterThan(0);
+    }
+  });
 });

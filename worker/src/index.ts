@@ -19,6 +19,15 @@
  *   -> { ok: true, reply: { kind: "delete_task", text, taskId } }
  *   -> { ok: false, error: { code, message } }
  *
+ * POST /moderate  { idToken, text }
+ *   -> { ok: true, allowed: true }
+ *   -> { ok: true, allowed: false, category, severity }
+ *   -> { ok: false, error: { code, message } }
+ *   Server-side mirror of the Expo app's client-side moderation pre-check
+ *   (see ./moderation.ts's own doc comment) — a real, deployable check
+ *   Firestore Security Rules can't do on their own, since they can only
+ *   validate structure/size, never analyze text content.
+ *
  * GEMINI_API_KEY is read from env — a Cloudflare secret, set via
  * `wrangler secret put GEMINI_API_KEY`. It is never present in this repository.
  */
@@ -27,6 +36,7 @@ import { runChatTurn, ChatTurn } from "./gemini";
 import { buildSystemInstruction, PromptTask } from "./prompt";
 import { validateActivity, validateDeleteArgs } from "./validation";
 import { WorkerError, errorResponse } from "./errors";
+import { checkModerationText } from "./moderation";
 
 export interface Env {
   /** Secret — set with `wrangler secret put GEMINI_API_KEY`. Never committed. */
@@ -168,6 +178,35 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
   });
 }
 
+/** Real free-text field length limit — same order of magnitude as the app's own largest field cap (post body, 1000 chars client-side / 5000 firestore.rules) with headroom; a longer request is rejected outright rather than silently truncated. */
+const MAX_MODERATION_TEXT_LENGTH = 5000;
+
+type ModerateRequestBody = { idToken?: unknown; text?: unknown };
+
+async function handleModerate(request: Request, env: Env): Promise<Response> {
+  const body = (await request.json().catch(() => null)) as ModerateRequestBody | null;
+  if (!body) throw new WorkerError("invalid_request", "Malformed request.");
+  if (typeof body.idToken !== "string" || !body.idToken) {
+    throw new WorkerError("unauthenticated", "Please sign in again.");
+  }
+  if (typeof body.text !== "string") {
+    throw new WorkerError("invalid_request", "Missing text.");
+  }
+  if (body.text.length > MAX_MODERATION_TEXT_LENGTH) {
+    throw new WorkerError("invalid_request", "Text is too long.");
+  }
+
+  // Auth first — this endpoint must never become an unauthenticated free
+  // text-analysis oracle for someone outside the app.
+  await verifyFirebaseIdToken(body.idToken, env.FIREBASE_WEB_API_KEY);
+
+  const result = checkModerationText(body.text);
+  return new Response(JSON.stringify({ ok: true, ...result }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const headers = corsHeaders(env.ALLOWED_ORIGIN);
@@ -177,12 +216,12 @@ export default {
     }
 
     const { pathname } = new URL(request.url);
-    if (request.method !== "POST" || pathname !== "/chat") {
+    if (request.method !== "POST" || (pathname !== "/chat" && pathname !== "/moderate")) {
       return errorResponse(new WorkerError("invalid_request", "Not found."), headers);
     }
 
     try {
-      const response = await handleChat(request, env);
+      const response = pathname === "/chat" ? await handleChat(request, env) : await handleModerate(request, env);
       const mergedHeaders = new Headers(response.headers);
       Object.entries(headers).forEach(([k, v]) => mergedHeaders.set(k, v));
       return new Response(response.body, { status: response.status, headers: mergedHeaders });

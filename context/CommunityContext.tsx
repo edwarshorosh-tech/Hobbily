@@ -22,6 +22,18 @@ import {
   subscribeToMyMemberships,
   fetchMemberCounts,
 } from "../services/communityService";
+import { checkText, ModerationBlockedError, shouldLogModerationEvent } from "../services/moderationService";
+import { recordModerationEvent } from "../services/moderationEventService";
+
+/** Matches firestore.rules' own text/caption size cap (channels/{id}/messages' text.size()<=2000) — checked client-side first so a too-long message shows a clear length reason instead of a generic "couldn't send" once it hits the server. */
+export const MAX_MESSAGE_LENGTH = 2000;
+
+export class CommunityMessageTooLongError extends Error {
+  constructor() {
+    super(`Message is too long (max ${MAX_MESSAGE_LENGTH} characters).`);
+    this.name = "CommunityMessageTooLongError";
+  }
+}
 
 export const DEFAULT_CHANNELS: Channel[] = [
   { id: "photography", name: "Photography", icon: "camera-outline", description: "Share shots, tips, and camera gear" },
@@ -149,7 +161,30 @@ export function CommunityProvider({ children }: { children: React.ReactNode }) {
         { includeMetadataChanges: true },
         (snap) => {
           const msgs = snap.docs.map((d) => ({ id: d.id, ...d.data(), pending: d.metadata.hasPendingWrites })) as CommunityMessage[];
-          setMessages((prev) => ({ ...prev, [channelId]: msgs }));
+          setMessages((prev) => {
+            // includeMetadataChanges is real and load-bearing (it's how the
+            // "sending..." indicator is derived from hasPendingWrites — see
+            // the comment above), so it can't just be dropped to cut
+            // re-renders. But every fired snapshot — including ones where
+            // nothing user-visible actually changed (e.g. a cache→server
+            // metadata flip on an already-fully-synced channel) — rebuilt a
+            // brand-new array and pushed a new CommunityContext value,
+            // re-rendering every useCommunity() consumer app-wide even while
+            // the user was on a completely different tab (this provider is
+            // mounted at the app root, not scoped to the Community tab).
+            // Messages here are immutable once created (no edit feature —
+            // firestore.rules never allows updating one), so `id` + `pending`
+            // is a cheap, sufficient fingerprint for "did anything visible
+            // actually change" — skip the state update entirely when it
+            // didn't, rather than pushing an identical array by reference.
+            const previous = prev[channelId];
+            const unchanged =
+              previous &&
+              previous.length === msgs.length &&
+              previous.every((m, i) => m.id === msgs[i].id && m.pending === msgs[i].pending);
+            if (unchanged) return prev;
+            return { ...prev, [channelId]: msgs };
+          });
         },
         (error) => {
           if (__DEV__) console.warn(`[CommunityContext] messages listener error (${channelId})`, error);
@@ -209,6 +244,24 @@ export function CommunityProvider({ children }: { children: React.ReactNode }) {
 
   async function sendMessage(channelId: string, payload: SendMessagePayload) {
     if (!user) return;
+    // firestore.rules caps text/caption at 2000 chars server-side but the
+    // composer had no client-side cap at all — a too-long message used to
+    // just fail with a generic "couldn't send" once it hit the server,
+    // never telling the user why. Checked before the moderation check so a
+    // too-long message shows the length reason, not a misleading content one.
+    const textToCheck = payload.type === "text" ? payload.text : payload.type === "image" ? payload.caption ?? "" : "";
+    if (textToCheck.length > MAX_MESSAGE_LENGTH) {
+      throw new CommunityMessageTooLongError();
+    }
+    if (textToCheck.trim()) {
+      const check = checkText(textToCheck);
+      if (!check.allowed) {
+        if (shouldLogModerationEvent(check.severity)) {
+          recordModerationEvent({ userId: user.uid, surface: "community_message", entityId: channelId, category: check.category, severity: check.severity });
+        }
+        throw new ModerationBlockedError(check.category, check.severity);
+      }
+    }
     const base = {
       channelId,
       authorId: user.uid,
