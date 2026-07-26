@@ -25,6 +25,36 @@ export type DisclaimerDef = {
 
 export const DISCLAIMERS: DisclaimerDef[] = [
   {
+    id: "home_overview",
+    version: 1,
+    route: "/",
+    title: "Your Home",
+    description: "See your schedule, progress and important activity updates in one place.",
+    priority: 10,
+    icon: "home-outline",
+    isActive: true,
+  },
+  {
+    id: "explore_overview",
+    version: 1,
+    route: "/opportunities",
+    title: "Explore",
+    description: "Discover nearby hobbies, programs, communities and workshops.",
+    priority: 10,
+    icon: "compass-outline",
+    isActive: true,
+  },
+  {
+    id: "profile_overview",
+    version: 1,
+    route: "/profile",
+    title: "Your Profile",
+    description: "Manage your posts, interests, activity history and account settings.",
+    priority: 10,
+    icon: "person-outline",
+    isActive: true,
+  },
+  {
     id: "community_guidelines",
     version: 1,
     route: "/community",

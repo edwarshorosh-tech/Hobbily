@@ -33,6 +33,7 @@ export const DEFAULT_PROFILE: Profile = {
   dismissedDisclaimers: {},
   freeTimePerDay: "30-60",
   hasOnboarded: false,
+  hasSeenOnboardingTour: false,
   savedOpportunities: [],
   themePreference: null,
   featuredAchievementIds: [],
@@ -144,6 +145,27 @@ export async function updateAvatarUrl(uid: string, avatarUrl: string | null): Pr
  */
 export async function updateThemePreference(uid: string, themePreference: ThemePreference): Promise<void> {
   await setDoc(doc(db, "users", uid), { themePreference }, { merge: true });
+}
+
+/**
+ * Marks the post-signup OnboardingTour (components/OnboardingTour.tsx) as
+ * seen — called once, when the user taps Skip or Get Started. setDoc with
+ * merge (not updateDoc) so it still succeeds the first time it's called for
+ * a given account, same reasoning as dismissDisclaimer below.
+ */
+export async function completeOnboardingTour(uid: string): Promise<void> {
+  await setDoc(doc(db, "users", uid), { hasSeenOnboardingTour: true }, { merge: true });
+}
+
+/**
+ * Clears the seen-tour flag so the post-signup OnboardingTour can be
+ * replayed on demand — used by Settings' "Replay App Tour" row. Distinct
+ * from the normal new-account path (which never touches this field until
+ * the tour is actually dismissed): here an already-onboarded user is
+ * explicitly asking to see it again.
+ */
+export async function resetOnboardingTour(uid: string): Promise<void> {
+  await setDoc(doc(db, "users", uid), { hasSeenOnboardingTour: false }, { merge: true });
 }
 
 /**

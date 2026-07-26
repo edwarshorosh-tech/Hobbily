@@ -20,6 +20,9 @@ import FriendAvatar from "../friends/FriendAvatar";
 import UserCardSheet from "../user-card/UserCardSheet";
 import { friendsWidgetProfileTarget } from "../../utils/profileNavigation";
 import { useUserProfileSheet } from "../../hooks/useUserProfileSheet";
+import { useTourTarget } from "../../context/TourTargetsContext";
+import { useLocalAvatar } from "../../context/LocalAvatarContext";
+import { resolveAvatar } from "../../utils/resolveAvatar";
 
 export type FriendLeaderboardEntry = {
   uid: string;
@@ -110,6 +113,8 @@ export default function FriendsLeaderboard({ colors }: { colors: ColorTokens }) 
   const { currentStreak } = useProgress();
   const { acceptedFriends, isLoaded, loadError, refreshFriendProfiles } = useFriends();
   const { selectedUid: cardUid, openUserProfile: setCardUid, closeUserProfile: closeCardUid } = useUserProfileSheet();
+  const tourRef = useTourTarget("addFriends");
+  const { localAvatarUri } = useLocalAvatar();
 
   useFocusEffect(
     useCallback(() => {
@@ -123,7 +128,7 @@ export default function FriendsLeaderboard({ colors }: { colors: ColorTokens }) 
       {
         uid: user.uid,
         username: profile.username || "User",
-        avatarUrl: profile.avatarUrl ?? null,
+        avatarUrl: resolveAvatar({ viewedUserId: user.uid, currentUserId: user.uid, localAvatarUri, serverAvatarUrl: profile.avatarUrl ?? null }),
         currentStreak: normalizeStreak(currentStreak),
         isCurrentUser: true,
       },
@@ -136,7 +141,7 @@ export default function FriendsLeaderboard({ colors }: { colors: ColorTokens }) 
       })),
     ];
     return buildLeaderboard(base);
-  }, [user, profile.username, profile.avatarUrl, currentStreak, acceptedFriends]);
+  }, [user, profile.username, profile.avatarUrl, localAvatarUri, currentStreak, acceptedFriends]);
 
   const hasFriends = entries.length > 1;
   const top3 = entries.slice(0, 3);
@@ -178,6 +183,7 @@ export default function FriendsLeaderboard({ colors }: { colors: ColorTokens }) 
               Your friends&apos; streaks will appear here.
             </Text>
             <TouchableOpacity
+              ref={tourRef}
               onPress={() => router.push(friendsWidgetProfileTarget())}
               style={[styles.emptyAction, { borderColor: colors.primary }]}
               accessibilityRole="button"

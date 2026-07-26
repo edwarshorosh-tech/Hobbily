@@ -22,6 +22,8 @@ export type Profile = {
   locationSource: "official" | "custom" | null;
   freeTimePerDay: FreeTimePerDay;
   hasOnboarded: boolean;
+  /** True once the user has dismissed (Skip or Get Started) the post-signup OnboardingTour — see components/OnboardingTour.tsx. Distinct from hasOnboarded (the sign-up wizard itself): this only gates the swipeable feature-tour shown once on top of the tabs. */
+  hasSeenOnboardingTour: boolean;
   /** IDs of saved/bookmarked opportunities */
   savedOpportunities: string[];
   /** null = user has never explicitly chosen a theme on any device — ThemeContext falls back to light. */

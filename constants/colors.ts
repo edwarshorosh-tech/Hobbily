@@ -195,4 +195,9 @@ export const brand = {
    * actions, and fixed so the warning reads the same in light or dark mode.
    */
   criticalDanger: "#EF4444",
+  /** Hobbi, the OnboardingTour's mascot — a fixed purple identity independent of light/dark theme, so the guide always reads as the same character. See components/OnboardingTour.tsx. */
+  mascotPurple: "#6C5CE7",
+  mascotPurpleDark: "#8A2BE2",
+  /** Pale tint of mascotPurple for Hobbi's name badge background. */
+  mascotPurpleTint: "rgba(108,92,231,0.16)",
 };

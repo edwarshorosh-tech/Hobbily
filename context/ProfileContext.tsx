@@ -10,6 +10,8 @@ import {
   saveQuizResult as persistQuizResult,
   updatePersonalityVisibility as persistPersonalityVisibility,
   dismissDisclaimer as persistDisclaimerDismissed,
+  completeOnboardingTour as persistOnboardingTourComplete,
+  resetOnboardingTour as persistOnboardingTourReset,
 } from "../services/profileService";
 import { useAuth } from "./AuthContext";
 
@@ -28,6 +30,10 @@ type ProfileContextType = {
   updatePersonalityVisibility: (show: boolean) => Promise<void>;
   /** Marks a disclaimer (id+version key) dismissed — applies immediately locally so the on-screen queue advances without waiting for the round trip, and persists in the background. */
   dismissDisclaimer: (key: string) => Promise<void>;
+  /** Marks the post-signup OnboardingTour seen — applies immediately locally (so the tour overlay dismisses without waiting for the round trip) and persists in the background, same pattern as updateThemePreference. */
+  completeOnboardingTour: () => void;
+  /** Clears the seen-tour flag so it can be replayed — used by Settings' "Replay App Tour" row. Same immediate-local/background-persist pattern as completeOnboardingTour. */
+  resetOnboardingTour: () => void;
 };
 
 const ProfileContext = createContext<ProfileContextType | undefined>(undefined);
@@ -128,9 +134,25 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
     [user]
   );
 
+  const completeOnboardingTour = useCallback(() => {
+    setProfile((p) => (p.hasSeenOnboardingTour ? p : { ...p, hasSeenOnboardingTour: true }));
+    if (!user) return;
+    persistOnboardingTourComplete(user.uid).catch((e) => {
+      if (__DEV__) console.warn("[ProfileContext] failed to persist onboarding tour completion", e);
+    });
+  }, [user]);
+
+  const resetOnboardingTour = useCallback(() => {
+    setProfile((p) => (p.hasSeenOnboardingTour ? { ...p, hasSeenOnboardingTour: false } : p));
+    if (!user) return;
+    persistOnboardingTourReset(user.uid).catch((e) => {
+      if (__DEV__) console.warn("[ProfileContext] failed to persist onboarding tour reset", e);
+    });
+  }, [user]);
+
   const value = useMemo(
-    () => ({ profile, isLoaded, saveProfile, updateAvatar, updateThemePreference, saveQuizResult, updatePersonalityVisibility, dismissDisclaimer }),
-    [profile, isLoaded, saveProfile, updateAvatar, updateThemePreference, saveQuizResult, updatePersonalityVisibility, dismissDisclaimer]
+    () => ({ profile, isLoaded, saveProfile, updateAvatar, updateThemePreference, saveQuizResult, updatePersonalityVisibility, dismissDisclaimer, completeOnboardingTour, resetOnboardingTour }),
+    [profile, isLoaded, saveProfile, updateAvatar, updateThemePreference, saveQuizResult, updatePersonalityVisibility, dismissDisclaimer, completeOnboardingTour, resetOnboardingTour]
   );
 
   return (

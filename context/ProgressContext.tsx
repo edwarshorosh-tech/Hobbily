@@ -187,8 +187,18 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
   // without accessing this user's private progress document. This is the same
   // client-trusted write path progress data already uses — see the security
   // note in firestore.rules for the limitation this implies.
+  //
+  // Gated on isLoaded && !loadError: `state` starts at DEFAULT_STATE (empty
+  // streakDays, currentStreak 0) on every mount/reload, before the real
+  // progress/{uid} doc has actually been fetched. Without this guard, that
+  // transient 0 got written to publicProfiles immediately — normally
+  // harmless (the real value overwrites it a moment later once the load
+  // resolves), but on a failed load (offline, the network hiccups this
+  // project's own lib/firebase.ts already documents), that correction never
+  // comes — a real streak could get permanently reported as 0 to friends
+  // from one transient network failure.
   useEffect(() => {
-    if (!user) return;
+    if (!user || !isLoaded || loadError) return;
     setDoc(
       doc(db, "publicProfiles", user.uid),
       { currentStreak, updatedAt: serverTimestamp() },
@@ -196,7 +206,7 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
     ).catch((e) => {
       if (__DEV__) console.warn("[ProgressContext] streak mirror failed", e);
     });
-  }, [user, currentStreak]);
+  }, [user, currentStreak, isLoaded, loadError]);
 
   function checkAchievements(s: ProgressState, streak: number): Achievement[] {
     const combined = { ...s, currentStreak: streak };
@@ -220,7 +230,15 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
   // loaded state, not tied to any user action) closes that gap without a
   // database scan — it's a single doc this user already owns.
   useEffect(() => {
-    if (!isLoaded || !user || reconciledRef.current) return;
+    // loadError means the fetch above failed and `state` is still sitting at
+    // DEFAULT_STATE (empty achievements/streakDays/totals) — NOT a confirmed
+    // "this account genuinely has nothing yet". Reconciling (and persisting)
+    // against that would write the empty defaults back over whatever real
+    // progress already exists in Firestore. Skipping here means reconciling
+    // simply waits for the next successful load (the top load-effect resets
+    // both loadError and reconciledRef whenever `user`/`isAuthLoaded`
+    // changes) instead of overwriting real data with a network hiccup.
+    if (!isLoaded || !user || loadError || reconciledRef.current) return;
     reconciledRef.current = true;
     const newlyEarned = checkAchievements(state, currentStreak);
     const updatedAchievements = newlyEarned.length > 0 ? [...state.achievements, ...newlyEarned] : state.achievements;
@@ -232,7 +250,7 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
       if (__DEV__) console.warn("[ProgressContext] achievement reconciliation failed", e);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoaded, user]);
+  }, [isLoaded, user, loadError]);
 
   const recordSession = useCallback(async (minutes: number) => {
     const today = todayISO();
