@@ -43,6 +43,36 @@ export function shouldCommitSwipe(
   return distance > commitDistance || velocity > commitVelocity;
 }
 
+/** The real commit distance for a given container width — proportional (22% of width) but clamped so it's never uncomfortably short on a small phone or absurdly long on a tablet. */
+export function commitDistanceFor(containerWidth: number, min: number, max: number): number {
+  "worklet";
+  return Math.min(max, Math.max(min, containerWidth * 0.22));
+}
+
+/**
+ * Applies drag resistance so the page never tracks the finger 1:1 all the
+ * way across the screen — it's allowed to move at most 28% of the raw
+ * translation, capped at 16% of the container width either way.
+ */
+export function resistedTranslation(rawTranslationX: number, containerWidth: number): number {
+  "worklet";
+  const sign = rawTranslationX < 0 ? -1 : 1;
+  return sign * Math.min(Math.abs(rawTranslationX) * 0.28, containerWidth * 0.16);
+}
+
+/**
+ * Hysteresis-guarded armed state: arms once pull progress reaches 1, and
+ * only disarms once it drops below `disarmBelow` — the gap between the two
+ * is a dead zone so the armed/unarmed visual can't flicker rapidly right at
+ * the boundary. `wasArmed` is the previous frame's armed state (0 or 1).
+ */
+export function nextArmedState(pull: number, wasArmed: number, disarmBelow: number): 0 | 1 {
+  "worklet";
+  if (pull >= 1) return 1;
+  if (pull < disarmBelow) return 0;
+  return wasArmed === 1 ? 1 : 0;
+}
+
 /** The tab index a committed swipe from `side` would land on, or null if it would cross the first/last boundary. */
 export function resolveAdjacentTabIndex(currentIndex: number, side: EdgeSwipeSide, tabCount: number): number | null {
   "worklet";

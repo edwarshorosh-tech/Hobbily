@@ -9,6 +9,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useTheme } from "../../context/ThemeContext";
+import InlinePageDisclaimer from "../../components/disclaimers/InlinePageDisclaimer";
 import { useProfile } from "../../context/ProfileContext";
 import { useTime, TaskSaveResult } from "../../context/TimeContext";
 import { useProgress } from "../../context/ProgressContext";
@@ -267,6 +268,10 @@ export default function HomeScreen() {
           in its own height, so reserving it again would just add an empty
           gap between this screen's content and the tab bar. */}
       <SafeAreaView edges={["top", "left", "right"]} style={[styles.container, { backgroundColor: colors.background }]}>
+        <View style={styles.disclaimerPad}>
+          <InlinePageDisclaimer screenKey="/" colors={colors} />
+        </View>
+
         {/* Header — greeting only; city intentionally removed from this row
             (still shown on Profile/Settings/Explore/friend previews). */}
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
@@ -376,6 +381,7 @@ export default function HomeScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  disclaimerPad: { paddingHorizontal: 16, paddingTop: 10 },
   header: {
     flexDirection: "row",
     alignItems: "center",

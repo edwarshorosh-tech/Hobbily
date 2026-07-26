@@ -41,6 +41,7 @@ import { Comment, Post } from "../../types/Post";
 import { subscribeToPost } from "../../services/postsService";
 import { useLocalSearchParams, router } from "expo-router";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { ModerationBlockedError, moderationErrorMessage } from "../../services/moderationService";
 
 type CommentThread = { root: Comment; replies: Comment[] };
 
@@ -193,6 +194,7 @@ export default function PostDetail() {
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
 
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -267,9 +269,9 @@ export default function PostDetail() {
       await addComment(body, replyTarget?.id ?? null);
       setNewComment("");
       setReplyTarget(null);
-    } catch {
+    } catch (e) {
       // Text is preserved (not cleared) on failure so the user can retry without retyping.
-      setPostError("Couldn't post your comment. Please check your connection and try again.");
+      setPostError(e instanceof ModerationBlockedError ? moderationErrorMessage("content") : "Couldn't post your comment. Please check your connection and try again.");
     } finally {
       setPosting(false);
     }
@@ -283,17 +285,20 @@ export default function PostDetail() {
   function startEdit(c: Comment) {
     setEditingCommentId(c.id);
     setEditDraft(c.content);
+    setEditError(null);
   }
 
   async function handleSaveEdit(commentId: string) {
     if (!editDraft.trim() || savingEdit) return;
     setSavingEdit(true);
+    setEditError(null);
     try {
       await editComment(commentId, editDraft.trim());
       setEditingCommentId(null);
       setEditDraft("");
-    } catch {
+    } catch (e) {
       // keep edit mode open with the draft intact so the user can retry
+      setEditError(e instanceof ModerationBlockedError ? moderationErrorMessage("content") : "Couldn't save your changes. Please check your connection and try again.");
     } finally {
       setSavingEdit(false);
     }
@@ -428,6 +433,7 @@ export default function PostDetail() {
                     multiline
                     autoFocus
                   />
+                  {editError && <Text style={[styles.hint, { color: colors.danger }]}>{editError}</Text>}
                   <View style={styles.editButtons}>
                     <PrimaryButton
                       label={savingEdit ? "Saving..." : "Save"}
@@ -437,7 +443,7 @@ export default function PostDetail() {
                     />
                     <PrimaryButton
                       label="Cancel"
-                      onPress={() => { setEditingCommentId(null); setEditDraft(""); }}
+                      onPress={() => { setEditingCommentId(null); setEditDraft(""); setEditError(null); }}
                       buttonStyle={{ backgroundColor: colors.border, flex: 1 }}
                       textStyle={{ color: colors.text }}
                     />

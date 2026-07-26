@@ -127,8 +127,8 @@ export default function PublicProfileScreen() {
   }
 
   const statCells: StatCell[] = [
-    { key: "communities", icon: "people-outline", label: "Communities", value: stats.communityCount },
-    { key: "workshops", icon: "school-outline", label: "Workshops", value: stats.workshopCount },
+    { key: "communities", icon: "people-outline", label: "Communities", value: stats.communityCount, onPress: () => router.push(`/profile-activity/${uid}?tab=communities` as any) },
+    { key: "workshops", icon: "school-outline", label: "Workshops", value: stats.workshopCount, onPress: () => router.push(`/profile-activity/${uid}?tab=workshops` as any) },
     { key: "hobbies", icon: "heart-outline", label: "Hobbies", value: profile ? profile.hobbies.length : null },
     { key: "streak", icon: "flame", label: "Day streak", value: profile ? Math.max(0, profile.currentStreak || 0) : null },
   ];

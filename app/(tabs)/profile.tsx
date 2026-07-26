@@ -20,6 +20,8 @@ import { useProfile } from "../../context/ProfileContext";
 import { useProgress } from "../../context/ProgressContext";
 import { useTime } from "../../context/TimeContext";
 import { useAuth } from "../../context/AuthContext";
+import { checkText, moderationErrorMessage, shouldLogModerationEvent } from "../../services/moderationService";
+import { recordModerationEvent } from "../../services/moderationEventService";
 import { usePosts } from "../../context/PostsContext";
 import TagChip from "../../components/TagChip";
 import ConfirmModal from "../../components/ConfirmModal";
@@ -30,6 +32,8 @@ import { useAuthorPosts } from "../../hooks/useAuthorPosts";
 import SwipeableTab from "../../components/SwipeableTab";
 import { TIP_KEYS, useTipsReset } from "../../components/TipBanner";
 import FriendsSection from "../../components/friends/FriendsSection";
+import ProfileStatGrid, { StatCell } from "../../components/profile/ProfileStatGrid";
+import { useProfileActivityStats } from "../../hooks/useProfileActivityStats";
 import HobbiesShowAllModal from "../../components/friends/HobbiesShowAllModal";
 import ExpandableIdentityCard from "../../components/profile/ExpandableIdentityCard";
 import SectionCardHeader from "../../components/profile/SectionCardHeader";
@@ -38,12 +42,15 @@ import StreakInfoModal from "../../components/home/StreakInfoModal";
 import HobbiesEditor from "../../components/settings/HobbiesEditor";
 import FriendAvatar from "../../components/friends/FriendAvatar";
 import * as ImagePicker from "expo-image-picker";
-import { uploadAvatar, removeAvatar, avatarErrorMessage, AvatarServiceError } from "../../services/storageService";
+import { useLocalAvatar, LocalAvatarError, localAvatarErrorMessage } from "../../context/LocalAvatarContext";
+import { resolveAvatar } from "../../utils/resolveAvatar";
+import AvatarPickerSheet from "../../components/profile/AvatarPickerSheet";
 import { Achievement } from "../../types/Progress";
 import { ACHIEVEMENT_DEFS, AchievementDef, MAX_FEATURED_ACHIEVEMENTS } from "../../constants/achievements";
 import AchievementDetailSheet from "../../components/achievements/AchievementDetailSheet";
 import LocalitySearchInput from "../../components/LocalitySearchInput";
 import { useUserProfileSheet } from "../../hooks/useUserProfileSheet";
+import InlinePageDisclaimer from "../../components/disclaimers/InlinePageDisclaimer";
 import { brand } from "../../constants/colors";
 import { shouldFocusFriendsWidget } from "../../utils/profileNavigation";
 
@@ -371,12 +378,24 @@ type TabId = "overview" | "posts" | "badges" | "settings";
 
 export default function ProfileScreen() {
   const { colors, isDark, toggleTheme } = useTheme();
-  const { profile, saveProfile, updateAvatar, updatePersonalityVisibility } = useProfile();
+  const { profile, saveProfile, updatePersonalityVisibility } = useProfile();
+  const { localAvatarUri, saveFromPickedUri, removeLocalAvatar } = useLocalAvatar();
   const [personalityVisibilitySaving, setPersonalityVisibilitySaving] = useState(false);
   const { achievements, currentStreak, totalSessions, totalMinutes } = useProgress();
   const [selectedAchievementId, setSelectedAchievementId] = useState<string | null>(null);
   const { dailyReminderEnabled, setDailyReminderEnabled, resetDailyBanner } = useTime();
   const { signOut, deleteAccount, user } = useAuth();
+  // On-device local avatar takes priority over the server one for the
+  // signed-in user's own profile everywhere it's rendered on this screen —
+  // see utils/resolveAvatar.ts. This screen only ever shows the signed-in
+  // user's own profile, so "viewed" and "current" are always the same uid.
+  const resolvedOwnAvatarUrl = resolveAvatar({
+    viewedUserId: user?.uid ?? "",
+    currentUserId: user?.uid ?? null,
+    localAvatarUri,
+    serverAvatarUrl: profile.avatarUrl,
+  });
+  const activityStats = useProfileActivityStats(user?.uid ?? null);
   const { deletePost } = usePosts();
   const { bump: bumpTips } = useTipsReset();
   const params = useLocalSearchParams<{ tab?: string; openRequests?: string; focus?: string }>();
@@ -398,6 +417,7 @@ export default function ProfileScreen() {
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
   const [logoutModalVisible, setLogoutModalVisible] = useState(false);
   const [tipsResetDone, setTipsResetDone] = useState(false);
+  const [pageTipsResetDone, setPageTipsResetDone] = useState(false);
   const [hobbiesModalVisible, setHobbiesModalVisible] = useState(false);
   const [autoOpenRequests, setAutoOpenRequests] = useState(params.openRequests === "1");
   const [discardConfirmVisible, setDiscardConfirmVisible] = useState(false);
@@ -406,6 +426,7 @@ export default function ProfileScreen() {
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [removeAvatarConfirmVisible, setRemoveAvatarConfirmVisible] = useState(false);
+  const [avatarPickerSheetVisible, setAvatarPickerSheetVisible] = useState(false);
   const { selectedUid: cardUid, openUserProfile: setCardUid, closeUserProfile: closeCardUid } = useUserProfileSheet();
 
   // "Add Friends" from the Home leaderboard's empty state deep-links here
@@ -431,23 +452,24 @@ export default function ProfileScreen() {
     setDraft((d) => (d.avatarUrl === profile.avatarUrl ? d : { ...d, avatarUrl: profile.avatarUrl }));
   }, [profile.avatarUrl]);
 
+  // Local-only for now (see components/profile/AvatarPickerSheet.tsx /
+  // services/localAvatarService.ts's own doc comments): the picked photo is
+  // processed and saved to this device's private storage only, never
+  // uploaded to Firebase Storage and never written into the server profile
+  // document. storageService.ts's real cloud upload path still exists
+  // untouched underneath for when that's wired back in.
   async function handlePickAvatar() {
     if (avatarUploading) return;
     setAvatarError(null);
     if (!user) {
-      setAvatarError(avatarErrorMessage("not-authenticated"));
+      setAvatarError(localAvatarErrorMessage("not-authenticated"));
       return;
     }
 
-    // The permission request and picker launch previously ran outside any
-    // try/catch — if either rejected (e.g. no media-library permission
-    // module available, picker cancelled by the OS mid-flow), the failure
-    // was an unhandled promise rejection with zero UI feedback: the button
-    // looked like it did nothing. Everything from here on is now covered.
     try {
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!perm.granted) {
-        setAvatarError(avatarErrorMessage("permission-denied"));
+        setAvatarError(localAvatarErrorMessage("permission-denied"));
         return;
       }
 
@@ -455,24 +477,20 @@ export default function ProfileScreen() {
         mediaTypes: ["images"],
         allowsEditing: true,
         aspect: [1, 1],
-        quality: 0.7,
+        quality: 0.9,
       });
       // User cancellation is not an error — no message, no thrown exception.
       if (result.canceled || !result.assets?.[0]?.uri) return;
 
       setAvatarUploading(true);
-      // Old avatar stays on screen (avatarUrl only changes on success below)
-      // — a failed upload never leaves the user with a broken image.
-      const url = await uploadAvatar(user.uid, result.assets[0].uri, result.assets[0].mimeType);
-      try {
-        await updateAvatar(url);
-      } catch (e) {
-        throw new AvatarServiceError("profile-update-failed", e instanceof Error ? e.message : undefined);
-      }
+      // Old avatar stays on screen until this resolves — a failed save never
+      // leaves the user with a broken image (see saveLocalAvatar's atomic
+      // write-then-swap in localAvatarService.ts).
+      await saveFromPickedUri(result.assets[0].uri);
     } catch (e) {
-      if (__DEV__) console.warn("[Profile] avatar upload failed", e);
-      const code = e instanceof AvatarServiceError ? e.code : "unknown";
-      setAvatarError(avatarErrorMessage(code));
+      if (__DEV__) console.warn("[Profile] local avatar save failed", e);
+      const code = e instanceof LocalAvatarError ? e.code : "unknown";
+      setAvatarError(localAvatarErrorMessage(code));
     } finally {
       setAvatarUploading(false);
     }
@@ -483,21 +501,16 @@ export default function ProfileScreen() {
     if (avatarUploading) return;
     setAvatarError(null);
     if (!user) {
-      setAvatarError(avatarErrorMessage("not-authenticated"));
+      setAvatarError(localAvatarErrorMessage("not-authenticated"));
       return;
     }
     setAvatarUploading(true);
     try {
-      await removeAvatar(user.uid);
-      try {
-        await updateAvatar(null);
-      } catch (e) {
-        throw new AvatarServiceError("profile-update-failed", e instanceof Error ? e.message : undefined);
-      }
+      await removeLocalAvatar();
     } catch (e) {
-      if (__DEV__) console.warn("[Profile] avatar removal failed", e);
-      const code = e instanceof AvatarServiceError ? e.code : "delete-failed";
-      setAvatarError(avatarErrorMessage(code));
+      if (__DEV__) console.warn("[Profile] local avatar removal failed", e);
+      const code = e instanceof LocalAvatarError ? e.code : "unknown";
+      setAvatarError(localAvatarErrorMessage(code));
     } finally {
       setAvatarUploading(false);
     }
@@ -610,6 +623,21 @@ export default function ProfileScreen() {
   const ageError =
     draft.age !== "" && (isNaN(ageNum) || ageNum < 13 || ageNum > 18) ? "Age must be between 13 and 18." : "";
 
+  /** Re-derived on every render, same reasoning as create-post.tsx's own moderationViolation — cheap and pure, so the Save confirm modal (below) always reflects the current draft text without a separate "did it change" effect. */
+  const moderationViolation = (() => {
+    const u = checkText(draft.username);
+    if (!u.allowed) return u;
+    const c = checkText(draft.city);
+    if (!c.allowed) return c;
+    const b = checkText(draft.bio);
+    if (!b.allowed) return b;
+    for (const hobby of draft.hobbies) {
+      const h = checkText(hobby);
+      if (!h.allowed) return h;
+    }
+    return null;
+  })();
+
   function requestSave() {
     setSaveModalVisible(true);
   }
@@ -617,10 +645,37 @@ export default function ProfileScreen() {
   async function handleConfirmSave() {
     setSaveModalVisible(false);
     if (ageError || saving) return;
+    if (moderationViolation) {
+      if (user && shouldLogModerationEvent(moderationViolation.severity)) {
+        recordModerationEvent({ userId: user.uid, surface: "profile_settings", category: moderationViolation.category, severity: moderationViolation.severity });
+      }
+      return;
+    }
     setSaving(true);
     setSaveFailure(null);
     try {
-      await saveProfile(draft);
+      // Send the freshest `profile` with only the fields this Settings form
+      // actually edits layered on top — never `draft` wholesale. `draft` is
+      // seeded once when this tab first mounts and, besides avatarUrl, is
+      // never resynced afterward; since the Tabs navigator keeps screens
+      // mounted, a user can complete the personality quiz (or anything else
+      // that updates `profile` elsewhere) on another tab, come back here,
+      // and save an unrelated field (bio, city, ...) — sending stale
+      // `draft` as-is would silently overwrite that fresh data (e.g.
+      // personalityTypeId/quizCompletedAt) back to whatever it was when
+      // this tab first mounted.
+      await saveProfile({
+        ...profile,
+        username: draft.username,
+        age: draft.age,
+        city: draft.city,
+        localityId: draft.localityId,
+        locationSource: draft.locationSource,
+        bio: draft.bio,
+        hobbies: draft.hobbies,
+        featuredAchievementIds: draft.featuredAchievementIds,
+        avatarUrl: draft.avatarUrl,
+      });
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 2000);
     } catch (e) {
@@ -642,6 +697,17 @@ export default function ProfileScreen() {
     setTimeout(() => setTipsResetDone(false), 2000);
   }
 
+  /** Resets only the per-page disclaimer dismiss-state (InlinePageDisclaimer, constants/disclaimers.ts) — never touches onboarding or any other setting. */
+  async function handleShowPageTipsAgain() {
+    try {
+      await saveProfile({ ...profile, dismissedDisclaimers: {} });
+      setPageTipsResetDone(true);
+      setTimeout(() => setPageTipsResetDone(false), 2000);
+    } catch (e) {
+      if (__DEV__) console.warn("[Profile] page tips reset failed", e);
+    }
+  }
+
   const { posts: myPosts, isLoading: myPostsLoading, loadError: myPostsError, hasMore: myPostsHasMore, loadingMore: myPostsLoadingMore, loadMore: loadMoreMyPosts } = useAuthorPosts(user?.uid ?? null);
 
   const TABS: { id: TabId; label: string }[] = [
@@ -658,6 +724,10 @@ export default function ProfileScreen() {
           below also needs to sit flush above the tab bar, not floating
           above an extra reserved gap. */}
       <SafeAreaView edges={["top", "left", "right"]} style={[styles.container, { backgroundColor: colors.background }]}>
+        <View style={styles.disclaimerPad}>
+          <InlinePageDisclaimer screenKey="/profile" colors={colors} />
+        </View>
+
         {/* Header */}
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
           <Text style={[styles.headerTitle, { color: colors.text }]}>Profile</Text>
@@ -679,7 +749,7 @@ export default function ProfileScreen() {
             city={draft.city}
             age={draft.age}
             bio={draft.bio}
-            avatarUrl={profile.avatarUrl}
+            avatarUrl={resolvedOwnAvatarUrl}
             colors={colors}
             personalityTypeName={profile.showPersonalityType ? profile.personalityTypeName : null}
             onEditProfile={() => handleTabPress("settings")}
@@ -715,6 +785,34 @@ export default function ProfileScreen() {
             {/* ── Overview tab ─────────────────────────────────────────────── */}
             {activeTab === "overview" && (
               <View style={styles.overviewContent}>
+                {/* Stats — Communities/Workshops counts are real,
+                    interactive: tapping opens the actual list behind the
+                    number (app/profile-activity/[uid].tsx) instead of just
+                    showing a static count. */}
+                {user && (
+                  <ProfileStatGrid
+                    colors={colors}
+                    cells={[
+                      {
+                        key: "communities",
+                        icon: "people-outline",
+                        label: "Communities",
+                        value: activityStats.communityCount,
+                        onPress: () => router.push(`/profile-activity/${user.uid}?tab=communities` as any),
+                      },
+                      {
+                        key: "workshops",
+                        icon: "school-outline",
+                        label: "Workshops",
+                        value: activityStats.workshopCount,
+                        onPress: () => router.push(`/profile-activity/${user.uid}?tab=workshops` as any),
+                      },
+                      { key: "hobbies", icon: "heart-outline", label: "Hobbies", value: draft.hobbies.length },
+                      { key: "streak", icon: "flame", label: "Day streak", value: Math.max(0, currentStreak ?? 0) },
+                    ] as StatCell[]}
+                  />
+                )}
+
                 {/* Friends */}
                 <View ref={friendsAnchorRef} onLayout={handleFriendsAnchorLayout} style={styles.friendsAnchor}>
                   <Animated.View
@@ -878,14 +976,23 @@ export default function ProfileScreen() {
                 <Text style={[styles.cardTitle, { color: colors.text }]}>Profile Details</Text>
 
                 <View style={styles.photoRow}>
-                  <View style={styles.photoAvatarWrap}>
-                    <FriendAvatar username={draft.username} avatarUrl={profile.avatarUrl} size={64} colors={colors} />
+                  <TouchableOpacity
+                    style={styles.photoAvatarWrap}
+                    onPress={() => setAvatarPickerSheetVisible(true)}
+                    disabled={avatarUploading}
+                    accessibilityRole="button"
+                    accessibilityLabel="Change or remove profile photo"
+                  >
+                    <FriendAvatar username={draft.username} avatarUrl={resolvedOwnAvatarUrl} size={64} colors={colors} />
                     {avatarUploading && (
                       <View style={styles.avatarOverlay}>
                         <ActivityIndicator color="#fff" size="small" />
                       </View>
                     )}
-                  </View>
+                    <View style={[styles.avatarEditBadge, { backgroundColor: colors.primary, borderColor: colors.card }]}>
+                      <Ionicons name="camera" size={12} color="#fff" />
+                    </View>
+                  </TouchableOpacity>
                   <View style={{ flex: 1, minWidth: 0 }}>
                     <Text style={[styles.photoLabel, { color: colors.text }]}>Profile photo</Text>
                     <View style={styles.photoActionsRow}>
@@ -900,7 +1007,7 @@ export default function ProfileScreen() {
                           Change photo
                         </Text>
                       </TouchableOpacity>
-                      {profile.avatarUrl ? (
+                      {localAvatarUri ? (
                         <TouchableOpacity
                           onPress={() => setRemoveAvatarConfirmVisible(true)}
                           disabled={avatarUploading}
@@ -914,6 +1021,9 @@ export default function ProfileScreen() {
                         </TouchableOpacity>
                       ) : null}
                     </View>
+                    <Text style={[styles.photoDisclosure, { color: colors.secondaryText }]}>
+                      This photo is stored only on this device.
+                    </Text>
                   </View>
                 </View>
                 {avatarError ? (
@@ -1116,6 +1226,26 @@ export default function ProfileScreen() {
                   <Ionicons name="checkmark-circle" size={18} color="#10B981" />
                 )}
               </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.actionRow, { backgroundColor: colors.card, borderColor: colors.border, marginTop: 8 }]}
+                onPress={handleShowPageTipsAgain}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel="Show page tips again"
+              >
+                <Ionicons name="information-circle-outline" size={18} color={colors.primary} />
+                <View style={{ flex: 1, marginLeft: 10 }}>
+                  <Text style={[styles.actionRowLabel, { color: colors.text }]}>
+                    Show page tips again
+                  </Text>
+                  <Text style={[styles.actionRowSub, { color: colors.secondaryText }]}>
+                    Bring back the short intro note on Home, Planner, Community, Explore and Profile
+                  </Text>
+                </View>
+                {pageTipsResetDone && (
+                  <Ionicons name="checkmark-circle" size={18} color="#10B981" />
+                )}
+              </TouchableOpacity>
 
               <Text style={[styles.sectionTitle, { color: colors.text, marginTop: 4 }]}>Account</Text>
               <View style={[styles.infoCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -1187,10 +1317,10 @@ export default function ProfileScreen() {
       {/* Save confirm */}
       <ConfirmModal
         visible={saveModalVisible}
-        title={ageError ? "Cannot Save" : "Save Changes?"}
-        message={ageError || "Your profile will be updated."}
-        confirmLabel={ageError ? "OK" : "Save"}
-        cancelLabel={ageError ? undefined : "Cancel"}
+        title={ageError || moderationViolation ? "Cannot Save" : "Save Changes?"}
+        message={ageError || (moderationViolation ? moderationErrorMessage("profile_field") : "Your profile will be updated.")}
+        confirmLabel={ageError || moderationViolation ? "OK" : "Save"}
+        cancelLabel={ageError || moderationViolation ? undefined : "Cancel"}
         dangerous={false}
         onConfirm={handleConfirmSave}
         onCancel={() => setSaveModalVisible(false)}
@@ -1247,6 +1377,15 @@ export default function ProfileScreen() {
         colors={colors}
       />
 
+      <AvatarPickerSheet
+        visible={avatarPickerSheetVisible}
+        onClose={() => setAvatarPickerSheetVisible(false)}
+        onChooseFromLibrary={handlePickAvatar}
+        onRemovePhoto={() => setRemoveAvatarConfirmVisible(true)}
+        hasPhoto={!!localAvatarUri}
+        colors={colors}
+      />
+
       {/* Remove profile photo confirm */}
       <ConfirmModal
         visible={removeAvatarConfirmVisible}
@@ -1274,6 +1413,7 @@ export default function ProfileScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  disclaimerPad: { paddingHorizontal: 16, paddingTop: 10 },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1366,8 +1506,20 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  avatarEditBadge: {
+    position: "absolute",
+    right: -2,
+    bottom: -2,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   photoLabel: { fontSize: 15, fontWeight: "700" },
   photoActionsRow: { flexDirection: "row", alignItems: "center", gap: 16, marginTop: 6 },
+  photoDisclosure: { fontSize: 11, marginTop: 6 },
   photoActionText: { fontSize: 13, fontWeight: "700" },
   avatarErrorText: { fontSize: 12 },
   fieldDivider: { height: 1 },

@@ -24,6 +24,8 @@ import { useAuth } from "../context/AuthContext";
 import { useProfile } from "../context/ProfileContext";
 import { mergePages, nextHasMoreAfterLiveUpdate } from "../utils/pagination";
 import { isValidCommentText, normalizeCommentText } from "../utils/commentValidation";
+import { checkText, ModerationBlockedError, shouldLogModerationEvent } from "../services/moderationService";
+import { recordModerationEvent } from "../services/moderationEventService";
 
 function friendlyMessage(e: unknown): string {
   if (e instanceof PostsServiceError) {
@@ -104,6 +106,13 @@ export function usePostComments(postId: string) {
     async (content: string, parentCommentId: string | null = null) => {
       if (!user) throw new PostsServiceError("permission-denied", "Please sign in again.");
       if (!isValidCommentText(content)) return;
+      const check = checkText(content);
+      if (!check.allowed) {
+        if (shouldLogModerationEvent(check.severity)) {
+          recordModerationEvent({ userId: user.uid, surface: "comment", entityId: postId, category: check.category, severity: check.severity });
+        }
+        throw new ModerationBlockedError(check.category, check.severity);
+      }
       await persistAddComment(postId, user.uid, profile.username, normalizeCommentText(content), parentCommentId);
     },
     [user, profile.username, postId]
@@ -112,9 +121,16 @@ export function usePostComments(postId: string) {
   const editComment = useCallback(
     async (commentId: string, content: string) => {
       if (!isValidCommentText(content)) return;
+      const check = checkText(content);
+      if (!check.allowed) {
+        if (user && shouldLogModerationEvent(check.severity)) {
+          recordModerationEvent({ userId: user.uid, surface: "comment_edit", entityId: commentId, category: check.category, severity: check.severity });
+        }
+        throw new ModerationBlockedError(check.category, check.severity);
+      }
       await persistEditComment(postId, commentId, normalizeCommentText(content));
     },
-    [postId]
+    [postId, user]
   );
 
   const deleteComment = useCallback(

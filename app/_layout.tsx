@@ -2,6 +2,7 @@ import { Stack, router } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { ThemeProvider, useTheme } from "../context/ThemeContext";
 import { AuthProvider, useAuth } from "../context/AuthContext";
+import { LocalAvatarProvider } from "../context/LocalAvatarContext";
 import { ProfileProvider, useProfile } from "../context/ProfileContext";
 import { PostsProvider, usePosts } from "../context/PostsContext";
 import { TimeProvider, useTime } from "../context/TimeContext";
@@ -13,7 +14,6 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { TipsResetProvider } from "../components/TipBanner";
 import PracticeTimerModal from "../components/PracticeTimerModal";
 import AchievementUnlockToast from "../components/achievements/AchievementUnlockToast";
-import DisclaimerOverlay from "../components/DisclaimerOverlay";
 import { useEffect, useRef, useState } from "react";
 
 function AppShell() {
@@ -21,7 +21,7 @@ function AppShell() {
   const { profile, isLoaded } = useProfile();
   const { isAuthLoaded, user } = useAuth();
   const { colors, isDark, isReady: themeReady } = useTheme();
-  const { dueTask, dismissDueTask, deleteTask } = useTime();
+  const { dueOccurrence, dismissDueTask, deleteTask, deleteOccurrence } = useTime();
   const { recordSession } = useProgress();
   const opacity = useRef(new Animated.Value(1)).current;
   const [showSplash, setShowSplash] = useState(true);
@@ -93,32 +93,33 @@ function AppShell() {
         </Animated.View>
       )}
       {/* Pops up automatically whenever a scheduled task's time arrives, wherever the user is in the app */}
-      {!showSplash && dueTask && (
+      {!showSplash && dueOccurrence && (
         <PracticeTimerModal
           visible
           onClose={async () => {
-            // Whether the session was finished or skipped/discarded, its slot has passed —
-            // clear it from the schedule instead of leaving a stale entry behind.
-            await deleteTask(dueTask.id);
+            // Whether the session was finished or skipped/discarded, its slot
+            // has passed. For a one-off task that means the task itself is
+            // done, same as before. For a recurring series it must NOT delete
+            // the whole series — only today's occurrence — so future days
+            // keep firing normally.
+            if (dueOccurrence.isRecurring) {
+              await deleteOccurrence(dueOccurrence, "this");
+            } else {
+              await deleteTask(dueOccurrence.task.id);
+            }
             dismissDueTask();
           }}
           onComplete={async (minutes) => {
             await recordSession(minutes);
           }}
-          defaultTitle={dueTask.title}
-          defaultMinutes={dueTask.duration}
+          defaultTitle={dueOccurrence.title}
+          defaultMinutes={dueOccurrence.duration}
           colors={colors}
           autoStart
           banner="It's time!"
         />
       )}
       {!showSplash && <AchievementUnlockToast colors={colors} />}
-      {/* Rendered last so it paints above the achievement toast too — see
-          DisclaimerOverlay's own doc comment for how it interacts with
-          bottom sheets (native Modal windows always paint above this
-          regardless of JS sibling order; the disclaimer reappears once the
-          sheet closes, since it's still unresolved underneath). */}
-      {!showSplash && <DisclaimerOverlay />}
     </>
   );
 }
@@ -128,6 +129,7 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <TipsResetProvider>
       <AuthProvider>
+        <LocalAvatarProvider>
         <ProfileProvider>
           {/* ThemeProvider reads useProfile() for the signed-in user's saved
               theme preference (see context/ThemeContext.tsx priority order),
@@ -146,6 +148,7 @@ export default function RootLayout() {
             </PostsProvider>
           </ThemeProvider>
         </ProfileProvider>
+        </LocalAvatarProvider>
       </AuthProvider>
       </TipsResetProvider>
     </GestureHandlerRootView>

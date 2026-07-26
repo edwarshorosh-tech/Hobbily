@@ -379,6 +379,27 @@ service cloud.firestore {
       allow update: if false;
     }
 
+    // ── Moderation events ────────────────────────────────────────────────────
+    // High/critical content-moderation hits only (see services/
+    // moderationEventService.ts) — never the raw offending text, just
+    // category/severity/where. Write-only from the client by design: no one,
+    // not even the author, can read/edit/delete an event via the client SDK.
+    // This project has no admin console/backend yet to grant broader read
+    // access to — "protected table with limited access" means "not
+    // client-readable at all" until one exists.
+    match /moderationEvents/{eventId} {
+      function isSignedIn() { return request.auth != null; }
+
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.surface is string
+        && request.resource.data.category is string
+        && request.resource.data.severity in ['high', 'critical']
+        && request.resource.data.ruleVersion is int;
+
+      allow read, update, delete: if false;
+    }
+
     // ── Posts, comments, likes ────────────────────────────────────────────────
     // posts/{postId} holds content only — comments and likes are
     // subcollections (below), never inline arrays, specifically so each

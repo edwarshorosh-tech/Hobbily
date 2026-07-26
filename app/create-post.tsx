@@ -30,6 +30,8 @@ import { usePosts } from "../context/PostsContext";
 import { uploadPostImage } from "../services/storageService";
 import ConfirmModal from "../components/ConfirmModal";
 import HobbiesEditor from "../components/settings/HobbiesEditor";
+import { checkText, moderationErrorMessage, shouldLogModerationEvent } from "../services/moderationService";
+import { recordModerationEvent } from "../services/moderationEventService";
 
 const TITLE_MAX = 100;
 const BODY_MAX = 1000;
@@ -55,7 +57,21 @@ export default function CreatePost() {
   const pendingLeaveActionRef = useRef<(() => void) | null>(null);
 
   const hasContent = title.trim().length > 0 || body.trim().length > 0 || tags.length > 0 || !!image;
-  const canPublish = title.trim().length > 0 && body.trim().length > 0 && !submitting;
+
+  /** Re-derived on every render (cheap, pure, no I/O — see moderationService.ts) so Publish disables/re-enables live as the user edits, per field, without a separate "did the text change" tracking effect. Checked title-first, then body, then tags, since that's the field order on screen. */
+  const moderationViolation = (() => {
+    const t = checkText(title);
+    if (!t.allowed) return t;
+    const b = checkText(body);
+    if (!b.allowed) return b;
+    for (const tag of tags) {
+      const r = checkText(tag);
+      if (!r.allowed) return r;
+    }
+    return null;
+  })();
+
+  const canPublish = title.trim().length > 0 && body.trim().length > 0 && !submitting && !moderationViolation;
 
   // Intercept both the top-bar close button (via router.back()) and Android
   // hardware back — both route through this same navigator "remove" event.
@@ -96,6 +112,12 @@ export default function CreatePost() {
 
   async function handleSubmit() {
     setAttemptedSubmit(true);
+    if (moderationViolation) {
+      if (user && shouldLogModerationEvent(moderationViolation.severity)) {
+        recordModerationEvent({ userId: user.uid, surface: "create_post", category: moderationViolation.category, severity: moderationViolation.severity });
+      }
+      return;
+    }
     if (!canPublish) return;
     setSubmitting(true);
     setSubmitError(null);
@@ -235,6 +257,13 @@ export default function CreatePost() {
               title="Related hobbies"
             />
           </View>
+
+          {attemptedSubmit && moderationViolation ? (
+            <View style={[styles.errorBanner, { backgroundColor: colors.danger + "18", borderColor: colors.danger }]}>
+              <Ionicons name="alert-circle-outline" size={16} color={colors.danger} />
+              <Text style={[styles.errorBannerText, { color: colors.danger }]}>{moderationErrorMessage("content")}</Text>
+            </View>
+          ) : null}
 
           {submitError ? (
             <View style={[styles.errorBanner, { backgroundColor: colors.danger + "18", borderColor: colors.danger }]}>

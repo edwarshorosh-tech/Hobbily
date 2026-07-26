@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, ReactNode } from "react";
 import {
   User,
   createUserWithEmailAndPassword,
@@ -46,19 +46,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return unsub;
   }, []);
 
-  async function signUp(email: string, password: string) {
+  const signUp = useCallback(async (email: string, password: string) => {
     await createUserWithEmailAndPassword(auth, email, password);
-  }
+  }, []);
 
-  async function signIn(email: string, password: string) {
+  const signIn = useCallback(async (email: string, password: string) => {
     await signInWithEmailAndPassword(auth, email, password);
-  }
+  }, []);
 
-  async function signOut() {
+  const signOut = useCallback(async () => {
     await fbSignOut(auth);
-  }
+  }, []);
 
-  async function deleteAccount(password: string) {
+  const deleteAccount = useCallback(async (password: string) => {
     if (!user || !user.email) return;
 
     // Step 1: Re-authenticate so Firebase accepts the deleteUser call
@@ -110,13 +110,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Step 7: Delete the Firebase Auth user (use currentUser — state ref may be stale)
     const freshUser = auth.currentUser;
     if (freshUser) await deleteUser(freshUser);
-  }
+  }, [user]);
 
-  return (
-    <AuthContext.Provider value={{ user, isAuthLoaded, signUp, signIn, signOut, deleteAccount } as AuthContextType}>
-      {children}
-    </AuthContext.Provider>
+  // Every other context in this app memoizes its provider value (see
+  // ProfileContext/ThemeContext/etc.) — this one didn't, which meant a new
+  // object was created on every AuthProvider render (regardless of whether
+  // user/isAuthLoaded actually changed), forcing every useAuth() consumer in
+  // the whole app to re-render right along with it. AuthProvider sits above
+  // nearly everything, so that re-render fans out widely — including into
+  // whatever's open at the time (e.g. the Planner's time picker mid-drag).
+  const value = useMemo<AuthContextType>(
+    () => ({ user, isAuthLoaded, signUp, signIn, signOut, deleteAccount }),
+    [user, isAuthLoaded, signUp, signIn, signOut, deleteAccount]
   );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {
