@@ -76,7 +76,7 @@ function TabItem({
     >
       <Animated.View style={[styles.pill, pillStyle]}>
         <Animated.View style={iconLiftStyle}>
-          <Ionicons name={iconName} size={22} color={isFocused ? colors.tabBarActive : colors.tabBarInactive} />
+          <Ionicons name={iconName} size={26} color={isFocused ? colors.tabBarActive : colors.tabBarInactive} />
         </Animated.View>
         <Animated.Text
           style={[styles.label, { fontWeight: isFocused ? "700" : "500" }, labelColorStyle]}

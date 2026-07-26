@@ -550,7 +550,7 @@ function StepInterests({ colors, contentWidth, selected, onToggle, canNext, onNe
             style={[styles.discoverCard, { backgroundColor: colors.secondary, borderColor: colors.link ?? colors.primary }]}
           >
             <View style={[styles.discoverIcon, { backgroundColor: colors.link ?? colors.primary }]}>
-              <Ionicons name="compass-outline" size={20} color="#fff" />
+              <Ionicons name="help-circle-outline" size={20} color="#fff" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={[styles.discoverTitle, { color: colors.text }]}>Don't have a hobby?</Text>
@@ -811,7 +811,7 @@ const styles = StyleSheet.create({
   welcomeTagline: { fontSize: 18, textAlign: "center", lineHeight: 28, marginVertical: 16 },
   // Discover-via-quiz callout
   discoverWrap: { paddingHorizontal: 16, paddingTop: 16 },
-  discoverCard: { flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 16, borderWidth: 1.5, borderStyle: "dashed", gap: 12 },
+  discoverCard: { flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 16, borderWidth: 1.5, gap: 12 },
   discoverIcon: { width: 40, height: 40, borderRadius: 12, alignItems: "center", justifyContent: "center" },
   discoverTitle: { fontSize: 14, fontWeight: "700", marginBottom: 2 },
   discoverSub: { fontSize: 12, lineHeight: 16 },

@@ -3,7 +3,7 @@
  * Greeting, streak indicator, today's tasks, suggested opportunities, quick actions.
  */
 import {
-  View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator, TextInput,
+  View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator, TextInput, Image,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -12,13 +12,10 @@ import { useTheme } from "../../context/ThemeContext";
 import InlinePageDisclaimer from "../../components/disclaimers/InlinePageDisclaimer";
 import { useProfile } from "../../context/ProfileContext";
 import { useTime, TaskSaveResult } from "../../context/TimeContext";
-import { useProgress } from "../../context/ProgressContext";
 import SwipeableTab from "../../components/SwipeableTab";
 import TipBanner, { TIP_KEYS } from "../../components/TipBanner";
 import FriendsLeaderboard from "../../components/home/FriendsLeaderboard";
 import NotificationBell from "../../components/notifications/NotificationBell";
-import StreakInfoModal from "../../components/home/StreakInfoModal";
-import StreakButton from "../../components/home/StreakButton";
 import { useRef, useState } from "react";
 import { localDateISO, parseLocalISO } from "../../utils/dateUtils";
 import { formatTime12h, formatTimeLabel, minutesToNormalizedTime, timeStringToMinutes } from "../../utils/time";
@@ -248,8 +245,6 @@ export default function HomeScreen() {
   const { colors } = useTheme();
   const { profile } = useProfile();
   const { tasks, addTask } = useTime();
-  const { currentStreak } = useProgress();
-  const [streakModalVisible, setStreakModalVisible] = useState(false);
 
   const today = todayISO();
   const todayTasks = tasks
@@ -281,7 +276,14 @@ export default function HomeScreen() {
             </Text>
           </View>
           <NotificationBell colors={colors} />
-          <StreakButton streak={currentStreak ?? 0} colors={colors} onPress={() => setStreakModalVisible(true)} />
+          <TouchableOpacity
+            onPress={() => router.push("/(tabs)/profile")}
+            style={styles.logoBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Go to your profile"
+          >
+            <Image source={require("../../assets/images/Hobbily_Logo.png")} style={styles.logoBtnImage} />
+          </TouchableOpacity>
         </View>
 
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 56 }}>
@@ -368,12 +370,6 @@ export default function HomeScreen() {
           </View>
 
         </ScrollView>
-
-        <StreakInfoModal
-          visible={streakModalVisible}
-          onClose={() => setStreakModalVisible(false)}
-          colors={colors}
-        />
       </SafeAreaView>
     </SwipeableTab>
   );
@@ -391,16 +387,18 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   greeting: { fontSize: 22, fontWeight: "800", letterSpacing: -0.3 },
+  logoBtn: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center" },
+  logoBtnImage: { width: 32, height: 32, borderRadius: 16, resizeMode: "contain" },
   content: { paddingHorizontal: 16, marginTop: 16, gap: 24 },
   section: { gap: 12 },
   sectionRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   sectionTitle: { fontSize: 17, fontWeight: "700" },
   sectionLink: { fontSize: 13, fontWeight: "600" },
   // Today tasks
-  todayTask: { flexDirection: "row", alignItems: "center", padding: 12, borderRadius: 12, borderWidth: 1, marginBottom: 8, gap: 10 },
+  todayTask: { flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 12, borderWidth: 1, marginBottom: 8, gap: 10 },
   todayTaskDot: { width: 8, height: 8, borderRadius: 4 },
-  todayTaskTitle: { fontSize: 14, fontWeight: "600" },
-  todayTaskTime: { fontSize: 12, marginTop: 1 },
+  todayTaskTitle: { fontSize: 16, fontWeight: "600" },
+  todayTaskTime: { fontSize: 13, marginTop: 2 },
   emptyToday: { padding: 20, borderRadius: 14, borderWidth: 1, alignItems: "center", gap: 8 },
   emptyTodayText: { fontSize: 14, textAlign: "center", lineHeight: 22 },
   progressMini: { padding: 10, borderRadius: 10, borderWidth: 1, marginTop: 4, gap: 6 },

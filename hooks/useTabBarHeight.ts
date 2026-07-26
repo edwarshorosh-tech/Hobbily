@@ -14,7 +14,7 @@
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 /** Icon + label row height, excluding the bottom safe-area inset. */
-export const TAB_BAR_CONTENT_HEIGHT = 56;
+export const TAB_BAR_CONTENT_HEIGHT = 60;
 
 export function useTabBarHeight(): number {
   const insets = useSafeAreaInsets();

@@ -31,6 +31,15 @@ type Props = {
   dangerous?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
+  /**
+   * Renders the backdrop+card directly (absolutely positioned), without its
+   * own native `<Modal>` — for use via BottomSheet's `overlay` prop, so a
+   * confirmation shown while a sheet is still open never stacks two native
+   * modal windows (unreliable on Android — see BottomSheet.tsx). Defaults
+   * to false (the standalone `<Modal>` behavior, for confirmations not
+   * nested inside another sheet/modal).
+   */
+  asOverlay?: boolean;
 };
 
 export default function ConfirmModal({
@@ -42,8 +51,46 @@ export default function ConfirmModal({
   dangerous = false,
   onConfirm,
   onCancel,
+  asOverlay = false,
 }: Props) {
   const { colors } = useTheme();
+
+  const content = (
+    // Semi-transparent backdrop — tapping it cancels the action
+    <Pressable style={styles.backdrop} onPress={onCancel}>
+      {/* The card itself — stopPropagation so tapping inside doesn't dismiss */}
+      <Pressable
+        style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}
+        onPress={(e) => e.stopPropagation?.()}
+      >
+        <Text style={[styles.title, { color: colors.text }]}>{title}</Text>
+        <Text style={[styles.message, { color: colors.secondaryText }]}>{message}</Text>
+
+        <View style={styles.buttons}>
+          {/* Cancel — neutral colour */}
+          <Pressable
+            style={[styles.btn, { backgroundColor: colors.border }]}
+            onPress={onCancel}
+          >
+            <Text style={[styles.btnText, { color: colors.text }]}>{cancelLabel}</Text>
+          </Pressable>
+
+          {/* Confirm — red for destructive actions, primary otherwise */}
+          <Pressable
+            style={[styles.btn, { backgroundColor: dangerous ? colors.danger : colors.primary }]}
+            onPress={onConfirm}
+          >
+            <Text style={[styles.btnText, { color: "#fff" }]}>{confirmLabel}</Text>
+          </Pressable>
+        </View>
+      </Pressable>
+    </Pressable>
+  );
+
+  if (asOverlay) {
+    if (!visible) return null;
+    return <View style={StyleSheet.absoluteFill}>{content}</View>;
+  }
 
   return (
     <Modal
@@ -53,35 +100,7 @@ export default function ConfirmModal({
       onRequestClose={onCancel}
       statusBarTranslucent
     >
-      {/* Semi-transparent backdrop — tapping it cancels the action */}
-      <Pressable style={styles.backdrop} onPress={onCancel}>
-        {/* The card itself — stopPropagation so tapping inside doesn't dismiss */}
-        <Pressable
-          style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}
-          onPress={(e) => e.stopPropagation?.()}
-        >
-          <Text style={[styles.title, { color: colors.text }]}>{title}</Text>
-          <Text style={[styles.message, { color: colors.secondaryText }]}>{message}</Text>
-
-          <View style={styles.buttons}>
-            {/* Cancel — neutral colour */}
-            <Pressable
-              style={[styles.btn, { backgroundColor: colors.border }]}
-              onPress={onCancel}
-            >
-              <Text style={[styles.btnText, { color: colors.text }]}>{cancelLabel}</Text>
-            </Pressable>
-
-            {/* Confirm — red for destructive actions, primary otherwise */}
-            <Pressable
-              style={[styles.btn, { backgroundColor: dangerous ? colors.danger : colors.primary }]}
-              onPress={onConfirm}
-            >
-              <Text style={[styles.btnText, { color: "#fff" }]}>{confirmLabel}</Text>
-            </Pressable>
-          </View>
-        </Pressable>
-      </Pressable>
+      {content}
     </Modal>
   );
 }
