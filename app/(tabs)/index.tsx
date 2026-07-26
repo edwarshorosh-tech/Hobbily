@@ -16,7 +16,7 @@ import SwipeableTab from "../../components/SwipeableTab";
 import TipBanner, { TIP_KEYS } from "../../components/TipBanner";
 import FriendsLeaderboard from "../../components/home/FriendsLeaderboard";
 import NotificationBell from "../../components/notifications/NotificationBell";
-import { useTourTarget } from "../../context/TourTargetsContext";
+import { useTourTarget, useTourScrollRoot } from "../../context/TourTargetsContext";
 import MascotAvatar, { MascotNameBadge } from "../../components/MascotAvatar";
 import { useRef, useState } from "react";
 import { localDateISO, parseLocalISO } from "../../utils/dateUtils";
@@ -270,6 +270,7 @@ export default function HomeScreen() {
   const { colors } = useTheme();
   const { profile } = useProfile();
   const { tasks, addTask, deleteTask } = useTime();
+  const homeScrollRoot = useTourScrollRoot("home");
 
   const today = todayISO();
   const todayTasks = tasks
@@ -311,7 +312,13 @@ export default function HomeScreen() {
           </TouchableOpacity>
         </View>
 
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 56 }}>
+        <ScrollView
+          ref={homeScrollRoot.ref}
+          onScroll={homeScrollRoot.onScroll}
+          scrollEventThrottle={16}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ paddingBottom: 56 }}
+        >
 
           <TipBanner
             storageKey={TIP_KEYS.homeGettingStarted}

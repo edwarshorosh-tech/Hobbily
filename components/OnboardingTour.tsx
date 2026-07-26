@@ -13,6 +13,17 @@
  * bar directly, which is always mounted and visible regardless of which tab
  * is focused, so no navigation is needed for those.
  *
+ * A target can also be scrolled out of view within its own screen (e.g. Home's
+ * Friends Leaderboard, below the fold on a short device) — steps on such a
+ * screen carry a `scrollRootId` naming that screen's registered scroll
+ * container (see context/TourTargetsContext.ts's useTourScrollRoot), and
+ * ensureVisible() scrolls it into a safe margin and re-measures before the
+ * spotlight is ever animated toward it. If a target still can't be measured
+ * (measureTarget keeps failing) or there's genuinely no room to anchor the
+ * bubble next to it even after scrolling, the tour never leaves Next/Skip
+ * unreachable: it falls back to the same guaranteed-on-screen centered
+ * bubble layout either way (see showCentered/canAnchorBubble below).
+ *
  * All motion (the spotlight cutout's position/size and the tooltip's fade)
  * is driven entirely by Reanimated shared values updated with
  * withSpring/withTiming — never by re-rendering with new inline numbers —
@@ -48,7 +59,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../context/ThemeContext";
-import { useTourTargets, TourTargetId, TourTargetRect } from "../context/TourTargetsContext";
+import { useTourTargets, TourTargetId, TourScrollRootId, TourTargetRect } from "../context/TourTargetsContext";
 import { brand } from "../constants/colors";
 import MascotAvatar, { MascotNameBadge } from "./MascotAvatar";
 
@@ -58,6 +69,8 @@ type Step = {
   targetId: TourTargetId;
   /** Href to navigate to before measuring — omitted for steps whose target (the tab bar) is visible from any current screen. */
   route?: any;
+  /** The screen's registered scroll container this target can be scrolled within — omitted for steps whose target (the tab bar) is never inside a scrollable region. */
+  scrollRootId?: TourScrollRootId;
   title: string;
   body: string;
 };
@@ -66,18 +79,21 @@ const STEPS: Step[] = [
   {
     targetId: "aiAssistant",
     route: HOME_ROUTE,
+    scrollRootId: "home",
     title: "AI Assistant",
     body: "Hi, I'm Bubble! I'm your AI assistant — chat with me here to discover new hobbies, talk through your plans, or just say \"add it\" and I'll schedule an activity for you.",
   },
   {
     targetId: "addFriends",
     route: HOME_ROUTE,
+    scrollRootId: "home",
     title: "Adding Friends",
     body: "Tap here to add friends! You'll see each other's streaks and can cheer each other on to stay motivated.",
   },
   {
     targetId: "plannerAddActivity",
     route: "/(tabs)/time-manager" as any,
+    scrollRootId: "planner",
     title: "Planner & Adding Activities",
     body: "This is your planner. Tap Add Activity here to schedule a hobby session or task on your calendar.",
   },
@@ -99,8 +115,6 @@ const PAD = 8;
 const BUBBLE_GAP = 14;
 /** Absolute floor for the bubble's available-space budget — never let a device/inset combo squeeze it to nothing. */
 const MIN_BUBBLE_ROOM = 150;
-/** Reserved for the mascot header + Next/Got it button + padding — subtracted from the bubble's budget to get how much is actually left for the title+body text. */
-const BUBBLE_CHROME_HEIGHT = 150;
 /** How long to let a just-triggered navigation (lazy tab mount, or an in-page auto-scroll) settle before the first measurement attempt. */
 const NAVIGATION_SETTLE_MS = 450;
 const MEASURE_RETRY_MS = 120;
@@ -113,6 +127,19 @@ const MASCOT_SHRINK_SCALE = 0.7;
 const TOOLTIP_FADE_OUT_MS = 150;
 const TOOLTIP_FADE_IN_MS = 220;
 const COLLAPSE_MS = 260;
+/** Minimum clearance to leave between the target and the screen/safe-area edge when deciding whether it's already comfortably in view. */
+const SCROLL_MARGIN = 24;
+/** How long to let an auto-scroll's animation actually finish before re-measuring — RN's scrollTo({animated:true}) gives no completion callback. */
+const SCROLL_SETTLE_MS = 400;
+/**
+ * Below this, there isn't enough room to show even the bubble's fixed chrome
+ * (mascot header + title + Next/Got it button, none of which ever shrink —
+ * see TooltipContent's bodyScroll style) plus a couple of lines of body
+ * text — fall back to the centered layout instead (see canAnchorBubble) so
+ * Next/Skip are never at risk of landing off-screen and the body text is
+ * never squeezed down to nothing.
+ */
+const MIN_VIABLE_BUBBLE_ROOM = 230;
 
 function wait(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -127,7 +154,7 @@ type Props = {
 
 export default function OnboardingTour({ visible, onFinish }: Props) {
   const { colors } = useTheme();
-  const { measureTarget } = useTourTargets();
+  const { measureTarget, measureScrollRoot, scrollRootBy } = useTourTargets();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const [stepIndex, setStepIndex] = useState(0);
@@ -167,6 +194,32 @@ export default function OnboardingTour({ visible, onFinish }: Props) {
     mascotScale.value = withTiming(MASCOT_SHRINK_SCALE, { duration: TOOLTIP_FADE_OUT_MS });
     const step = STEPS[stepIndex];
 
+    /**
+     * If the target lives inside a registered scroll container and isn't
+     * currently within a comfortable margin of the viewport, scrolls it into
+     * view and re-measures. Computed as a delta against the root's own last-
+     * tracked offset (scrollRootBy), not an absolute position — RN gives no
+     * synchronous "current scroll offset" getter, only the running tally each
+     * screen's own onScroll keeps (see useTourScrollRoot).
+     */
+    async function ensureVisible(rect: TourTargetRect): Promise<TourTargetRect> {
+      if (!step.scrollRootId) return rect;
+      const containerRect = await measureScrollRoot(step.scrollRootId);
+      if (!containerRect) return rect;
+
+      const viewTop = containerRect.y + SCROLL_MARGIN;
+      const viewBottom = containerRect.y + containerRect.height - SCROLL_MARGIN;
+      const fullyVisible = rect.y >= viewTop && rect.y + rect.height <= viewBottom;
+      if (fullyVisible) return rect;
+
+      scrollRootBy(step.scrollRootId, rect.y - viewTop);
+      await wait(SCROLL_SETTLE_MS);
+      if (cancelled) return rect;
+
+      const rescanned = await measureTarget(step.targetId);
+      return rescanned ?? rect;
+    }
+
     async function locateTarget() {
       if (step.route) {
         router.navigate(step.route);
@@ -174,8 +227,10 @@ export default function OnboardingTour({ visible, onFinish }: Props) {
       }
       for (let attempt = 0; attempt < MAX_MEASURE_ATTEMPTS; attempt++) {
         if (cancelled) return;
-        const rect = await measureTarget(step.targetId);
+        let rect = await measureTarget(step.targetId);
         if (rect) {
+          if (cancelled) return;
+          rect = await ensureVisible(rect);
           if (cancelled) return;
           lastRectRef.current = rect;
           const clampedTop = Math.max(0, rect.y - PAD);
@@ -274,17 +329,26 @@ export default function OnboardingTour({ visible, onFinish }: Props) {
   // near the bottom of a short device previously got a bubble anchored
   // below it with barely any room, clipping step 3's longer copy off the
   // bottom of the screen. bubbleMaxHeight then caps the bubble to whatever
-  // space was actually available on the chosen side, and innerMaxHeight
-  // (passed to TooltipContent) reserves room for the mascot header/button so
-  // only the title+body region — never the whole bubble — ever needs to
-  // scroll internally as a last resort.
+  // space was actually available on the chosen side — TooltipContent's own
+  // flexShrink layout (not a guessed pixel budget) is what decides how much
+  // of that capped height the body text actually gets, letting the mascot
+  // header and Next/Got it button always keep their full natural size.
   const targetTop = rect ? Math.max(0, rect.y - PAD) : 0;
   const targetBottom = rect ? Math.min(screenHeight, rect.y + rect.height + PAD) : 0;
   const spaceBelow = screenHeight - insets.bottom - BUBBLE_GAP - targetBottom;
   const spaceAbove = targetTop - insets.top - BUBBLE_GAP;
   const placeBelow = rect ? spaceBelow >= spaceAbove : true;
-  const bubbleMaxHeight = Math.max(MIN_BUBBLE_ROOM, placeBelow ? spaceBelow : spaceAbove);
-  const innerMaxHeight = Math.max(40, bubbleMaxHeight - BUBBLE_CHROME_HEIGHT);
+  const rawBubbleSpace = placeBelow ? spaceBelow : spaceAbove;
+  const bubbleMaxHeight = Math.max(MIN_BUBBLE_ROOM, rawBubbleSpace);
+  // Auto-scroll (ensureVisible, above) resolves this in the overwhelming
+  // majority of cases — this is the last-resort safety net for whatever it
+  // can't (e.g. a target genuinely too large to leave any margin on either
+  // side). Rather than anchor the bubble somewhere half off-screen, fall back
+  // to the same guaranteed-reachable centered layout the "target never
+  // found" case already uses — Next/Skip must never depend on the target's
+  // real position being anchor-able.
+  const canAnchorBubble = !!rect && rawBubbleSpace >= MIN_VIABLE_BUBBLE_ROOM;
+  const showCentered = phase === "notfound" || !canAnchorBubble;
 
   return (
     <Animated.View style={StyleSheet.absoluteFill} pointerEvents="box-none">
@@ -294,7 +358,7 @@ export default function OnboardingTour({ visible, onFinish }: Props) {
       <Animated.View style={[styles.dim, styles.dimRight, rightStyle]} pointerEvents="auto" />
       <Animated.View pointerEvents="none" style={[styles.ring, { borderColor: colors.primary }, ringStyle]} />
 
-      {phase === "notfound" ? (
+      {showCentered ? (
         <Animated.View
           style={[
             styles.tooltip,
@@ -310,7 +374,6 @@ export default function OnboardingTour({ visible, onFinish }: Props) {
             nextLabel={nextLabel}
             onNext={handleNext}
             mascotStyle={mascotStyle}
-            innerMaxHeight={screenHeight * 0.25}
           />
         </Animated.View>
       ) : (
@@ -337,7 +400,6 @@ export default function OnboardingTour({ visible, onFinish }: Props) {
             nextLabel={nextLabel}
             onNext={handleNext}
             mascotStyle={mascotStyle}
-            innerMaxHeight={innerMaxHeight}
           />
         </Animated.View>
       )}
@@ -362,7 +424,6 @@ function TooltipContent({
   nextLabel,
   onNext,
   mascotStyle,
-  innerMaxHeight,
 }: {
   step: Step;
   stepIndex: number;
@@ -370,8 +431,6 @@ function TooltipContent({
   nextLabel: string;
   onNext: () => void;
   mascotStyle: any;
-  /** Bound for the scrollable title+body region only — reserving the mascot header and Next/Got it button so those never get pushed off or scrolled away, even on a cramped device. */
-  innerMaxHeight: number;
 }) {
   return (
     <>
@@ -387,7 +446,19 @@ function TooltipContent({
         </View>
       </View>
       <Text style={[styles.title, { color: colors.text }]}>{step.title}</Text>
-      <ScrollView style={{ maxHeight: innerMaxHeight }} showsVerticalScrollIndicator={false}>
+      {/*
+        flexShrink: 1 (RN Views default to 0) is what makes this the *only*
+        part of the bubble that ever gives up space — the mascot header,
+        title, and Next/Got it button below all keep their natural size
+        unconditionally. The parent Animated.View's maxHeight (bubbleMaxHeight
+        or the centered fallback's fixed cap) is what actually constrains
+        things: Yoga sizes this ScrollView to whatever's left after the fixed
+        chrome, and it scrolls its own content if that's still not enough —
+        never a hand-guessed pixel budget that can drift out of sync with the
+        real rendered chrome height (see MIN_VIABLE_BUBBLE_ROOM's comment for
+        why that drift used to squeeze this down to almost nothing on step 3).
+      */}
+      <ScrollView style={styles.bodyScroll} showsVerticalScrollIndicator={false}>
         <Text style={[styles.body, { color: colors.secondaryText }]}>{step.body}</Text>
       </ScrollView>
       <TouchableOpacity
@@ -449,6 +520,7 @@ const styles = StyleSheet.create({
   mascotRow: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 10 },
   stepCount: { fontSize: 11, fontWeight: "700", marginTop: 3, textTransform: "uppercase", letterSpacing: 0.4 },
   title: { fontSize: 19, fontWeight: "800", marginBottom: 8 },
+  bodyScroll: { flexShrink: 1 },
   body: { fontSize: 14, lineHeight: 20, marginBottom: 16 },
   nextButton: {
     flexDirection: "row",

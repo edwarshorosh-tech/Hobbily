@@ -26,7 +26,7 @@ import PracticeTimerModal from "../../components/PracticeTimerModal";
 import BottomSheet from "../../components/BottomSheet";
 import TimeWheelPicker from "../../components/time-picker/TimeWheelPicker";
 import ConfirmModal from "../../components/ConfirmModal";
-import { useTourTarget } from "../../context/TourTargetsContext";
+import { useTourTarget, useTourScrollRoot } from "../../context/TourTargetsContext";
 import { Task } from "../../types/Task";
 import { RecurrenceRule } from "../../types/Recurrence";
 import { addDaysISO, deviceTimeZone, localDateISO, parseLocalISO, startOfWeekISO } from "../../utils/dateUtils";
@@ -1067,6 +1067,7 @@ export default function TimeManagerScreen() {
   const [timerVisible, setTimerVisible] = useState(false);
   const [timerTask, setTimerTask] = useState<{ title: string; duration: number } | null>(null);
   const tourRef = useTourTarget("plannerAddActivity");
+  const plannerScrollRoot = useTourScrollRoot("planner");
 
   // A generous but bounded window around the selected date — comfortably
   // covers everything the day list, day-strip dots, and Week/Month at a
@@ -1225,7 +1226,13 @@ export default function TimeManagerScreen() {
           </Text>
         </View>
 
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }}>
+        <ScrollView
+          ref={plannerScrollRoot.ref}
+          onScroll={plannerScrollRoot.onScroll}
+          scrollEventThrottle={16}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ paddingBottom: 40 }}
+        >
           {/* Daily Reminder Banner */}
           {showDailyBanner && (
             <View style={[styles.reminderBanner, { backgroundColor: colors.primary + "18", borderColor: colors.primary }]}>
