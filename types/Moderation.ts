@@ -37,7 +37,7 @@ export type ModerationTerm = {
 };
 
 /** A single dictionary's version — bumped whenever constants/moderationTerms.ts's TERMS array changes, so a client and the worker can log/compare which ruleset actually rejected something. */
-export const MODERATION_RULESET_VERSION = 1;
+export const MODERATION_RULESET_VERSION = 3;
 
 export type ModerationCheckResult =
   | { allowed: true }

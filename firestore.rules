@@ -12,6 +12,13 @@ rules_version = '2';
 // `users/{uid}/likedCommentIds` below are complete, tested rules written for
 // those features — no action needed.
 //
+// `channels/{channelId}/messages`, `posts`, and `posts/comments` each also
+// carry a `containsBlockedTerm(text)` guard on create (and on genuine edits)
+// — a short, English-only, unobfuscated-profanity/threat/self-harm denylist
+// enforced server-side regardless of client version. It is intentionally
+// NOT a mirror of services/moderationService.ts's full pipeline (Firestore
+// Rules can't run that normalization) — see each guard's own comment.
+//
 // `users` and `progress` are a signed-in-only BASELINE (any authenticated
 // user may read/write), added solely so deploying this file doesn't lock
 // every user out of their own data. This baseline is intentionally coarse —
@@ -412,12 +419,39 @@ service cloud.firestore {
       function isNewAuthor() { return isSignedIn() && request.resource.data.authorId == request.auth.uid; }
       function wasAuthor() { return isSignedIn() && resource.data.authorId == request.auth.uid; }
 
+      // Best-effort, server-side (unbypassable by a modified/old client or a
+      // direct Firestore write) block on the small set of most common,
+      // unambiguous English profanity, threat and self-harm-encouragement
+      // terms — real text in the raw. This is NOT a mirror of
+      // services/moderationService.ts's full dictionary: Firestore Rules has
+      // no way to run that pipeline's normalization (leetspeak/homoglyph
+      // folding, letter-spacing/zero-width/emoji stripping) or Unicode-aware
+      // tokenization, so obfuscated variants and non-Latin terms only get
+      // caught by the client check and (once wired) the Worker's POST
+      // /moderate mirror. This layer exists specifically so that bypassing
+      // the client entirely (e.g. hitting the Firestore SDK directly with a
+      // plain, unmodified word) still gets rejected at the database layer,
+      // per "нельзя ограничиваться только client-side словарём". Kept
+      // English-only and SHORT/unambiguous on purpose: the [^a-z] boundary
+      // below only behaves correctly for the ASCII a-z range it's built on
+      // (Cyrillic/Hebrew/Arabic terms would need real Unicode tokenization
+      // this engine doesn't reliably support), and a bare short fragment
+      // (e.g. "ass") would false-positive on ordinary words ("class",
+      // "assignment") since matches() has no tokenizer to fall back on the
+      // way checkText() does.
+      function containsBlockedTerm(text) {
+        return text is string
+          && text.lower().matches('.*(^|[^a-z])(fuck|fucking|fucked|fucker|motherfucker|shit|shitty|shithead|bitch|asshole|bastard|whore|slut|kill yourself|kys|i will kill you)([^a-z]|$).*');
+      }
+
       function isValidNewPost() {
         let data = request.resource.data;
         return data.authorId == request.auth.uid
           && data.username is string && data.username.size() > 0 && data.username.size() <= 40
           && data.title is string && data.title.size() > 0 && data.title.size() <= 200
           && data.body is string && data.body.size() <= 5000
+          && !containsBlockedTerm(data.title)
+          && !containsBlockedTerm(data.body)
           && data.tags is list
           && data.likeCount == 0
           && data.commentCount == 0
@@ -456,7 +490,9 @@ service cloud.firestore {
 
       allow read: if isSignedIn();
       allow create: if isNewAuthor() && isValidNewPost();
-      allow update: if (wasAuthor() && request.resource.data.authorId == resource.data.authorId)
+      allow update: if (wasAuthor() && request.resource.data.authorId == resource.data.authorId
+          && !containsBlockedTerm(request.resource.data.title)
+          && !containsBlockedTerm(request.resource.data.body))
         || isValidLikeToggle()
         || isValidCommentCountStep();
       allow delete: if wasAuthor();
@@ -467,12 +503,21 @@ service cloud.firestore {
       function isNewCommentAuthor() { return isSignedIn() && request.resource.data.authorId == request.auth.uid; }
       function wasCommentAuthor() { return isSignedIn() && resource.data.authorId == request.auth.uid; }
 
+      // Mirrors posts/{postId}'s containsBlockedTerm — see that function's
+      // own comment for scope/limits. Duplicated rather than shared because
+      // Firestore Rules functions are scoped to their own match block.
+      function containsBlockedTerm(text) {
+        return text is string
+          && text.lower().matches('.*(^|[^a-z])(fuck|fucking|fucked|fucker|motherfucker|shit|shitty|shithead|bitch|asshole|bastard|whore|slut|kill yourself|kys|i will kill you)([^a-z]|$).*');
+      }
+
       function isValidNewComment() {
         let data = request.resource.data;
         return data.postId == postId
           && data.authorId == request.auth.uid
           && data.username is string && data.username.size() > 0
           && data.content is string && data.content.size() > 0 && data.content.size() <= 1000
+          && !containsBlockedTerm(data.content)
           && (data.parentCommentId == null || data.parentCommentId is string)
           && data.likeCount == 0
           && data.createdAt is string;
@@ -484,7 +529,13 @@ service cloud.firestore {
           && request.resource.data.postId == resource.data.postId
           && request.resource.data.parentCommentId == resource.data.parentCommentId
           && request.resource.data.createdAt == resource.data.createdAt
-          && request.resource.data.likeCount == resource.data.likeCount;
+          && request.resource.data.likeCount == resource.data.likeCount
+          // Only gated when content is actually changing — a pure
+          // soft-delete (deleteComment only ever sets deletedAt, content is
+          // left untouched) must never be blocked by this check, or a user
+          // could become unable to delete their own already-existing
+          // comment.
+          && (request.resource.data.content == resource.data.content || !containsBlockedTerm(request.resource.data.content));
       }
 
       // Same existsAfter-bound pattern as posts/{postId}'s isValidLikeToggle.
@@ -580,12 +631,21 @@ service cloud.firestore {
     match /channels/{channelId}/messages/{messageId} {
       function isSignedIn() { return request.auth != null; }
 
+      // Mirrors posts/{postId}'s containsBlockedTerm — see that function's
+      // own comment for scope/limits. Duplicated rather than shared because
+      // Firestore Rules functions are scoped to their own match block.
+      function containsBlockedTerm(text) {
+        return text is string
+          && text.lower().matches('.*(^|[^a-z])(fuck|fucking|fucked|fucker|motherfucker|shit|shitty|shithead|bitch|asshole|bastard|whore|slut|kill yourself|kys|i will kill you)([^a-z]|$).*');
+      }
+
       function isValidBaseFields(data) {
         return data.authorId == request.auth.uid
           && data.channelId == channelId
           && data.author is string && data.author.size() > 0
           && data.createdAt is string
-          && data.text is string && data.text.size() <= 2000;
+          && data.text is string && data.text.size() <= 2000
+          && !containsBlockedTerm(data.text);
       }
 
       // type is a new field — absent entirely on messages sent before this

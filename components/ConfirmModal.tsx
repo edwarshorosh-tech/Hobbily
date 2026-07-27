@@ -16,7 +16,7 @@
  *     onCancel={() => setVisible(false)}
  *   />
  */
-import { Modal, View, Text, Pressable, StyleSheet } from "react-native";
+import { Modal, View, Text, Pressable, StyleSheet, ActivityIndicator } from "react-native";
 import { useTheme } from "../context/ThemeContext";
 
 type Props = {
@@ -40,6 +40,14 @@ type Props = {
    * nested inside another sheet/modal).
    */
   asOverlay?: boolean;
+  /**
+   * True while the confirmed mutation is in flight — disables both buttons
+   * (no double-tap, no Cancel mid-mutation), swaps the confirm label for a
+   * spinner, and ignores backdrop/Android-back dismissal. Always resolves on
+   * its own (the caller's try/finally clears it), so this never strands the
+   * dialog open — it's a brief guard, not a hang risk.
+   */
+  loading?: boolean;
 };
 
 export default function ConfirmModal({
@@ -52,16 +60,23 @@ export default function ConfirmModal({
   onConfirm,
   onCancel,
   asOverlay = false,
+  loading = false,
 }: Props) {
   const { colors } = useTheme();
 
+  function handleCancel() {
+    if (loading) return;
+    onCancel();
+  }
+
   const content = (
     // Semi-transparent backdrop — tapping it cancels the action
-    <Pressable style={styles.backdrop} onPress={onCancel}>
+    <Pressable style={styles.backdrop} onPress={handleCancel}>
       {/* The card itself — stopPropagation so tapping inside doesn't dismiss */}
       <Pressable
         style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}
         onPress={(e) => e.stopPropagation?.()}
+        accessibilityRole="alert"
       >
         <Text style={[styles.title, { color: colors.text }]}>{title}</Text>
         <Text style={[styles.message, { color: colors.secondaryText }]}>{message}</Text>
@@ -69,18 +84,20 @@ export default function ConfirmModal({
         <View style={styles.buttons}>
           {/* Cancel — neutral colour */}
           <Pressable
-            style={[styles.btn, { backgroundColor: colors.border }]}
-            onPress={onCancel}
+            style={[styles.btn, { backgroundColor: colors.border }, loading && { opacity: 0.5 }]}
+            onPress={handleCancel}
+            disabled={loading}
           >
             <Text style={[styles.btnText, { color: colors.text }]}>{cancelLabel}</Text>
           </Pressable>
 
           {/* Confirm — red for destructive actions, primary otherwise */}
           <Pressable
-            style={[styles.btn, { backgroundColor: dangerous ? colors.danger : colors.primary }]}
+            style={[styles.btn, { backgroundColor: dangerous ? colors.danger : colors.primary }, loading && { opacity: 0.7 }]}
             onPress={onConfirm}
+            disabled={loading}
           >
-            <Text style={[styles.btnText, { color: "#fff" }]}>{confirmLabel}</Text>
+            {loading ? <ActivityIndicator size="small" color="#fff" /> : <Text style={[styles.btnText, { color: "#fff" }]}>{confirmLabel}</Text>}
           </Pressable>
         </View>
       </Pressable>
@@ -97,7 +114,7 @@ export default function ConfirmModal({
       transparent
       animationType="fade"
       visible={visible}
-      onRequestClose={onCancel}
+      onRequestClose={handleCancel}
       statusBarTranslucent
     >
       {content}

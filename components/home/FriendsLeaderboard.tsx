@@ -5,11 +5,10 @@
  * mirrored currentStreak (from FriendsContext / publicProfiles). Ranking is
  * memoized outside JSX; friend profiles refresh on screen focus.
  */
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "@react-navigation/native";
-import { router } from "expo-router";
 import { ColorTokens } from "../../context/ThemeContext";
 import { useAuth } from "../../context/AuthContext";
 import { useProfile } from "../../context/ProfileContext";
@@ -18,7 +17,7 @@ import { useProgress } from "../../context/ProgressContext";
 import { useFriends } from "../../context/FriendsContext";
 import FriendAvatar from "../friends/FriendAvatar";
 import UserCardSheet from "../user-card/UserCardSheet";
-import { friendsWidgetProfileTarget } from "../../utils/profileNavigation";
+import FriendSearchModal from "../friends/FriendSearchModal";
 import { useUserProfileSheet } from "../../hooks/useUserProfileSheet";
 import { useTourTarget } from "../../context/TourTargetsContext";
 import { useLocalAvatar } from "../../context/LocalAvatarContext";
@@ -115,6 +114,7 @@ export default function FriendsLeaderboard({ colors }: { colors: ColorTokens }) 
   const { selectedUid: cardUid, openUserProfile: setCardUid, closeUserProfile: closeCardUid } = useUserProfileSheet();
   const tourRef = useTourTarget("addFriends");
   const { localAvatarUri } = useLocalAvatar();
+  const [searchModalVisible, setSearchModalVisible] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -184,10 +184,10 @@ export default function FriendsLeaderboard({ colors }: { colors: ColorTokens }) 
             </Text>
             <TouchableOpacity
               ref={tourRef}
-              onPress={() => router.push(friendsWidgetProfileTarget())}
+              onPress={() => setSearchModalVisible(true)}
               style={[styles.emptyAction, { borderColor: colors.primary }]}
               accessibilityRole="button"
-              accessibilityLabel="Go to your Friends list to add a friend"
+              accessibilityLabel="Add a friend"
               hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
             >
               <Ionicons name="add" size={14} color={colors.primary} />
@@ -244,6 +244,12 @@ export default function FriendsLeaderboard({ colors }: { colors: ColorTokens }) 
       </View>
 
       <UserCardSheet uid={cardUid} colors={colors} onClose={closeCardUid} />
+      <FriendSearchModal
+        visible={searchModalVisible}
+        onClose={() => setSearchModalVisible(false)}
+        colors={colors}
+        initialTab="find"
+      />
     </View>
   );
 }
