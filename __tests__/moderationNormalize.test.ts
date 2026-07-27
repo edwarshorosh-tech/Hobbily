@@ -49,4 +49,13 @@ describe("normalizeForModeration", () => {
   it("collapsed preserves genuine Cyrillic text unchanged (script-preserving)", () => {
     expect(normalizeForModeration("привет мир").collapsed).toBe("привет мир");
   });
+
+  it("strips emoji placed between letters to hide a word", () => {
+    expect(normalizeForModeration("f😀u😀c😀k").collapsed).toBe("fuck");
+    expect(normalizeForModeration("f 😀 u 😀 c 😀 k").collapsed).toBe("fuck");
+  });
+
+  it("strips emoji elsewhere in a message without disturbing real words", () => {
+    expect(normalizeForModeration("nice photo 😀👍").collapsed).toBe("nice photo");
+  });
 });

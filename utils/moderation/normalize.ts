@@ -35,6 +35,16 @@ export type NormalizedText = {
 // corruption on copy-paste.
 const ZERO_WIDTH_RE = /[\u200B\u200C\u200D\u2060\uFEFF]/g;
 
+// Emoji used to hide a word between "letters" that still read normally to a
+// human ("f\uD83D\uDE00u\uD83D\uDE00c\uD83D\uDE00k") \u2014 stripped entirely rather than treated as a
+// delimiter, since removing them is exactly what reconstructs the hidden
+// word ("f\uD83D\uDE00u\uD83D\uDE00c\uD83D\uDE00k" -> "fuck"). Not an exhaustive Unicode emoji table (no
+// single contiguous range covers every emoji), but covers every block real
+// device keyboards actually offer: regional indicators, misc
+// symbols-and-pictographs through supplemental symbols, emoticons,
+// dingbats/arrows/misc symbols, and the variation-selector range.
+const EMOJI_RE = /[\u{1F1E6}-\u{1F1FF}\u{1F300}-\u{1FAFF}\u{2190}-\u{21FF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE00}-\u{FE0F}]/gu;
+
 const WORD_SPLIT_RE = /[ .\-_,]+/;
 const SINGLE_CHAR_WORD_RE = /^[\p{L}\p{N}]$/u;
 
@@ -137,7 +147,7 @@ function applyCharMap(input: string, map: Record<string, string>): string {
 
 export function normalizeForModeration(rawInput: string): NormalizedText {
   const nfkc = rawInput.normalize("NFKC");
-  const stripped = nfkc.replace(ZERO_WIDTH_RE, "");
+  const stripped = nfkc.replace(ZERO_WIDTH_RE, "").replace(EMOJI_RE, "");
   // \s in JS already covers every Unicode White_Space character (NBSP,
   // ideographic space, en/em spaces, BOM, ...) — no custom Unicode space
   // class needed.

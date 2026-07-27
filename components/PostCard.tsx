@@ -45,7 +45,8 @@ type Props = {
   /** Resolved live from publicProfiles by the caller (see hooks/useAuthorProfiles.ts) — undefined while still loading, never a stale value cached on the post itself. */
   authorAvatarUrl?: string | null;
   onEdit: () => void;
-  onDelete: () => void;
+  /** May reject (network/permission) — PostCard awaits it and keeps the confirm dialog open with an error on failure, so a rejection is never silently swallowed. */
+  onDelete: () => Promise<void>;
   onOpenUser: (uid: string) => void;
 };
 
@@ -54,8 +55,62 @@ export default function PostCard({ post, colors, authorAvatarUrl, onEdit, onDele
   const { user } = useAuth();
 
   const [deleteVisible, setDeleteVisible] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [menuVisible, setMenuVisible] = useState(false);
   const [expanded, setExpanded] = useState(false);
+
+  // Root cause of "post doesn't actually delete" (fixed previously): the
+  // old onConfirm closed the dialog and fired onDelete() without awaiting it
+  // or catching a rejection — any failure vanished silently and the post
+  // simply stayed because the Firestore delete never actually completed.
+  // This screen never needs a manual cache-removal step on success — every
+  // list that renders a PostCard (feed, My Posts, another user's profile
+  // posts) is a live onSnapshot subscription (PostsContext / useAuthorPosts
+  // / subscribeToPostsByAuthor), so a real deleteDoc success removes the
+  // card on its own the moment Firestore pushes the next snapshot.
+  //
+  // Second root cause (this pass): "Delete Post" used to close the overflow
+  // BottomSheet (setMenuVisible(false)) and, in the very same tick, open a
+  // SEPARATE standalone native <Modal> (this ConfirmModal, not asOverlay) —
+  // stacking a second Modal on top of one still animating closed (~180ms).
+  // Two simultaneous Modals is the documented New-Architecture/Fabric
+  // touch-drop failure mode also found and fixed in Community's message
+  // delete flow (app/(tabs)/community.tsx) — same bug, this component just
+  // hadn't been updated to match. Fixed the same way: the confirmation now
+  // renders as this BottomSheet's own `overlay` (one native Modal, no
+  // stacking, no timing guess — see BottomSheet.tsx's doc comment), so
+  // tapping Delete Post no longer closes the menu at all.
+  async function handleConfirmDelete() {
+    if (deleting) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await onDelete();
+      setDeleteVisible(false);
+      setMenuVisible(false);
+    } catch (e) {
+      setDeleteError(e instanceof Error && e.message ? e.message : "We could not delete this post. Please try again.");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  function handleCancelDelete() {
+    if (deleting) return;
+    setDeleteVisible(false);
+    setDeleteError(null);
+  }
+
+  // Closing the overflow menu by any means (backdrop tap, swipe, Android
+  // back) must also clear a pending delete-confirmation being shown as its
+  // overlay. Ignored mid-mutation, matching "can't close mid-delete" below.
+  function closeMenu() {
+    if (deleting) return;
+    setMenuVisible(false);
+    setDeleteVisible(false);
+    setDeleteError(null);
+  }
 
   const isLiked = likedPostIds.has(post.id);
   const isOwn = !!user && post.authorId === user.uid;
@@ -173,8 +228,29 @@ export default function PostCard({ post, colors, authorAvatarUrl, onEdit, onDele
         </View>
       </Pressable>
 
-      {/* Own-post overflow menu — a sheet, not permanently-visible icons */}
-      <BottomSheet visible={menuVisible} onClose={() => setMenuVisible(false)} colors={colors} maxHeight="40%">
+      {/* Own-post overflow menu — a sheet, not permanently-visible icons.
+          Delete's confirmation renders as this same sheet's `overlay`
+          (see handleConfirmDelete's comment above) instead of a second
+          Modal, so it stays open underneath while confirming. */}
+      <BottomSheet
+        visible={menuVisible}
+        onClose={closeMenu}
+        colors={colors}
+        maxHeight="40%"
+        overlay={
+          <ConfirmModal
+            asOverlay
+            visible={deleteVisible}
+            title="Delete post?"
+            message={deleteError ?? "This post will be removed and will no longer be visible. This action cannot be undone."}
+            confirmLabel="Delete post"
+            dangerous
+            loading={deleting}
+            onConfirm={handleConfirmDelete}
+            onCancel={handleCancelDelete}
+          />
+        }
+      >
         <TouchableOpacity
           style={styles.menuRow}
           onPress={() => { setMenuVisible(false); onEdit(); }}
@@ -186,7 +262,7 @@ export default function PostCard({ post, colors, authorAvatarUrl, onEdit, onDele
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.menuRow}
-          onPress={() => { setMenuVisible(false); setDeleteVisible(true); }}
+          onPress={() => { setDeleteError(null); setDeleteVisible(true); }}
           accessibilityRole="button"
           accessibilityLabel="Delete post"
         >
@@ -194,16 +270,6 @@ export default function PostCard({ post, colors, authorAvatarUrl, onEdit, onDele
           <Text style={[styles.menuRowText, { color: colors.danger }]}>Delete Post</Text>
         </TouchableOpacity>
       </BottomSheet>
-
-      <ConfirmModal
-        visible={deleteVisible}
-        title="Delete Post"
-        message="Are you sure you want to delete this post? This cannot be undone."
-        confirmLabel="Delete"
-        dangerous
-        onConfirm={() => { setDeleteVisible(false); onDelete(); }}
-        onCancel={() => setDeleteVisible(false)}
-      />
     </>
   );
 }
