@@ -688,25 +688,33 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
     setConflict(null);
     setPastError(false);
     setSaveError(null);
-    const result = await onSave({
-      title: title.trim(),
-      type,
-      date,
-      time: timeString,
-      duration,
-      repeatEnabled,
-      recurrenceRule: previewRule,
-    });
-    setSaving(false);
-    if (result.ok) {
-      onDateCommitted(date);
-      onClose();
-    } else if (result.reason === "conflict") {
-      setConflict(result.conflict);
-    } else if (result.reason === "past") {
-      setPastError(true);
-    } else {
-      setSaveError(result.message);
+    // try/finally so an unexpected throw from onSave (network/Firestore
+    // error, not just its normal { ok: false, reason } result) can never
+    // leave `saving` stuck true and the Save button spinning forever.
+    try {
+      const result = await onSave({
+        title: title.trim(),
+        type,
+        date,
+        time: timeString,
+        duration,
+        repeatEnabled,
+        recurrenceRule: previewRule,
+      });
+      if (result.ok) {
+        onDateCommitted(date);
+        onClose();
+      } else if (result.reason === "conflict") {
+        setConflict(result.conflict);
+      } else if (result.reason === "past") {
+        setPastError(true);
+      } else {
+        setSaveError(result.message);
+      }
+    } catch {
+      setSaveError("Couldn't save this activity. Please try again.");
+    } finally {
+      setSaving(false);
     }
   }
 

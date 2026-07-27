@@ -20,6 +20,8 @@ import {
   Keyboard,
   Image,
   Modal,
+  AccessibilityInfo,
+  AccessibilityActionEvent,
 } from "react-native";
 import { useState, useRef, useEffect, useMemo } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -36,6 +38,8 @@ import TipBanner, { TIP_KEYS } from "../../components/TipBanner";
 import UserCardSheet from "../../components/user-card/UserCardSheet";
 import FriendAvatar from "../../components/friends/FriendAvatar";
 import BottomSheet from "../../components/BottomSheet";
+import ConfirmModal from "../../components/ConfirmModal";
+import ContentModerationWarning from "../../components/ContentModerationWarning";
 import { useAuthorProfiles } from "../../hooks/useAuthorProfiles";
 import { Channel, CommunityMessage, CommunityMembership, CommunityMessageType } from "../../types/CommunityMessage";
 import { uploadChannelImage, AvatarServiceError, avatarErrorMessage } from "../../services/storageService";
@@ -43,7 +47,7 @@ import { STICKER_PACK, QUICK_EMOJI, stickerById } from "../../utils/stickers";
 import { subscribeToChannelMembers, subscribeToChannelMessages } from "../../services/communityService";
 import { useUserProfileSheet } from "../../hooks/useUserProfileSheet";
 import InlinePageDisclaimer from "../../components/disclaimers/InlinePageDisclaimer";
-import { ModerationBlockedError, moderationErrorMessage } from "../../services/moderationService";
+import { checkText, ModerationBlockedError, moderationErrorMessage } from "../../services/moderationService";
 
 // Stable reference for "no messages yet" so useMemo below it doesn't see a
 // new array on every render when messages[channel.id] is undefined.
@@ -149,6 +153,22 @@ function MessageBubble({ msg, isMine, colors, onDelete, onAuthorPress, avatarUrl
   const isSticker = msg.type === "sticker" && !!sticker;
   const isImage = msg.type === "image" && !!msg.imageUrl;
 
+  // A physical long-press isn't a reliable way for a screen-reader user to
+  // reach message actions (Reply/Copy/Delete) — VoiceOver/TalkBack instead
+  // surface RN's built-in "longpress" accessibility action, which the user
+  // can trigger from the standard actions rotor/menu without ever having to
+  // hold a finger down. Applied to every element below that already has
+  // onLongPress wired to the same handler.
+  const longPressA11yProps = onLongPress
+    ? {
+        accessibilityActions: [{ name: "longpress", label: "Open message actions" }],
+        onAccessibilityAction: (e: AccessibilityActionEvent) => {
+          if (e.nativeEvent.actionName === "longpress") onLongPress();
+        },
+        accessibilityHint: "Long press, or use the actions menu, to open message actions",
+      }
+    : {};
+
   const bubbleContent = (
     <>
       {isSticker ? (
@@ -157,7 +177,14 @@ function MessageBubble({ msg, isMine, colors, onDelete, onAuthorPress, avatarUrl
         </View>
       ) : isImage ? (
         <>
-          <TouchableOpacity onPress={() => setImagePreviewVisible(true)} onLongPress={onLongPress} delayLongPress={400} accessibilityRole="button" accessibilityLabel="View full-size photo">
+          <TouchableOpacity
+            onPress={() => setImagePreviewVisible(true)}
+            onLongPress={onLongPress}
+            delayLongPress={400}
+            accessibilityRole="button"
+            accessibilityLabel="View full-size photo"
+            {...longPressA11yProps}
+          >
             <Image source={{ uri: msg.imageUrl }} style={styles.imageBubble} resizeMode="cover" />
           </TouchableOpacity>
           {msg.text ? (
@@ -169,6 +196,7 @@ function MessageBubble({ msg, isMine, colors, onDelete, onAuthorPress, avatarUrl
                 { marginTop: 4 },
                 isMine ? { backgroundColor: colors.primary } : { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 },
               ]}
+              {...longPressA11yProps}
             >
               <Text style={[styles.bubbleText, { color: isMine ? "#fff" : colors.text }]}>{msg.text}</Text>
             </Pressable>
@@ -190,6 +218,7 @@ function MessageBubble({ msg, isMine, colors, onDelete, onAuthorPress, avatarUrl
               : { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 },
             pressed && { opacity: 0.85 },
           ]}
+          {...longPressA11yProps}
         >
           <Text style={[styles.bubbleText, { color: isMine ? "#fff" : colors.text }]}>
             {msg.text}
@@ -312,6 +341,122 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
   const [copyFeedback, setCopyFeedback] = useState(false);
   const flatRef = useRef<FlatList>(null);
 
+  // ── Live moderation state for the composer ──────────────────────────────
+  // "checking" briefly while the debounce timer is pending, then settles to
+  // "allowed"/"blocked" — kept separate from isSending/uploadingImage (a
+  // single shared isLoading flag would make "still typing" and "sending"
+  // indistinguishable, which is exactly the kind of state confusion that
+  // caused earlier freezes elsewhere in this screen).
+  const [moderationStatus, setModerationStatus] = useState<"idle" | "checking" | "allowed" | "blocked">("idle");
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+  const wasBlockedRef = useRef(false);
+  const moderationBlocked = moderationStatus === "blocked";
+
+  useEffect(() => {
+    const text = draft.trim();
+    if (!text) {
+      setModerationStatus("idle");
+      return;
+    }
+    setModerationStatus("checking");
+    const timer = setTimeout(() => {
+      setModerationStatus(checkText(text).allowed ? "allowed" : "blocked");
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [draft]);
+
+  // A *new* violation (transition into "blocked") re-arms the dismissible
+  // banner — dismissing it while still editing the same bad text doesn't
+  // make it pop back on every keystroke, but a fresh violation after fixing
+  // (or after a totally different message) shows it again.
+  useEffect(() => {
+    if (moderationBlocked && !wasBlockedRef.current) {
+      setBannerDismissed(false);
+      AccessibilityInfo.announceForAccessibility?.("Message cannot be sent. Edit the text and try again.");
+    }
+    wasBlockedRef.current = moderationBlocked;
+  }, [moderationBlocked]);
+
+  // Single source of truth for "which message is pending delete
+  // confirmation" — shared by both entry points (the long-press action
+  // menu's Delete row, and the standalone trash icon on own-message
+  // bubbles). Which one is currently open decides how the confirmation is
+  // *presented* (see the two ConfirmModal render sites below), not which
+  // function runs the mutation — there is exactly one delete flow.
+  const [deleteMessageTarget, setDeleteMessageTarget] = useState<CommunityMessage | null>(null);
+  const [deletingMessage, setDeletingMessage] = useState(false);
+  const [deleteMessageError, setDeleteMessageError] = useState<string | null>(null);
+
+  // Root cause of "Delete works from the trash icon but not from the
+  // long-press menu": the previous version closed the action-menu
+  // BottomSheet (setActionMessage(null)) and, after a fixed 200ms guess,
+  // opened a SECOND, standalone native <Modal> for the confirmation. Two
+  // simultaneous Modals is the same documented New-Architecture/Fabric
+  // touch-drop failure mode noted throughout this file (see
+  // openMemberProfile above) — and worse, the 200ms guess isn't even
+  // reliably longer than the sheet's own close animation on a slower
+  // device, so the window where both Modals coexist was real, not
+  // hypothetical. Fixed by using BottomSheet's own `overlay` prop instead
+  // (see its doc comment in components/BottomSheet.tsx) — the exact
+  // mechanism app/(tabs)/time-manager.tsx already uses for its "discard
+  // changes?" confirmation over the still-open Add/Edit Activity sheet.
+  // `overlay` renders inside the SAME native Modal as the sheet, so there is
+  // only ever one Modal window, no timing guess, and no stacking risk.
+  // Tapping Delete in the menu therefore no longer closes the menu sheet at
+  // all — it just asks for deleteMessageTarget while the sheet stays open,
+  // and the confirmation covers its content in place.
+  function handleDeleteFromMenu() {
+    if (!actionMessage) return;
+    setDeleteMessageError(null);
+    setDeleteMessageTarget(actionMessage);
+  }
+
+  // The trash icon lives directly on a message bubble in the list, never
+  // inside another open sheet/modal — a standalone ConfirmModal here has no
+  // stacking risk, so it doesn't need the overlay treatment.
+  function requestDeleteMessage(msg: CommunityMessage) {
+    setDeleteMessageError(null);
+    setDeleteMessageTarget(msg);
+  }
+
+  async function handleConfirmDeleteMessage() {
+    if (!deleteMessageTarget || deletingMessage) return;
+    setDeletingMessage(true);
+    setDeleteMessageError(null);
+    try {
+      await deleteMessage(channel.id, deleteMessageTarget.id);
+      setDeleteMessageTarget(null);
+      setActionMessage(null);
+    } catch {
+      setDeleteMessageError("We could not delete this message. Please try again.");
+    } finally {
+      setDeletingMessage(false);
+    }
+  }
+
+  // Only clears the pending delete — if this was opened from the action
+  // menu, the menu sheet (actionMessage) is left exactly as it was, so
+  // Cancel returns the user to the Reply/Copy/Delete list rather than
+  // closing everything.
+  function handleCancelDeleteMessage() {
+    if (deletingMessage) return;
+    setDeleteMessageTarget(null);
+    setDeleteMessageError(null);
+  }
+
+  // Closing the action-menu sheet by any means (backdrop tap, swipe,
+  // Android back) must also clear any pending delete-confirmation that was
+  // being shown as its overlay — otherwise deleteMessageTarget could survive
+  // with actionMessage now null, which would incorrectly pop the standalone
+  // (trash-icon-path) ConfirmModal open on its own. Ignored while a delete
+  // is actually in flight, matching "can't close mid-mutation" below.
+  function closeActionMenu() {
+    if (deletingMessage) return;
+    setActionMessage(null);
+    setDeleteMessageTarget(null);
+    setDeleteMessageError(null);
+  }
+
   // Real member roster — only subscribed while the sheet is actually open,
   // so a chat screen sitting in the background isn't holding an extra
   // Firestore listener it doesn't need.
@@ -430,13 +575,6 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
     }
   }
 
-  function handleDeleteFromMenu() {
-    const target = actionMessage;
-    setActionMessage(null);
-    if (!target) return;
-    deleteMessage(channel.id, target.id).catch(() => setSendError("Couldn't delete that message. Please try again."));
-  }
-
   async function ensureJoined(): Promise<boolean> {
     if (isJoined) return true;
     const result = await joinChannel(channel.id);
@@ -511,6 +649,15 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
   async function handleSend() {
     const text = draft.trim();
     if (!text && !pendingImage) return;
+    // Final, synchronous, local re-check — closes the race where the
+    // ~200ms debounce hasn't resolved yet (moderationStatus still
+    // "checking") and the Send button briefly wasn't disabled. No optimistic
+    // message and no network request happen until this passes.
+    if (text && !checkText(text).allowed) {
+      setModerationStatus("blocked");
+      setBannerDismissed(false);
+      return;
+    }
     setSendError(null);
     if (!(await ensureJoined())) return;
     const replyTo = buildReplyTo();
@@ -565,7 +712,7 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
     return () => sub.remove();
   }, []);
 
-  const canSend = (draft.trim().length > 0 || !!pendingImage) && !uploadingImage && !sendingText;
+  const canSend = (draft.trim().length > 0 || !!pendingImage) && !uploadingImage && !sendingText && !moderationBlocked;
 
   return (
     <KeyboardAvoidingView
@@ -665,7 +812,7 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
                 // first place rather than offering a control that would fail.
                 !item.msg.authorId || item.msg.authorId !== user?.uid
                   ? undefined
-                  : () => deleteMessage(channel.id, item.msg.id).catch(() => setSendError("Couldn't delete that message. Please try again."))
+                  : () => requestDeleteMessage(item.msg)
               }
               onAuthorPress={item.msg.authorId ? () => setCardUid(item.msg.authorId!) : undefined}
               avatarUrl={item.msg.authorId ? authorProfiles.get(item.msg.authorId)?.avatarUrl : null}
@@ -728,54 +875,75 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
           entirely for a non-member rather than leaving a freely-typable
           input that only fails (or silently auto-joins) on send. */}
       {isJoined ? (
-        // Composer — one coherent rounded pill (attachment + emoji/sticker +
-        // input + send) instead of a wide flat bar with a disconnected
-        // circular send button floating outside it.
-        <View style={[styles.composerBar, { borderTopColor: colors.border, backgroundColor: colors.background }]}>
-          <View style={[styles.composerPill, { backgroundColor: colors.inputBackground, borderColor: colors.border }]}>
-            <TouchableOpacity
-              onPress={handlePickImage}
-              style={styles.composerIconBtn}
-              accessibilityRole="button"
-              accessibilityLabel="Attach a photo"
+        <>
+          {/* Dismissible — dismissing hides only this banner. The inline
+              error just below the composer and the disabled Send button
+              stay in effect until the text itself is fixed. */}
+          <ContentModerationWarning
+            visible={moderationBlocked && !bannerDismissed}
+            message="Your message contains language that is not allowed in this community."
+            onDismiss={() => setBannerDismissed(true)}
+          />
+          {moderationBlocked && (
+            <Text style={[styles.moderationInlineError, { color: colors.danger }]}>
+              Some words are not allowed. Please edit your message before sending.
+            </Text>
+          )}
+          {/* Composer — one coherent rounded pill (attachment + emoji/sticker +
+              input + send) instead of a wide flat bar with a disconnected
+              circular send button floating outside it. */}
+          <View style={[styles.composerBar, { borderTopColor: colors.border, backgroundColor: colors.background }]}>
+            <View
+              style={[
+                styles.composerPill,
+                { backgroundColor: colors.inputBackground, borderColor: colors.border },
+                moderationBlocked && { borderColor: colors.danger },
+              ]}
             >
-              <Ionicons name="add-circle-outline" size={24} color={colors.secondaryText} />
-            </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handlePickImage}
+                style={styles.composerIconBtn}
+                accessibilityRole="button"
+                accessibilityLabel="Attach a photo"
+              >
+                <Ionicons name="add-circle-outline" size={24} color={colors.secondaryText} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => setTrayVisible(true)}
+                style={styles.composerIconBtn}
+                accessibilityRole="button"
+                accessibilityLabel="Emoji and stickers"
+              >
+                <Ionicons name="happy-outline" size={22} color={colors.secondaryText} />
+              </TouchableOpacity>
+              <TextInput
+                style={[styles.chatInput, { color: colors.text }]}
+                placeholder="Message..."
+                placeholderTextColor={colors.secondaryText}
+                value={draft}
+                onChangeText={setDraft}
+                onSelectionChange={(e) => setSelection(e.nativeEvent.selection)}
+                onSubmitEditing={handleSend}
+                returnKeyType="send"
+                multiline
+                maxLength={MAX_MESSAGE_LENGTH}
+              />
+            </View>
             <TouchableOpacity
-              onPress={() => setTrayVisible(true)}
-              style={styles.composerIconBtn}
+              onPress={handleSend}
+              style={[styles.sendBtn, { backgroundColor: colors.primary }, !canSend && { opacity: 0.4 }]}
+              disabled={!canSend}
               accessibilityRole="button"
-              accessibilityLabel="Emoji and stickers"
+              accessibilityLabel="Send"
             >
-              <Ionicons name="happy-outline" size={22} color={colors.secondaryText} />
+              {uploadingImage || sendingText ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Ionicons name="send" size={18} color="#fff" />
+              )}
             </TouchableOpacity>
-            <TextInput
-              style={[styles.chatInput, { color: colors.text }]}
-              placeholder="Message..."
-              placeholderTextColor={colors.secondaryText}
-              value={draft}
-              onChangeText={setDraft}
-              onSelectionChange={(e) => setSelection(e.nativeEvent.selection)}
-              onSubmitEditing={handleSend}
-              returnKeyType="send"
-              multiline
-              maxLength={MAX_MESSAGE_LENGTH}
-            />
           </View>
-          <TouchableOpacity
-            onPress={handleSend}
-            style={[styles.sendBtn, { backgroundColor: colors.primary }, !canSend && { opacity: 0.4 }]}
-            disabled={!canSend}
-            accessibilityRole="button"
-            accessibilityLabel="Send"
-          >
-            {uploadingImage || sendingText ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <Ionicons name="send" size={18} color="#fff" />
-            )}
-          </TouchableOpacity>
-        </View>
+        </>
       ) : (
         <View style={[styles.joinPromptBar, { borderTopColor: colors.border, backgroundColor: colors.background }]}>
           <Text style={[styles.joinPromptText, { color: colors.secondaryText }]}>
@@ -889,10 +1057,34 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
       </BottomSheet>
 
       {/* Long-press message actions — every action shown here actually
-          works (rule: no decorative actions). Reporting was left out
-          entirely rather than added as a non-functional button, since no
-          report/moderation system exists anywhere in this app yet. */}
-      <BottomSheet visible={!!actionMessage} onClose={() => setActionMessage(null)} colors={colors} maxHeight="40%">
+          works (rule: no decorative actions). Only Reply/Copy/Delete exist —
+          Forward, Report, reactions and Edit were never built (no
+          report/moderation-review system exists anywhere in this app yet),
+          not something this pass invents. The Delete confirmation renders
+          as this same sheet's `overlay` (see BottomSheet.tsx's own doc
+          comment) rather than a second Modal, so tapping Delete never closes
+          this sheet — it stays open underneath, and the confirmation covers
+          its content in place. */}
+      <BottomSheet
+        visible={!!actionMessage}
+        onClose={closeActionMenu}
+        colors={colors}
+        maxHeight="40%"
+        overlay={
+          <ConfirmModal
+            asOverlay
+            visible={!!deleteMessageTarget && !!actionMessage}
+            title="Delete message?"
+            message={deleteMessageError ?? "This message will be removed from the conversation. This action cannot be undone."}
+            confirmLabel="Delete"
+            cancelLabel="Cancel"
+            dangerous
+            loading={deletingMessage}
+            onConfirm={handleConfirmDeleteMessage}
+            onCancel={handleCancelDeleteMessage}
+          />
+        }
+      >
         {actionMessage && (
           <View style={{ gap: 4 }}>
             <TouchableOpacity onPress={startReply} style={styles.actionMenuRow} accessibilityRole="button" accessibilityLabel="Reply">
@@ -914,6 +1106,23 @@ function ChannelView({ channel, colors, onBack }: ChannelViewProps) {
           </View>
         )}
       </BottomSheet>
+
+      {/* Standalone-icon path only (the trash icon directly on an own
+          message bubble, see MessageBubble below) — nothing else is open
+          when this is triggered, so a standalone Modal has no stacking
+          risk. Excluded whenever actionMessage is open, since that case is
+          handled by the overlay above instead. */}
+      <ConfirmModal
+        visible={!!deleteMessageTarget && !actionMessage}
+        title="Delete message?"
+        message={deleteMessageError ?? "This message will be removed from the conversation. This action cannot be undone."}
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        dangerous
+        loading={deletingMessage}
+        onConfirm={handleConfirmDeleteMessage}
+        onCancel={handleCancelDeleteMessage}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -1207,6 +1416,7 @@ const styles = StyleSheet.create({
   chatHeaderSub: { fontSize: 12 },
   chatErrorBanner: { flexDirection: "row", alignItems: "center", gap: 6, borderWidth: 1, borderRadius: 10, padding: 10 },
   chatErrorText: { fontSize: 12, flex: 1 },
+  moderationInlineError: { fontSize: 12, marginHorizontal: 16, marginBottom: 4 },
   joinSmallBtn: {
     paddingHorizontal: 12,
     paddingVertical: 6,

@@ -16,10 +16,58 @@ describe("checkText", () => {
     if (!r.allowed) expect(r.category).toBe("profanity");
   });
 
+  it("blocks the most common English curse words — missing from the v1 dictionary, the actual root cause of 'English profanity isn't blocked'", () => {
+    expect(checkText("fuck this").allowed).toBe(false);
+    expect(checkText("what the fuck").allowed).toBe(false);
+    expect(checkText("this is shit").allowed).toBe(false);
+    expect(checkText("you're such a fucking idiot").allowed).toBe(false);
+  });
+
+  it("blocks emoji-obfuscated profanity", () => {
+    expect(checkText("f😀u😀c😀k you").allowed).toBe(false);
+  });
+
   it("blocks plain Russian profanity", () => {
     const r = checkText("ты сука конченая");
     expect(r.allowed).toBe(false);
     if (!r.allowed) expect(r.category).toBe("profanity");
+  });
+
+  it("blocks v3 Russian profanity additions", () => {
+    expect(checkText("ну ты и придурок").allowed).toBe(false);
+    expect(checkText("иди повесься").allowed).toBe(false);
+  });
+
+  it("blocks Hebrew profanity", () => {
+    const r = checkText("אתה חרא אמיתי");
+    expect(r.allowed).toBe(false);
+    if (!r.allowed) expect(r.category).toBe("profanity");
+  });
+
+  it("blocks a Hebrew threat phrase", () => {
+    const r = checkText("אני אהרוג אותך מחר");
+    expect(r.allowed).toBe(false);
+    if (!r.allowed) expect(r.category).toBe("threat");
+  });
+
+  it("does not false-positive on ordinary Hebrew text", () => {
+    expect(checkText("אני אוהב לצייר ולטייל").allowed).toBe(true);
+  });
+
+  it("blocks Arabic profanity", () => {
+    const r = checkText("انت غبي جدا");
+    expect(r.allowed).toBe(false);
+    if (!r.allowed) expect(r.category).toBe("profanity");
+  });
+
+  it("blocks an Arabic self-harm-encouragement phrase", () => {
+    const r = checkText("انتحر الان");
+    expect(r.allowed).toBe(false);
+    if (!r.allowed) expect(r.category).toBe("self_harm_encouragement");
+  });
+
+  it("does not false-positive on ordinary Arabic text", () => {
+    expect(checkText("أنا أحب الرسم والسفر").allowed).toBe(true);
   });
 
   it("blocks leetspeak-obfuscated profanity", () => {
