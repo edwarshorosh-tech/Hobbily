@@ -1,7 +1,11 @@
 /**
  * TimeContext
  * Provides time management state: tasks, hobby sessions, and daily reminder toggle.
- * All data is persisted to AsyncStorage.
+ * All data is persisted to AsyncStorage, scoped to the signed-in account (see
+ * utils/taskStorageKeys.ts) — every read/write and the effect that (re)loads
+ * on mount depend on the authenticated uid, so signing out or switching to a
+ * different account on the same device can never show or silently overwrite
+ * another account's tasks.
  */
 import { createContext, useCallback, useContext, useState, useEffect, useMemo, useRef } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -10,6 +14,17 @@ import { localDateISO, isValidDateISO, parseLocalISO } from "../utils/dateUtils"
 import { isDateTimeInPast, parseTimeString, timeStringToMinutes } from "../utils/time";
 import { isValidDurationMinutes } from "../utils/duration";
 import { RecurrenceRule } from "../types/Recurrence";
+import { useAuth } from "./AuthContext";
+import {
+  tasksStorageKey,
+  dailyReminderStorageKey,
+  reminderShownStorageKey,
+  notifiedTasksStorageKey,
+  LEGACY_TASKS_KEY,
+  LEGACY_REMINDER_KEY,
+  LEGACY_REMINDER_SHOWN_KEY,
+  LEGACY_NOTIFIED_KEY,
+} from "../utils/taskStorageKeys";
 import {
   applyOccurrenceDelete,
   applyOccurrenceEdit,
@@ -20,10 +35,22 @@ import {
   OccurrenceFieldEdits,
 } from "../services/recurrenceService";
 
-const TASKS_KEY = "@hobbily_tasks";
-const REMINDER_KEY = "@hobbily_daily_reminder";
-const REMINDER_SHOWN_KEY = "@hobbily_reminder_shown_date";
-const NOTIFIED_KEY = "@hobbily_notified_tasks";
+/**
+ * One-time claim of a pre-fix, device-wide key into this account's own
+ * scoped key — so the first account to load after this update ships doesn't
+ * see its existing tasks/reminder state vanish. Removes the legacy key once
+ * claimed, so a second, different account signing in on the same device
+ * afterward correctly starts from empty rather than also inheriting it.
+ */
+async function migrateLegacyKey(legacyKey: string, scopedKey: string): Promise<string | null> {
+  const scoped = await AsyncStorage.getItem(scopedKey);
+  if (scoped !== null) return scoped;
+  const legacy = await AsyncStorage.getItem(legacyKey);
+  if (legacy === null) return null;
+  await AsyncStorage.setItem(scopedKey, legacy);
+  await AsyncStorage.removeItem(legacyKey);
+  return legacy;
+}
 
 /** How long after its scheduled time a task is still eligible to trigger the due popup. */
 const DUE_WINDOW_MS = 2 * 60 * 1000;
@@ -98,6 +125,7 @@ type TimeContextType = {
 const TimeContext = createContext<TimeContextType | undefined>(undefined);
 
 export function TimeProvider({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [dailyReminderEnabled, setDailyReminderEnabledState] = useState(true);
   const [showDailyBanner, setShowDailyBanner] = useState(false);
@@ -105,15 +133,38 @@ export function TimeProvider({ children }: { children: React.ReactNode }) {
   const [dueOccurrence, setDueOccurrence] = useState<Occurrence | null>(null);
   const notifiedIdsRef = useRef<Set<string>>(new Set());
 
+  // Reloads (and, first, resets) whenever the signed-in account changes —
+  // covers sign-out, sign-in as a different account, and account switching
+  // on the same device in one place, rather than requiring AuthContext to
+  // reach into this context imperatively (same reactive-on-user pattern
+  // ProfileContext already uses). The reset happens synchronously, before
+  // the async load below even starts, so there is never a frame where the
+  // *previous* account's tasks/reminder state is still visible while the
+  // next account's own data is still being fetched.
   useEffect(() => {
+    let cancelled = false;
+
+    setTasks([]);
+    setDueOccurrence(null);
+    notifiedIdsRef.current = new Set();
+    setShowDailyBanner(false);
+    setDailyReminderEnabledState(true);
+
+    if (!user) {
+      setIsLoading(false);
+      return;
+    }
+
+    setIsLoading(true);
     (async () => {
       try {
         const [rawTasks, rawReminder, rawShownDate, rawNotified] = await Promise.all([
-          AsyncStorage.getItem(TASKS_KEY),
-          AsyncStorage.getItem(REMINDER_KEY),
-          AsyncStorage.getItem(REMINDER_SHOWN_KEY),
-          AsyncStorage.getItem(NOTIFIED_KEY),
+          migrateLegacyKey(LEGACY_TASKS_KEY, tasksStorageKey(user.uid)),
+          migrateLegacyKey(LEGACY_REMINDER_KEY, dailyReminderStorageKey(user.uid)),
+          migrateLegacyKey(LEGACY_REMINDER_SHOWN_KEY, reminderShownStorageKey(user.uid)),
+          migrateLegacyKey(LEGACY_NOTIFIED_KEY, notifiedTasksStorageKey(user.uid)),
         ]);
+        if (cancelled) return;
         if (rawTasks) setTasks(JSON.parse(rawTasks));
         const enabled = rawReminder !== "false";
         setDailyReminderEnabledState(enabled);
@@ -125,10 +176,14 @@ export function TimeProvider({ children }: { children: React.ReactNode }) {
           setShowDailyBanner(true);
         }
       } finally {
-        setIsLoading(false);
+        if (!cancelled) setIsLoading(false);
       }
     })();
-  }, []);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
   // Poll for the occurrence (one-off task or a recurring series' occurrence
   // on today's date) whose scheduled time has just arrived, and pop up the
@@ -167,7 +222,7 @@ export function TimeProvider({ children }: { children: React.ReactNode }) {
               return validTaskIds.has(prefix) || validSeriesIds.has(prefix);
             });
             notifiedIdsRef.current = new Set(pruned);
-            AsyncStorage.setItem(NOTIFIED_KEY, JSON.stringify(pruned));
+            if (user) AsyncStorage.setItem(notifiedTasksStorageKey(user.uid), JSON.stringify(pruned));
             return occ;
           }
         }
@@ -177,16 +232,24 @@ export function TimeProvider({ children }: { children: React.ReactNode }) {
     checkDue();
     const interval = setInterval(checkDue, DUE_CHECK_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [tasks]);
+  }, [tasks, user]);
 
   const dismissDueTask = useCallback(() => {
     setDueOccurrence(null);
   }, []);
 
-  const persistTasks = useCallback(async (updated: Task[]) => {
-    setTasks(updated);
-    await AsyncStorage.setItem(TASKS_KEY, JSON.stringify(updated));
-  }, []);
+  const persistTasks = useCallback(
+    async (updated: Task[]) => {
+      setTasks(updated);
+      // Defensive only — every screen that can call this requires an
+      // authenticated session to even be reachable, so `user` should never
+      // actually be null here. Guarded anyway rather than writing to a
+      // keyless location if that assumption is ever wrong.
+      if (!user) return;
+      await AsyncStorage.setItem(tasksStorageKey(user.uid), JSON.stringify(updated));
+    },
+    [user]
+  );
 
   const addTask = useCallback(
     async (task: Omit<Task, "id" | "createdAt">): Promise<TaskSaveResult> => {
@@ -314,16 +377,19 @@ export function TimeProvider({ children }: { children: React.ReactNode }) {
     [tasks, persistTasks]
   );
 
-  const setDailyReminderEnabled = useCallback(async (enabled: boolean) => {
-    setDailyReminderEnabledState(enabled);
-    await AsyncStorage.setItem(REMINDER_KEY, enabled ? "true" : "false");
-    if (!enabled) setShowDailyBanner(false);
-  }, []);
+  const setDailyReminderEnabled = useCallback(
+    async (enabled: boolean) => {
+      setDailyReminderEnabledState(enabled);
+      if (user) await AsyncStorage.setItem(dailyReminderStorageKey(user.uid), enabled ? "true" : "false");
+      if (!enabled) setShowDailyBanner(false);
+    },
+    [user]
+  );
 
   const dismissDailyBanner = useCallback(() => {
     setShowDailyBanner(false);
-    AsyncStorage.setItem(REMINDER_SHOWN_KEY, localDateISO());
-  }, []);
+    if (user) AsyncStorage.setItem(reminderShownStorageKey(user.uid), localDateISO());
+  }, [user]);
 
   const resetDailyBanner = useCallback(() => {
     if (dailyReminderEnabled) setShowDailyBanner(true);

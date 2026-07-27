@@ -15,6 +15,12 @@ import {
 } from "firebase/firestore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { auth, db } from "../lib/firebase";
+import {
+  tasksStorageKey,
+  dailyReminderStorageKey,
+  reminderShownStorageKey,
+  notifiedTasksStorageKey,
+} from "../utils/taskStorageKeys";
 
 /** All community channel IDs — mirrors DEFAULT_CHANNELS in CommunityContext */
 const COMMUNITY_CHANNEL_IDS = [
@@ -93,11 +99,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       );
     }
 
-    // Step 5: Clear all local AsyncStorage data for this device
+    // Step 5: Purge this account's own locally-persisted data from this
+    // device (tasks/reminder keys are scoped per uid — see
+    // utils/taskStorageKeys.ts — so this can never touch another account's
+    // data on a shared device) before the account itself stops existing.
     await AsyncStorage.multiRemove([
-      "@hobbily_tasks",
-      "@hobbily_daily_reminder",
-      "@hobbily_reminder_shown_date",
+      tasksStorageKey(user.uid),
+      dailyReminderStorageKey(user.uid),
+      reminderShownStorageKey(user.uid),
+      notifiedTasksStorageKey(user.uid),
       "@hobbily_joined_channels",
       "@hobbily_tip_feed_first_post",
       "@hobbily_tip_community_channels",

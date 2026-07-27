@@ -29,17 +29,21 @@ import { AccessibilityInfo, Platform } from "react-native";
 import { Gesture } from "react-native-gesture-handler";
 import { Easing, runOnJS, useSharedValue, withSpring, withTiming } from "react-native-reanimated";
 
-const OPEN_DURATION = 220;
+const OPEN_DURATION = 260;
 const CLOSE_DURATION = 180;
+/** How far below its resting position the sheet starts from (and animates back down to before unmounting) — big enough to read as an actual slide-up, not just a fade with a barely-perceptible nudge. */
+const CLOSED_TRANSLATE_Y = 48;
 const CLOSE_DRAG_THRESHOLD = 80;
 /** px/s — Gesture Handler reports velocity in pixels per second (unlike PanResponder's px/ms-ish vy), so this is the real-world equivalent of the old 1.2 threshold. */
 const CLOSE_VELOCITY_THRESHOLD = 1200;
+/** Natural, non-bouncy deceleration for the sheet sliding into place on open — reads as noticeably more fluid than a fixed-duration easing curve. Only the open path uses this; close stays a quick, deterministic withTiming so dismissal never feels like it lingers. */
+const OPEN_SPRING = { damping: 20, stiffness: 200, mass: 0.6 };
 
 export function useSwipeToCloseSheet(visible: boolean, onClose: () => void) {
   const [mounted, setMounted] = useState(visible);
   const [reduceMotion, setReduceMotion] = useState(false);
   const backdropOpacity = useSharedValue(0);
-  const sheetTranslate = useSharedValue(28);
+  const sheetTranslate = useSharedValue(CLOSED_TRANSLATE_Y);
   const dragY = useSharedValue(0);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -64,15 +68,25 @@ export function useSwipeToCloseSheet(visible: boolean, onClose: () => void) {
   }, []);
 
   useEffect(() => {
-    const duration = reduceMotion ? 0 : visible ? OPEN_DURATION : CLOSE_DURATION;
     if (visible) {
       setMounted(true);
       dragY.value = 0;
-      backdropOpacity.value = withTiming(1, { duration, easing: Easing.out(Easing.cubic) });
-      sheetTranslate.value = withTiming(0, { duration, easing: Easing.out(Easing.cubic) });
+      if (reduceMotion) {
+        backdropOpacity.value = 1;
+        sheetTranslate.value = 0;
+      } else {
+        backdropOpacity.value = withTiming(1, { duration: OPEN_DURATION, easing: Easing.out(Easing.cubic) });
+        // Spring rather than withTiming — a fixed-duration ease-out always
+        // arrives at exactly the same instant regardless of how it got
+        // there, which is what read as mechanical/abrupt; a spring's
+        // natural, slightly-varying deceleration is what actually makes
+        // this feel smooth rather than just "fast".
+        sheetTranslate.value = withSpring(0, OPEN_SPRING);
+      }
     } else {
+      const duration = reduceMotion ? 0 : CLOSE_DURATION;
       backdropOpacity.value = withTiming(0, { duration, easing: Easing.in(Easing.cubic) });
-      sheetTranslate.value = withTiming(28, { duration, easing: Easing.in(Easing.cubic) }, (finished) => {
+      sheetTranslate.value = withTiming(CLOSED_TRANSLATE_Y, { duration, easing: Easing.in(Easing.cubic) }, (finished) => {
         if (finished) runOnJS(setMounted)(false);
       });
     }
