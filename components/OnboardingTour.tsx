@@ -18,27 +18,45 @@
  * screen carry a `scrollRootId` naming that screen's registered scroll
  * container (see context/TourTargetsContext.ts's useTourScrollRoot), and
  * ensureVisible() scrolls it into a safe margin and re-measures before the
- * spotlight is ever animated toward it. If a target still can't be measured
- * (measureTarget keeps failing) or there's genuinely no room to anchor the
- * bubble next to it even after scrolling, the tour never leaves Next/Skip
- * unreachable: it falls back to the same guaranteed-on-screen centered
- * bubble layout either way (see showCentered/canAnchorBubble below).
+ * spotlight is ever animated toward it. The scroll itself is instant/
+ * non-animated, not a multi-frame slide — see ensureVisible's own comment.
  *
- * All motion (the spotlight cutout's position/size and the tooltip's fade)
- * is driven entirely by Reanimated shared values updated with
- * withSpring/withTiming — never by re-rendering with new inline numbers —
- * so every frame of a transition runs on the UI thread, unaffected by JS
- * thread/bridge load (Metro-over-tunnel included). The four dim panels and
- * the highlight ring all read the *same* four shared values (top/bottom/
+ * Bubble layout & positioning: the speech bubble has a fixed-feeling size
+ * (maxWidth '85%', minWidth 260, fixed padding — see styles.tooltip) and its
+ * text flows/wraps naturally instead of being squeezed into a computed
+ * "available space" budget — that budget calculation used to drift out of
+ * sync with the bubble's real rendered chrome height and squeeze the body
+ * text down to almost nothing. Its position is one continuous (x is always
+ * centered; y is the only thing that moves) coordinate — bubbleTopV — computed
+ * *once* per step change in locateTarget (below/above the target, whichever
+ * has more room, clamped to the safe viewport) and animated with a single
+ * withSpring, so a placement flip between steps is still a smooth glide
+ * along the same `top` property rather than a discrete swap between `top`
+ * and `bottom` (which can't be interpolated and reads as a snap). bubbleTopV
+ * is refined once via onLayout after the bubble's real height is known (only
+ * matters when placed above the target, where the top edge depends on that
+ * height) — a small follow-up spring, not a re-render of the bubble itself.
+ *
+ * All motion (the spotlight cutout's position/size, the tooltip's position/
+ * fade, the mascot's bounce) is driven entirely by Reanimated shared values
+ * updated with withSpring/withTiming — never by re-rendering with new inline
+ * numbers — so every frame of a transition runs on the UI thread, unaffected
+ * by JS thread/bridge load (Metro-over-tunnel included). The four dim panels
+ * and the highlight ring all read the *same* four shared values (top/bottom/
  * left/right), which is what guarantees they can never drift out of sync
  * with each other mid-animation.
  *
  * Transition choreography: moving to a new step immediately fades the
- * tooltip out; the spotlight box only starts gliding (withSpring) toward the
- * new target once it's actually been measured (navigation/lazy-mount time is
- * however long it takes), and the tooltip fades back in exactly when that
- * glide's spring settles — never before, so it's never visible pointing at a
- * stale or mid-flight position.
+ * tooltip out; the spotlight box and bubble only start gliding (withSpring)
+ * toward the new target once it's actually been measured (navigation/lazy-
+ * mount time is however long it takes), and the tooltip fades back in
+ * exactly when the box's glide settles — never before, so it's never visible
+ * pointing at a stale or mid-flight position. The navigate-and-wait for a
+ * step's target screen (NAVIGATION_SETTLE_MS) only runs when that screen
+ * actually differs from the previous step's (previousRouteRef) — consecutive
+ * steps that share a screen (Steps 1 and 2, both Home) skip it entirely, so
+ * there's no artificial dead time between the fade-out and the glide for a
+ * "navigation" that was never going to happen.
  *
  * Skip (pinned top-right) and Get Started/"Got it" (last step) both end the
  * tour the same way: persist completion via onFinish and land the user back
@@ -46,14 +64,13 @@
  *
  * The tooltip is styled as a speech bubble "spoken" by Bubble, a small mascot
  * avatar embedded in the bubble's own header — so it moves as one glued-
- * together unit with the bubble (see belowStyle/aboveStyle below) rather
- * than needing its own separate position to keep in sync. Bubble gets a
- * playful little bounce (mascotScale, a bouncier spring than the box's) each
- * time it arrives at a new step, timed off the same spring-completion
- * callback that fades the bubble back in.
+ * together unit with the bubble rather than needing its own separate
+ * position to keep in sync. Bubble gets a playful little bounce (mascotScale,
+ * a bouncier spring than the box's) each time it arrives at a new step, timed
+ * off the same spring-completion callback that fades the bubble back in.
  */
 import { useEffect, useRef, useState } from "react";
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, useWindowDimensions } from "react-native";
+import { View, Text, TouchableOpacity, StyleSheet, useWindowDimensions, LayoutChangeEvent } from "react-native";
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, withSpring } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
@@ -113,33 +130,28 @@ const STEPS: Step[] = [
 const PAD = 8;
 /** Gap between the spotlight cutout and the speech bubble's near edge. */
 const BUBBLE_GAP = 14;
-/** Absolute floor for the bubble's available-space budget — never let a device/inset combo squeeze it to nothing. */
-const MIN_BUBBLE_ROOM = 150;
+/** Minimum clearance to keep between the bubble and the top/bottom safe-area edges — the final safety clamp on bubbleTopV, independent of which side it was placed on. */
+const BUBBLE_EDGE_MARGIN = 16;
+/** Best-guess bubble height used only until the very first onLayout reports the real one — close enough for the "place above" math to land in the right neighborhood before the follow-up spring corrects it exactly. */
+const DEFAULT_BUBBLE_HEIGHT = 220;
 /** How long to let a just-triggered navigation (lazy tab mount, or an in-page auto-scroll) settle before the first measurement attempt. */
 const NAVIGATION_SETTLE_MS = 450;
 const MEASURE_RETRY_MS = 120;
 const MAX_MEASURE_ATTEMPTS = 20;
-/** Subtle, non-bouncy glide for the spotlight box — high damping relative to stiffness so it settles into the new target without overshoot. */
-const BOX_SPRING = { damping: 22, stiffness: 180, mass: 0.8 };
+/** Subtle, non-bouncy glide for the spotlight box and bubble position — damping/stiffness/mass tuned to land just under critical damping, so a long cross-screen travel (e.g. Step 1 to Step 2) still settles smoothly with no overshoot or snap. */
+const BOX_SPRING = { damping: 18, stiffness: 90, mass: 0.8 };
 /** Playful bounce for Bubble's arrival "pop" — lower damping than BOX_SPRING so it visibly overshoots before settling. */
 const MASCOT_SPRING = { damping: 9, stiffness: 200, mass: 0.6 };
 const MASCOT_SHRINK_SCALE = 0.7;
-const TOOLTIP_FADE_OUT_MS = 150;
-const TOOLTIP_FADE_IN_MS = 220;
+const TOOLTIP_FADE_OUT_MS = 120;
+const TOOLTIP_FADE_IN_MS = 150;
 const COLLAPSE_MS = 260;
 /** Minimum clearance to leave between the target and the screen/safe-area edge when deciding whether it's already comfortably in view. */
 const SCROLL_MARGIN = 24;
-/** How long to let an auto-scroll's animation actually finish before re-measuring — RN's scrollTo({animated:true}) gives no completion callback. */
-const SCROLL_SETTLE_MS = 400;
-/**
- * Below this, there isn't enough room to show even the bubble's fixed chrome
- * (mascot header + title + Next/Got it button, none of which ever shrink —
- * see TooltipContent's bodyScroll style) plus a couple of lines of body
- * text — fall back to the centered layout instead (see canAnchorBubble) so
- * Next/Skip are never at risk of landing off-screen and the body text is
- * never squeezed down to nothing.
- */
-const MIN_VIABLE_BUBBLE_ROOM = 230;
+/** How often to re-measure while confirming an (instant, non-animated — see TourTargetsContext's scrollRootBy) auto-scroll has actually landed. */
+const SCROLL_POLL_MS = 60;
+/** Bounded polling budget — generous even though the scroll itself is instant, purely to cover the layout/measure round-trip. */
+const MAX_SCROLL_SETTLE_ATTEMPTS = 6;
 
 function wait(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -159,8 +171,14 @@ export default function OnboardingTour({ visible, onFinish }: Props) {
   const insets = useSafeAreaInsets();
   const [stepIndex, setStepIndex] = useState(0);
   const [phase, setPhase] = useState<Phase>("measuring");
-  /** Only read at render time (to decide tooltip placement) — never drives an animation directly, so it doesn't need to be a shared value. */
+  /** Which side of the target the bubble is currently placed on — only read to pick the tail's arrow direction, a small discrete decorative flip that doesn't need to be animated itself. */
+  const [placedBelow, setPlacedBelow] = useState(true);
+  const placedBelowRef = useRef(true);
   const lastRectRef = useRef<TourTargetRect | null>(null);
+  /** Real rendered bubble height, refined by TooltipContent's onLayout — only matters for the "place above" case, where the bubble's top edge depends on its own height. */
+  const bubbleHeightRef = useRef(DEFAULT_BUBBLE_HEIGHT);
+  /** Route the tour last actually navigated to — lets locateTarget skip the navigate+settle wait when consecutive steps share a route (e.g. Step 1→2, both on Home), instead of paying a fixed 450ms of dead time for a "navigation" that never really happens. */
+  const previousRouteRef = useRef<any>(null);
 
   // The one shared "truth" for the spotlight box — every dim panel and the
   // ring below reads these same four values, so they can never disagree
@@ -171,18 +189,47 @@ export default function OnboardingTour({ visible, onFinish }: Props) {
   const rightV = useSharedValue(0);
   const tooltipOpacity = useSharedValue(0);
   const mascotScale = useSharedValue(MASCOT_SHRINK_SCALE);
+  /** The bubble's own absolute top-edge position — the single continuous coordinate its whole motion boils down to (see file header). */
+  const bubbleTopV = useSharedValue(0);
 
   const isLastStep = stepIndex === STEPS.length - 1;
+
+  /** Computes where the bubble's top edge should land for the given target rect + estimated bubble height, clamped to stay within the safe viewport no matter what. Pure — callers decide what to do with the result. */
+  function computeBubbleTop(rect: TourTargetRect, bubbleHeight: number) {
+    const clampedTop = Math.max(0, rect.y - PAD);
+    const clampedBottom = Math.min(screenHeight, rect.y + rect.height + PAD);
+    const spaceBelow = screenHeight - insets.bottom - BUBBLE_GAP - clampedBottom;
+    const spaceAbove = clampedTop - insets.top - BUBBLE_GAP;
+    const below = spaceBelow >= spaceAbove;
+    const rawTop = below ? clampedBottom + BUBBLE_GAP : clampedTop - BUBBLE_GAP - bubbleHeight;
+    const minTop = insets.top + BUBBLE_EDGE_MARGIN;
+    const maxTop = Math.max(minTop, screenHeight - insets.bottom - BUBBLE_EDGE_MARGIN - bubbleHeight);
+    return { below, top: Math.min(Math.max(rawTop, minTop), maxTop) };
+  }
+
+  /** TooltipContent reports its real rendered height here once laid out — only triggers a follow-up spring when it actually differs from the estimate used so far, and only when that estimate mattered (placed above the target). */
+  function handleBubbleLayout(e: LayoutChangeEvent) {
+    const height = e.nativeEvent.layout.height;
+    if (Math.abs(height - bubbleHeightRef.current) < 1) return;
+    bubbleHeightRef.current = height;
+    if (placedBelowRef.current) return;
+    const rect = lastRectRef.current;
+    if (!rect) return;
+    const { top } = computeBubbleTop(rect, height);
+    bubbleTopV.value = withSpring(top, BOX_SPRING);
+  }
 
   useEffect(() => {
     if (!visible) {
       setStepIndex(0);
       setPhase("measuring");
       lastRectRef.current = null;
+      previousRouteRef.current = null;
       topV.value = 0;
       bottomV.value = 0;
       leftV.value = 0;
       rightV.value = 0;
+      bubbleTopV.value = 0;
       tooltipOpacity.value = 0;
       mascotScale.value = MASCOT_SHRINK_SCALE;
       return;
@@ -201,6 +248,17 @@ export default function OnboardingTour({ visible, onFinish }: Props) {
      * tracked offset (scrollRootBy), not an absolute position — RN gives no
      * synchronous "current scroll offset" getter, only the running tally each
      * screen's own onScroll keeps (see useTourScrollRoot).
+     *
+     * The scroll itself (scrollRootBy) is non-animated — instant, not a
+     * multi-frame slide — specifically so the box below can glide (withSpring,
+     * in locateTarget) in one continuous motion straight from the *previous*
+     * step's position to this one's real, final, already-settled position,
+     * the same smooth swipe-like feel every other transition has. An
+     * *animated* scroll here would fight that: it has no fixed duration (it
+     * scales with distance) and no completion callback, so the box could end
+     * up gliding toward a target that was still itself mid-scroll — sized
+     * against a transitional position rather than where it actually lands.
+     * An instant jump removes that window entirely.
      */
     async function ensureVisible(rect: TourTargetRect): Promise<TourTargetRect> {
       if (!step.scrollRootId) return rect;
@@ -209,22 +267,37 @@ export default function OnboardingTour({ visible, onFinish }: Props) {
 
       const viewTop = containerRect.y + SCROLL_MARGIN;
       const viewBottom = containerRect.y + containerRect.height - SCROLL_MARGIN;
-      const fullyVisible = rect.y >= viewTop && rect.y + rect.height <= viewBottom;
-      if (fullyVisible) return rect;
+      const isVisible = (r: TourTargetRect) => r.y >= viewTop && r.y + r.height <= viewBottom;
+      if (isVisible(rect)) return rect;
 
       scrollRootBy(step.scrollRootId, rect.y - viewTop);
-      await wait(SCROLL_SETTLE_MS);
-      if (cancelled) return rect;
 
-      const rescanned = await measureTarget(step.targetId);
-      return rescanned ?? rect;
+      let previous: TourTargetRect | null = null;
+      for (let attempt = 0; attempt < MAX_SCROLL_SETTLE_ATTEMPTS; attempt++) {
+        await wait(SCROLL_POLL_MS);
+        if (cancelled) return previous ?? rect;
+        const measured = await measureTarget(step.targetId);
+        if (!measured) break;
+        if (previous && Math.abs(measured.y - previous.y) < 1) return measured;
+        previous = measured;
+      }
+      return previous ?? rect;
     }
 
     async function locateTarget() {
-      if (step.route) {
+      // Only pay the navigate+settle cost when this step's target actually
+      // lives on a different screen than the one already showing — Steps 1
+      // and 2 both target Home, so re-navigating there and then waiting
+      // NAVIGATION_SETTLE_MS for a navigation that never happens was pure
+      // dead time between the tooltip's fade-out and the box starting to
+      // glide, which is what read as a jerky/laggy stall on that transition
+      // specifically. Both targets are already mounted and visible in that
+      // case, so measuring can start immediately instead.
+      if (step.route && step.route !== previousRouteRef.current) {
         router.navigate(step.route);
         await wait(NAVIGATION_SETTLE_MS);
       }
+      if (step.route) previousRouteRef.current = step.route;
       for (let attempt = 0; attempt < MAX_MEASURE_ATTEMPTS; attempt++) {
         if (cancelled) return;
         let rect = await measureTarget(step.targetId);
@@ -233,11 +306,18 @@ export default function OnboardingTour({ visible, onFinish }: Props) {
           rect = await ensureVisible(rect);
           if (cancelled) return;
           lastRectRef.current = rect;
+
           const clampedTop = Math.max(0, rect.y - PAD);
           const clampedBottom = Math.min(screenHeight, rect.y + rect.height + PAD);
           const clampedLeft = Math.max(0, rect.x - PAD);
           const clampedRight = Math.min(screenWidth, rect.x + rect.width + PAD);
-          // Only one of the four springs needs the completion callback —
+
+          const { below, top: bubbleTop } = computeBubbleTop(rect, bubbleHeightRef.current);
+          placedBelowRef.current = below;
+          setPlacedBelow(below);
+          bubbleTopV.value = withSpring(bubbleTop, BOX_SPRING);
+
+          // Only one of the box springs needs the completion callback —
           // they're all started together and use the same config, so they
           // settle together; firing the tooltip fade-in off all four would
           // just call it redundantly.
@@ -299,8 +379,10 @@ export default function OnboardingTour({ visible, onFinish }: Props) {
     height: bottomV.value - topV.value,
   }));
   const tooltipFade = useAnimatedStyle(() => ({ opacity: tooltipOpacity.value }));
-  const belowStyle = useAnimatedStyle(() => ({ top: bottomV.value + BUBBLE_GAP }));
-  const aboveStyle = useAnimatedStyle(() => ({ bottom: screenHeight - topV.value + BUBBLE_GAP }), [screenHeight]);
+  // The bubble's entire motion is this one property — a placement flip
+  // between steps is still a continuous glide along `top`, never a discrete
+  // swap to `bottom` (which can't be interpolated and reads as a snap).
+  const bubblePositionStyle = useAnimatedStyle(() => ({ top: bubbleTopV.value }));
   const mascotStyle = useAnimatedStyle(() => ({
     transform: [{ scale: mascotScale.value }],
     opacity: tooltipOpacity.value,
@@ -321,34 +403,6 @@ export default function OnboardingTour({ visible, onFinish }: Props) {
 
   const step = STEPS[stepIndex];
   const nextLabel = isLastStep ? "Got it" : "Next";
-  const rect = lastRectRef.current;
-
-  // Bounds-checked placement: pick whichever side of the target actually has
-  // more real room (accounting for the safe-area insets, not just raw screen
-  // edges), rather than a naive "top half vs bottom half" guess — a target
-  // near the bottom of a short device previously got a bubble anchored
-  // below it with barely any room, clipping step 3's longer copy off the
-  // bottom of the screen. bubbleMaxHeight then caps the bubble to whatever
-  // space was actually available on the chosen side — TooltipContent's own
-  // flexShrink layout (not a guessed pixel budget) is what decides how much
-  // of that capped height the body text actually gets, letting the mascot
-  // header and Next/Got it button always keep their full natural size.
-  const targetTop = rect ? Math.max(0, rect.y - PAD) : 0;
-  const targetBottom = rect ? Math.min(screenHeight, rect.y + rect.height + PAD) : 0;
-  const spaceBelow = screenHeight - insets.bottom - BUBBLE_GAP - targetBottom;
-  const spaceAbove = targetTop - insets.top - BUBBLE_GAP;
-  const placeBelow = rect ? spaceBelow >= spaceAbove : true;
-  const rawBubbleSpace = placeBelow ? spaceBelow : spaceAbove;
-  const bubbleMaxHeight = Math.max(MIN_BUBBLE_ROOM, rawBubbleSpace);
-  // Auto-scroll (ensureVisible, above) resolves this in the overwhelming
-  // majority of cases — this is the last-resort safety net for whatever it
-  // can't (e.g. a target genuinely too large to leave any margin on either
-  // side). Rather than anchor the bubble somewhere half off-screen, fall back
-  // to the same guaranteed-reachable centered layout the "target never
-  // found" case already uses — Next/Skip must never depend on the target's
-  // real position being anchor-able.
-  const canAnchorBubble = !!rect && rawBubbleSpace >= MIN_VIABLE_BUBBLE_ROOM;
-  const showCentered = phase === "notfound" || !canAnchorBubble;
 
   return (
     <Animated.View style={StyleSheet.absoluteFill} pointerEvents="box-none">
@@ -358,49 +412,46 @@ export default function OnboardingTour({ visible, onFinish }: Props) {
       <Animated.View style={[styles.dim, styles.dimRight, rightStyle]} pointerEvents="auto" />
       <Animated.View pointerEvents="none" style={[styles.ring, { borderColor: colors.primary }, ringStyle]} />
 
-      {showCentered ? (
+      {phase === "notfound" ? (
         <Animated.View
-          style={[
-            styles.tooltip,
-            styles.tooltipCentered,
-            { backgroundColor: colors.card, borderColor: colors.border, maxHeight: screenHeight * 0.45 },
-            tooltipFade,
-          ]}
+          style={[styles.bubbleWrap, styles.bubbleWrapCentered, tooltipFade]}
         >
-          <TooltipContent
-            step={step}
-            stepIndex={stepIndex}
-            colors={colors}
-            nextLabel={nextLabel}
-            onNext={handleNext}
-            mascotStyle={mascotStyle}
-          />
+          <View
+            onLayout={handleBubbleLayout}
+            style={[styles.tooltip, { backgroundColor: colors.card, borderColor: colors.border }]}
+          >
+            <TooltipContent
+              step={step}
+              stepIndex={stepIndex}
+              colors={colors}
+              nextLabel={nextLabel}
+              onNext={handleNext}
+              mascotStyle={mascotStyle}
+            />
+          </View>
         </Animated.View>
       ) : (
-        <Animated.View
-          style={[
-            styles.tooltip,
-            { backgroundColor: colors.card, borderColor: colors.border, maxHeight: bubbleMaxHeight },
-            placeBelow ? belowStyle : aboveStyle,
-            tooltipFade,
-          ]}
-        >
-          <Animated.View
-            style={[
-              styles.tail,
-              placeBelow ? styles.tailUp : styles.tailDown,
-              placeBelow ? { borderBottomColor: colors.card } : { borderTopColor: colors.card },
-              tooltipFade,
-            ]}
-          />
-          <TooltipContent
-            step={step}
-            stepIndex={stepIndex}
-            colors={colors}
-            nextLabel={nextLabel}
-            onNext={handleNext}
-            mascotStyle={mascotStyle}
-          />
+        <Animated.View style={[styles.bubbleWrap, bubblePositionStyle, tooltipFade]}>
+          <View
+            onLayout={handleBubbleLayout}
+            style={[styles.tooltip, { backgroundColor: colors.card, borderColor: colors.border }]}
+          >
+            <View
+              style={[
+                styles.tail,
+                placedBelow ? styles.tailUp : styles.tailDown,
+                placedBelow ? { borderBottomColor: colors.card } : { borderTopColor: colors.card },
+              ]}
+            />
+            <TooltipContent
+              step={step}
+              stepIndex={stepIndex}
+              colors={colors}
+              nextLabel={nextLabel}
+              onNext={handleNext}
+              mascotStyle={mascotStyle}
+            />
+          </View>
         </Animated.View>
       )}
 
@@ -435,10 +486,10 @@ function TooltipContent({
   return (
     <>
       <View style={styles.mascotRow}>
-        <Animated.View style={mascotStyle}>
+        <Animated.View style={[styles.mascotFlexGuard, mascotStyle]}>
           <MascotAvatar size={40} />
         </Animated.View>
-        <View style={{ flex: 1 }}>
+        <View style={styles.mascotTextCol}>
           <MascotNameBadge />
           <Text style={[styles.stepCount, { color: colors.secondaryText }]}>
             Step {stepIndex + 1} of {STEPS.length}
@@ -446,21 +497,7 @@ function TooltipContent({
         </View>
       </View>
       <Text style={[styles.title, { color: colors.text }]}>{step.title}</Text>
-      {/*
-        flexShrink: 1 (RN Views default to 0) is what makes this the *only*
-        part of the bubble that ever gives up space — the mascot header,
-        title, and Next/Got it button below all keep their natural size
-        unconditionally. The parent Animated.View's maxHeight (bubbleMaxHeight
-        or the centered fallback's fixed cap) is what actually constrains
-        things: Yoga sizes this ScrollView to whatever's left after the fixed
-        chrome, and it scrolls its own content if that's still not enough —
-        never a hand-guessed pixel budget that can drift out of sync with the
-        real rendered chrome height (see MIN_VIABLE_BUBBLE_ROOM's comment for
-        why that drift used to squeeze this down to almost nothing on step 3).
-      */}
-      <ScrollView style={styles.bodyScroll} showsVerticalScrollIndicator={false}>
-        <Text style={[styles.body, { color: colors.secondaryText }]}>{step.body}</Text>
-      </ScrollView>
+      <Text style={[styles.body, { color: colors.secondaryText }]}>{step.body}</Text>
       <TouchableOpacity
         onPress={onNext}
         style={[styles.nextButton, { backgroundColor: colors.primary }]}
@@ -489,20 +526,31 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     elevation: 6,
   },
-  tooltip: {
+  // Full-width, transparent positioning wrapper — its own `top` is the one
+  // animated coordinate (bubblePositionStyle); the actual card inside is
+  // centered horizontally and bounded to a fixed-feeling size regardless of
+  // where its target sits, so it can never get squeezed against a screen
+  // edge or the bottom tab bar.
+  bubbleWrap: {
     position: "absolute",
-    left: 20,
-    right: 20,
+    left: 0,
+    right: 0,
+    alignItems: "center",
+  },
+  bubbleWrapCentered: { top: "42%" },
+  tooltip: {
+    maxWidth: "85%",
+    minWidth: 260,
+    padding: 16,
     borderRadius: 16,
     borderWidth: 1,
-    padding: 18,
+    flexShrink: 0,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.2,
     shadowRadius: 12,
     elevation: 10,
   },
-  tooltipCentered: { top: "42%" },
   tail: {
     position: "absolute",
     alignSelf: "center",
@@ -518,10 +566,14 @@ const styles = StyleSheet.create({
   // Points down, toward a target below the bubble — sits on the bubble's bottom edge.
   tailDown: { bottom: -9, borderTopWidth: 10 },
   mascotRow: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 10 },
+  // Neither the avatar nor (via the outer tooltip's own flexShrink:0) the
+  // bubble itself ever gives up its size to fit cramped space — the body
+  // text is the only thing that flows/wraps to accommodate the content.
+  mascotFlexGuard: { flexShrink: 0 },
+  mascotTextCol: { flex: 1, minWidth: 0 },
   stepCount: { fontSize: 11, fontWeight: "700", marginTop: 3, textTransform: "uppercase", letterSpacing: 0.4 },
-  title: { fontSize: 19, fontWeight: "800", marginBottom: 8 },
-  bodyScroll: { flexShrink: 1 },
-  body: { fontSize: 14, lineHeight: 20, marginBottom: 16 },
+  title: { fontSize: 19, fontWeight: "800", lineHeight: 24, marginBottom: 8, flexWrap: "wrap" },
+  body: { fontSize: 14, lineHeight: 20, marginBottom: 16, flexWrap: "wrap" },
   nextButton: {
     flexDirection: "row",
     alignSelf: "flex-end",
