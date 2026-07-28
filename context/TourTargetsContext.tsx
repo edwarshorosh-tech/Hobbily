@@ -105,7 +105,15 @@ export function TourTargetsProvider({ children }: { children: React.ReactNode })
     const root = scrollRoots.current[id];
     if (!root) return;
     const nextOffset = Math.max(0, root.getOffset() + deltaY);
-    root.node.scrollTo({ y: nextOffset, animated: true });
+    // Not animated — this scroll happens while the tour has already
+    // collapsed its own spotlight to a full-screen dim (see OnboardingTour's
+    // ensureVisible), so the user never sees the jump itself, only the
+    // dimmed screen. An *animated* scroll has no fixed duration (it scales
+    // with distance) and no completion callback, which is exactly what made
+    // the tour's re-measurement race an animated scroll still in flight —
+    // sizing the spotlight/bubble against a transitional position instead of
+    // where the target actually ends up. An instant jump has no such window.
+    root.node.scrollTo({ y: nextOffset, animated: false });
   }, []);
 
   return (
