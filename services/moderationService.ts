@@ -51,6 +51,8 @@ export class ModerationBlockedError extends Error {
 }
 
 const LATIN_SCRIPT_LANGS = new Set(["en", "es", "fr", "de"]);
+const CYRILLIC_SCRIPT_LANGS = new Set(["ru"]);
+const ARABIC_SCRIPT_LANGS = new Set(["ar"]);
 
 /** A term shorter than this is never matched, even if one somehow made it into the dictionary — guards against a short banned fragment matching inside an unrelated longer word (see constants/moderationTerms.ts's own note on minimum length). Regex-mode terms are exempt (their own pattern defines what "too short" means). */
 const MIN_TERM_LENGTH = 3;
@@ -98,7 +100,7 @@ export function checkText(rawText: string, options: ModerationCheckOptions = {})
   const trimmed = rawText.trim();
   if (!trimmed) return { allowed: true };
 
-  const { collapsed, latinFold } = normalizeForModeration(trimmed);
+  const { collapsed, latinFold, cyrillicFold, arabicFold } = normalizeForModeration(trimmed);
   // regex-mode terms (phone numbers, email addresses, link-shortener
   // patterns) intentionally match against lightly-normalized text only
   // (case + whitespace collapsed) rather than the letter-despaced/leet-
@@ -106,10 +108,25 @@ export function checkText(rawText: string, options: ModerationCheckOptions = {})
   // symbol sequences those patterns depend on (e.g. folding "0" to "o"
   // would break a phone-number regex on real digits).
   const rawLower = trimmed.toLowerCase().replace(/\s+/g, " ");
-  const collapsedPadded = ` ${collapsed} `;
-  const latinPadded = ` ${latinFold} `;
-  const collapsedTokens = tokenize(collapsed);
-  const latinTokens = tokenize(latinFold);
+  // One padded+tokenized pair per fold variant — each dictionary term is
+  // matched against whichever variant its own language's evasion tricks get
+  // folded into (see normalizeForModeration's own doc comment): Latin-script
+  // terms (en/es/fr/de) against latinFold, Russian against cyrillicFold
+  // (a Latin lookalike swapped into a Cyrillic word), Arabic against
+  // arabicFold (Arabizi digit substitution), everything else (Hebrew, ...)
+  // against the plain script-preserving collapsed text.
+  const variants: Record<"collapsed" | "latinFold" | "cyrillicFold" | "arabicFold", { padded: string; tokens: string[] }> = {
+    collapsed: { padded: ` ${collapsed} `, tokens: tokenize(collapsed) },
+    latinFold: { padded: ` ${latinFold} `, tokens: tokenize(latinFold) },
+    cyrillicFold: { padded: ` ${cyrillicFold} `, tokens: tokenize(cyrillicFold) },
+    arabicFold: { padded: ` ${arabicFold} `, tokens: tokenize(arabicFold) },
+  };
+  function variantFor(language: string) {
+    if (LATIN_SCRIPT_LANGS.has(language)) return variants.latinFold;
+    if (CYRILLIC_SCRIPT_LANGS.has(language)) return variants.cyrillicFold;
+    if (ARABIC_SCRIPT_LANGS.has(language)) return variants.arabicFold;
+    return variants.collapsed;
+  }
 
   let worst: ModerationTerm | null = null;
 
@@ -126,8 +143,8 @@ export function checkText(rawText: string, options: ModerationCheckOptions = {})
         hit = false; // a malformed pattern in the dictionary must never crash a save
       }
     } else {
-      const isLatin = LATIN_SCRIPT_LANGS.has(t.language);
-      hit = matchesNonRegexTerm(isLatin ? latinPadded : collapsedPadded, isLatin ? latinTokens : collapsedTokens, t);
+      const { padded, tokens } = variantFor(t.language);
+      hit = matchesNonRegexTerm(padded, tokens, t);
     }
 
     if (hit && (!worst || SEVERITY_RANK[t.severity] > SEVERITY_RANK[worst.severity])) {

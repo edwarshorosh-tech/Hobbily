@@ -4,14 +4,19 @@
  * remove (✕) icon, and suggested hobbies are a separate list where a single
  * press adds them. Purely local state — the parent (Settings) owns
  * saving/Firestore via the existing profile save flow; this component only
- * ever calls `onChange` with the next hobbies array.
+ * ever calls `onChange` with the next hobbies array. Firestore itself is the
+ * source of truth (see services/profileService.ts) — this component and its
+ * `hobbies` prop are just a live view over whatever ProfileContext already
+ * loaded for the current authenticated user; there's no separate local
+ * cache to go stale or leak between accounts.
  */
-import { useMemo, useState } from "react";
-import { StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { useEffect, useMemo, useState } from "react";
+import { AccessibilityInfo, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import Animated, { FadeIn, FadeOut, LinearTransition } from "react-native-reanimated";
 import { Ionicons } from "@expo/vector-icons";
 import { ColorTokens } from "../../context/ThemeContext";
 import { HOBBY_OPTIONS } from "../../constants/hobbies";
-import { validateCustomHobby } from "../../utils/hobbyValidation";
+import { normalizeHobbyName, validateCustomHobby } from "../../utils/hobbyValidation";
 import { checkText, moderationErrorMessage } from "../../services/moderationService";
 
 export const MAX_HOBBIES = 20;
@@ -35,6 +40,13 @@ export default function HobbiesEditor({ hobbies, onChange, colors, disabled = fa
   // top) so a hobby typed here can't be shorter/longer/punctuation-only in
   // a way onboarding would have rejected.
   const [addError, setAddError] = useState("");
+  const [reduceMotion, setReduceMotion] = useState(false);
+
+  useEffect(() => {
+    AccessibilityInfo.isReduceMotionEnabled?.()
+      .then(setReduceMotion)
+      .catch(() => undefined);
+  }, []);
 
   const atLimit = hobbies.length >= MAX_HOBBIES;
 
@@ -46,23 +58,30 @@ export default function HobbiesEditor({ hobbies, onChange, colors, disabled = fa
       .slice(0, 12);
   }, [hobbies, query]);
 
-  function addHobby(label: string) {
-    const trimmed = label.trim();
-    if (!trimmed || disabled || atLimit) return;
-    const validationError = validateCustomHobby(trimmed, hobbies);
+  // Nothing in the local catalog matches, but the field isn't empty — offer
+  // to add exactly what was typed as a new custom hobby instead of just
+  // showing a dead end. Real user text, not a placeholder string.
+  const trimmedQuery = query.trim();
+  const showAddAsNew = trimmedQuery.length > 0 && suggestions.length === 0 && !atLimit;
+
+  function addHobby(rawLabel: string) {
+    if (disabled || atLimit) return;
+    const normalized = normalizeHobbyName(rawLabel);
+    if (!normalized) return;
+    const validationError = validateCustomHobby(normalized, hobbies);
     if (validationError) {
       setAddError(validationError);
       setQuery("");
       return;
     }
-    const check = checkText(trimmed);
+    const check = checkText(normalized);
     if (!check.allowed) {
       setAddError(moderationErrorMessage("profile_field"));
       setQuery("");
       return;
     }
     setAddError("");
-    onChange([...hobbies, trimmed]);
+    onChange([...hobbies, normalized]);
     setQuery("");
   }
 
@@ -111,10 +130,34 @@ export default function HobbiesEditor({ hobbies, onChange, colors, disabled = fa
         <Text style={[styles.duplicateNotice, { color: colors.danger }]}>{addError}</Text>
       ) : null}
 
+      {showAddAsNew && (
+        <View style={[styles.emptySearchBox, { borderColor: colors.border }]}>
+          <Text style={[styles.emptySearchLabel, { color: colors.secondaryText }]}>No hobbies found</Text>
+          <TouchableOpacity
+            onPress={() => addHobby(trimmedQuery)}
+            disabled={disabled}
+            style={styles.addAsNewRow}
+            accessibilityRole="button"
+            accessibilityLabel={`Add "${trimmedQuery}" as a new hobby`}
+          >
+            <Ionicons name="add-circle-outline" size={18} color={colors.primary} />
+            <Text style={[styles.addAsNewText, { color: colors.primary }]} numberOfLines={1}>
+              Add &ldquo;{trimmedQuery}&rdquo; as a new hobby
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {hobbies.length > 0 ? (
         <View style={styles.chipWrap}>
           {hobbies.map((tag) => (
-            <View key={tag} style={[styles.selectedChip, { backgroundColor: colors.primary }]}>
+            <Animated.View
+              key={tag}
+              entering={reduceMotion ? FadeIn.duration(120) : FadeIn.duration(200)}
+              exiting={reduceMotion ? FadeOut.duration(120) : FadeOut.duration(200)}
+              layout={reduceMotion ? undefined : LinearTransition.duration(200)}
+              style={[styles.selectedChip, { backgroundColor: colors.primary }]}
+            >
               <Text style={styles.selectedChipText} numberOfLines={1}>
                 {tag}
               </Text>
@@ -123,11 +166,11 @@ export default function HobbiesEditor({ hobbies, onChange, colors, disabled = fa
                 disabled={disabled}
                 hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                 accessibilityRole="button"
-                accessibilityLabel={`Remove ${tag}`}
+                accessibilityLabel={`Remove ${tag} from profile`}
               >
                 <Ionicons name="close-circle" size={16} color="rgba(255,255,255,0.85)" />
               </TouchableOpacity>
-            </View>
+            </Animated.View>
           ))}
         </View>
       ) : (
@@ -139,22 +182,29 @@ export default function HobbiesEditor({ hobbies, onChange, colors, disabled = fa
           <Text style={[styles.suggestLabel, { color: colors.secondaryText }]}>Suggested</Text>
           <View style={styles.chipWrap}>
             {suggestions.map((h) => (
-              <TouchableOpacity
+              <Animated.View
                 key={h.label}
-                onPress={() => addHobby(h.label)}
-                disabled={disabled}
-                style={[styles.suggestChip, { borderColor: colors.border, backgroundColor: colors.card }]}
-                accessibilityRole="button"
-                accessibilityLabel={`Add ${h.label}`}
+                exiting={reduceMotion ? FadeOut.duration(120) : FadeOut.duration(200)}
+                layout={reduceMotion ? undefined : LinearTransition.duration(200)}
               >
-                <Ionicons name={h.icon} size={13} color={colors.secondaryText} />
-                <Text style={[styles.suggestChipText, { color: colors.text }]}>{h.label}</Text>
-                <Ionicons name="add" size={13} color={colors.secondaryText} />
-              </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => addHobby(h.label)}
+                  disabled={disabled}
+                  style={[styles.suggestChip, { borderColor: colors.border, backgroundColor: colors.card }]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Add ${h.label}`}
+                >
+                  <Ionicons name={h.icon} size={13} color={colors.secondaryText} />
+                  <Text style={[styles.suggestChipText, { color: colors.text }]}>{h.label}</Text>
+                  <Ionicons name="add" size={13} color={colors.secondaryText} />
+                </TouchableOpacity>
+              </Animated.View>
             ))}
           </View>
         </>
       )}
+
+      {atLimit && <Text style={[styles.limitNotice, { color: colors.secondaryText }]}>You can add up to {MAX_HOBBIES} hobbies.</Text>}
     </View>
   );
 }
@@ -175,6 +225,10 @@ const styles = StyleSheet.create({
   },
   input: { flex: 1, fontSize: 14, paddingVertical: 2 },
   duplicateNotice: { fontSize: 12, fontWeight: "600" },
+  emptySearchBox: { borderWidth: 1, borderRadius: 12, borderStyle: "dashed", padding: 10, gap: 6 },
+  emptySearchLabel: { fontSize: 12, fontWeight: "600" },
+  addAsNewRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  addAsNewText: { fontSize: 13, fontWeight: "600", flexShrink: 1 },
   chipWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   selectedChip: {
     flexDirection: "row",
@@ -199,4 +253,5 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   suggestChipText: { fontSize: 12, fontWeight: "600" },
+  limitNotice: { fontSize: 12 },
 });
