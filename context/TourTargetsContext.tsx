@@ -46,16 +46,19 @@
  * rendering space (status bar, safe-area inset, whatever it actually is)
  * cancels out of the subtraction without ever having to be named or
  * hand-corrected — no Platform.OS branches, no StatusBar import, anywhere in
- * this file.
+ * this file. Every target (including the capsule tab-bar targets and the
+ * circle/roundedRect ones) and every scroll root goes through this same
+ * measureRelative — nothing bypasses it.
  */
-import { createContext, useCallback, useContext, useRef } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef } from "react";
 
 export type TourTargetId =
-  | "aiAssistant"
   | "addFriends"
   | "plannerAddActivity"
   | "communityTab"
-  | "exploreTab";
+  | "exploreTab"
+  | "profileTab"
+  | "profilePosts";
 
 /** A screen's own scrollable root, keyed by which screen it belongs to — distinct from TourTargetId since it's a container, not a spotlight-able element itself. */
 export type TourScrollRootId = "home" | "planner";
@@ -109,6 +112,20 @@ type TourTargetsContextType = {
   measureScrollRoot: (id: TourScrollRootId, container: MeasureContainer) => Promise<TourTargetRect | null>;
   /** Scrolls the registered root by a delta computed against its own last-known offset; no-ops if unregistered. */
   scrollRootBy: (id: TourScrollRootId, deltaY: number) => void;
+  /**
+   * Profile screen registers a callback here that switches its own local
+   * `activeTab` state to "posts" — its own screen-local state that nothing
+   * outside profile.tsx can otherwise reach. OnboardingTour's Posts step
+   * calls switchProfileTabToPosts() right after navigating to Profile and
+   * before it starts measuring the "profilePosts" target, so the create-post
+   * button has actually mounted by the time measurement is attempted (the
+   * existing measure-retry loop comfortably covers the one extra render this
+   * causes). A real mechanism, not a fake target — Posts genuinely is
+   * created from inside Profile's own Posts tab (app/create-post.tsx via a
+   * button there), so this is what's needed to spotlight it truthfully.
+   */
+  registerProfilePostsTabSwitch: (fn: (() => void) | null) => void;
+  switchProfileTabToPosts: () => void;
 };
 
 const TourTargetsContext = createContext<TourTargetsContextType | undefined>(undefined);
@@ -116,6 +133,7 @@ const TourTargetsContext = createContext<TourTargetsContextType | undefined>(und
 export function TourTargetsProvider({ children }: { children: React.ReactNode }) {
   const nodes = useRef<Partial<Record<TourTargetId, Measurable>>>({});
   const scrollRoots = useRef<Partial<Record<TourScrollRootId, ScrollRootHandle>>>({});
+  const profilePostsTabSwitch = useRef<(() => void) | null>(null);
 
   const registerTarget = useCallback((id: TourTargetId, node: Measurable | null) => {
     if (node) nodes.current[id] = node;
@@ -153,18 +171,38 @@ export function TourTargetsProvider({ children }: { children: React.ReactNode })
     const root = scrollRoots.current[id];
     if (!root) return;
     const nextOffset = Math.max(0, root.getOffset() + deltaY);
-    // Animated — the user sees the actual screen glide to bring the next
-    // target into view rather than an instant jump, while the spotlight box
-    // itself stays put at the previous step's position; OnboardingTour's
-    // ensureVisible waits out a fixed settle delay approximating this
-    // animation's duration before re-measuring and starting the box's own
-    // glide, so the two motions read as one continuous handoff.
-    root.node.scrollTo({ y: nextOffset, animated: true });
+    // Not animated — this scroll happens while the tour has already
+    // collapsed its own spotlight to a full-screen dim (see OnboardingTour's
+    // ensureVisible), so the user never sees the jump itself, only the
+    // dimmed screen. An *animated* scroll has no fixed duration (it scales
+    // with distance) and no completion callback, which is exactly what made
+    // the tour's re-measurement race an animated scroll still in flight —
+    // sizing the spotlight against a transitional position instead of where
+    // the target actually ends up. An instant jump has no such window;
+    // OnboardingTour's ensureVisible polls measureTarget afterward until two
+    // consecutive reads agree, rather than trusting a fixed settle delay.
+    root.node.scrollTo({ y: nextOffset, animated: false });
+  }, []);
+
+  const registerProfilePostsTabSwitch = useCallback((fn: (() => void) | null) => {
+    profilePostsTabSwitch.current = fn;
+  }, []);
+
+  const switchProfileTabToPosts = useCallback(() => {
+    profilePostsTabSwitch.current?.();
   }, []);
 
   return (
     <TourTargetsContext.Provider
-      value={{ registerTarget, measureTarget, registerScrollRoot, measureScrollRoot, scrollRootBy }}
+      value={{
+        registerTarget,
+        measureTarget,
+        registerScrollRoot,
+        measureScrollRoot,
+        scrollRootBy,
+        registerProfilePostsTabSwitch,
+        switchProfileTabToPosts,
+      }}
     >
       {children}
     </TourTargetsContext.Provider>
@@ -179,7 +217,7 @@ export function useTourTargets() {
 
 /**
  * Returns a ref callback to attach to the element that should be spotlighted
- * for `id` — e.g. `<View ref={useTourTarget("aiAssistant")}>`. Pass `null`
+ * for `id` — e.g. `<View ref={useTourTarget("addFriends")}>`. Pass `null`
  * (not a conditional hook call) when this particular instance shouldn't
  * register anything, e.g. a tab bar button whose route doesn't map to a tour
  * step — the returned callback is then a no-op, keeping the Rules of Hooks
@@ -194,6 +232,20 @@ export function useTourTarget(id: TourTargetId | null) {
     },
     [registerTarget, id]
   );
+}
+
+/**
+ * Registers `onSwitchToPosts` as the function OnboardingTour's Posts step
+ * calls to switch Profile to its Posts tab before spotlighting it. Call
+ * unconditionally from app/(tabs)/profile.tsx — unregisters itself on
+ * unmount so the tour can never call a stale/unmounted screen's setter.
+ */
+export function useRegisterProfilePostsTabSwitch(onSwitchToPosts: () => void) {
+  const { registerProfilePostsTabSwitch } = useTourTargets();
+  useEffect(() => {
+    registerProfilePostsTabSwitch(onSwitchToPosts);
+    return () => registerProfilePostsTabSwitch(null);
+  }, [registerProfilePostsTabSwitch, onSwitchToPosts]);
 }
 
 /**

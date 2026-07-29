@@ -38,6 +38,30 @@ export function startOfWeekISO(iso: string): string {
   return localDateISO(d);
 }
 
+/**
+ * True if `selectedDate` (YYYY-MM-DD) is any day strictly before today, in
+ * the device's local timezone — i.e. the *entire day* has already passed,
+ * not just a specific time within it. Whole-day granularity, for gating
+ * "can a new activity even be added to this day at all" (the Planner's Add
+ * Activity button) — same-day, time-of-day granularity ("is 3pm today
+ * already past") is a separate, existing check: isDateTimeInPast in
+ * utils/time.ts. Deliberately takes `now` as a parameter (never reads
+ * Date.now() internally) so it stays pure and trivially testable, matching
+ * every other date helper in this file.
+ */
+export function isPastPlannerDate({ selectedDate, now = new Date() }: { selectedDate: string; now?: Date }): boolean {
+  return selectedDate < localDateISO(now);
+}
+
+/**
+ * True if an entire week (its last day, `weekEnd`) is already behind today —
+ * lets week-level UI (e.g. graying out an already-fully-past week at a
+ * glance) avoid checking every individual day in it.
+ */
+export function isEntireWeekInPast({ weekEnd, now = new Date() }: { weekEnd: string; now?: Date }): boolean {
+  return weekEnd < localDateISO(now);
+}
+
 /** The device's IANA timezone identifier, e.g. "Asia/Jerusalem". */
 export function deviceTimeZone(): string {
   try {

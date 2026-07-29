@@ -8,12 +8,14 @@
 import { useCallback, useMemo, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import Animated from "react-native-reanimated";
 import { useFocusEffect } from "@react-navigation/native";
 import { ColorTokens } from "../../context/ThemeContext";
 import { useAuth } from "../../context/AuthContext";
 import { useProfile } from "../../context/ProfileContext";
 import { brand } from "../../constants/colors";
 import { useProgress } from "../../context/ProgressContext";
+import { useStreakUpdateAnimation } from "../../hooks/useStreakUpdateAnimation";
 import { useFriends } from "../../context/FriendsContext";
 import FriendAvatar from "../friends/FriendAvatar";
 import UserCardSheet from "../user-card/UserCardSheet";
@@ -61,15 +63,38 @@ function podiumHeight(entry: FriendLeaderboardEntry, allZero: boolean): number {
   return 58;
 }
 
+/** Only ever used for the current user's own streak — see its call sites below (a friend's streak never animates on this device; there's no realtime push for it, only a refresh-on-focus). */
+function AnimatedStreakChip({ value, isLoaded, textColor }: { value: number; isLoaded: boolean; textColor: string }) {
+  const { scaleStyle, iconStyle } = useStreakUpdateAnimation(value, isLoaded);
+  return (
+    <Animated.View style={[styles.podiumStreakRow, scaleStyle]}>
+      <Animated.View style={iconStyle}>
+        <Ionicons name="flame" size={12} color={brand.streakFlame} />
+      </Animated.View>
+      <Text style={[styles.podiumStreakText, { color: textColor }]}>{value}</Text>
+    </Animated.View>
+  );
+}
+
+/** Same pulse, no icon — for the "remaining" list row, which never showed a flame icon and shouldn't gain one just for the current user. */
+function AnimatedStreakNumber({ value, isLoaded, textColor }: { value: number; isLoaded: boolean; textColor: string }) {
+  const { scaleStyle } = useStreakUpdateAnimation(value, isLoaded);
+  return (
+    <Animated.Text style={[styles.remainingStreak, { color: textColor }, scaleStyle]}>{value}</Animated.Text>
+  );
+}
+
 function PodiumSlot({
   entry,
   colors,
   allZero,
+  progressIsLoaded,
   onPress,
 }: {
   entry: FriendLeaderboardEntry;
   colors: ColorTokens;
   allZero: boolean;
+  progressIsLoaded: boolean;
   onPress: () => void;
 }) {
   const height = podiumHeight(entry, allZero);
@@ -90,12 +115,16 @@ function PodiumSlot({
       <Text style={[styles.podiumName, { color: colors.text }]} numberOfLines={1}>
         {entry.isCurrentUser ? "You" : entry.username}
       </Text>
-      <View style={styles.podiumStreakRow}>
-        <Ionicons name="flame" size={12} color={brand.streakFlame} />
-        <Text style={[styles.podiumStreakText, { color: colors.secondaryText }]}>
-          {entry.currentStreak}
-        </Text>
-      </View>
+      {entry.isCurrentUser ? (
+        <AnimatedStreakChip value={entry.currentStreak} isLoaded={progressIsLoaded} textColor={colors.secondaryText} />
+      ) : (
+        <View style={styles.podiumStreakRow}>
+          <Ionicons name="flame" size={12} color={brand.streakFlame} />
+          <Text style={[styles.podiumStreakText, { color: colors.secondaryText }]}>
+            {entry.currentStreak}
+          </Text>
+        </View>
+      )}
       <View
         style={[
           styles.podiumBar,
@@ -109,7 +138,7 @@ function PodiumSlot({
 export default function FriendsLeaderboard({ colors }: { colors: ColorTokens }) {
   const { user } = useAuth();
   const { profile } = useProfile();
-  const { currentStreak } = useProgress();
+  const { currentStreak, isLoaded: progressIsLoaded } = useProgress();
   const { acceptedFriends, isLoaded, loadError, refreshFriendProfiles } = useFriends();
   const { selectedUid: cardUid, openUserProfile: setCardUid, closeUserProfile: closeCardUid } = useUserProfileSheet();
   const tourRef = useTourTarget("addFriends");
@@ -202,9 +231,9 @@ export default function FriendsLeaderboard({ colors }: { colors: ColorTokens }) 
               </Text>
             )}
             <View style={styles.podiumRow}>
-              {top3[1] && <PodiumSlot entry={top3[1]} colors={colors} allZero={allZero} onPress={() => setCardUid(top3[1].uid)} />}
-              {top3[0] && <PodiumSlot entry={top3[0]} colors={colors} allZero={allZero} onPress={() => setCardUid(top3[0].uid)} />}
-              {top3[2] && <PodiumSlot entry={top3[2]} colors={colors} allZero={allZero} onPress={() => setCardUid(top3[2].uid)} />}
+              {top3[1] && <PodiumSlot entry={top3[1]} colors={colors} allZero={allZero} progressIsLoaded={progressIsLoaded} onPress={() => setCardUid(top3[1].uid)} />}
+              {top3[0] && <PodiumSlot entry={top3[0]} colors={colors} allZero={allZero} progressIsLoaded={progressIsLoaded} onPress={() => setCardUid(top3[0].uid)} />}
+              {top3[2] && <PodiumSlot entry={top3[2]} colors={colors} allZero={allZero} progressIsLoaded={progressIsLoaded} onPress={() => setCardUid(top3[2].uid)} />}
             </View>
 
             {remaining.length > 0 && (
@@ -232,9 +261,13 @@ export default function FriendsLeaderboard({ colors }: { colors: ColorTokens }) 
                     <Text style={[styles.remainingName, { color: colors.text }]} numberOfLines={1}>
                       {entry.isCurrentUser ? "You" : entry.username}
                     </Text>
-                    <Text style={[styles.remainingStreak, { color: colors.secondaryText }]}>
-                      {entry.currentStreak}
-                    </Text>
+                    {entry.isCurrentUser ? (
+                      <AnimatedStreakNumber value={entry.currentStreak} isLoaded={progressIsLoaded} textColor={colors.secondaryText} />
+                    ) : (
+                      <Text style={[styles.remainingStreak, { color: colors.secondaryText }]}>
+                        {entry.currentStreak}
+                      </Text>
+                    )}
                   </TouchableOpacity>
                 ))}
               </ScrollView>

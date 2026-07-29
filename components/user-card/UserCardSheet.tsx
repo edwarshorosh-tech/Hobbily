@@ -37,15 +37,18 @@
  * their private progress/{uid} doc (which this viewer can't read anyway).
  */
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Image, Modal, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, Animated, Image, Modal, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { ColorTokens } from "../../context/ThemeContext";
+import { brand } from "../../constants/colors";
 import { useAuth } from "../../context/AuthContext";
 import { friendlyMessage, useFriends } from "../../context/FriendsContext";
 import { FriendSearchResult } from "../../services/friendsService";
 import BottomSheet from "../BottomSheet";
 import ConfirmModal from "../ConfirmModal";
+import UserReportSheet from "../UserReportSheet";
+import { PendingUserReport } from "../../types/UserReport";
 import FriendAvatar from "../friends/FriendAvatar";
 import TagChip from "../TagChip";
 import PersonalityBadge from "../PersonalityBadge";
@@ -66,6 +69,48 @@ type Props = {
 const AVATAR_SIZE = 96;
 const HOBBY_PREVIEW_COUNT = 6;
 
+/**
+ * Report user — a deliberately prominent destructive *secondary* action: no
+ * border/fill at rest, just a genuinely red icon+label, so it reads as
+ * clearly available and clearly different from ordinary navigation, but
+ * still doesn't out-compete Add Friend (the sheet's real primary CTA) for
+ * visual weight. Uses brand.criticalDanger (the same fixed, theme-
+ * independent, more vivid red as Delete Account) rather than the per-theme
+ * `colors.danger` token — that token is a soft coral/salmon in both themes,
+ * which read as an odd, washed-out choice for this. Pressing it fills
+ * briefly with a light red tint for feedback, on top of the same small
+ * press-scale used by the app's other press-scale buttons.
+ */
+function ReportUserButton({ onPress }: { onPress: () => void }) {
+  const scale = useRef(new Animated.Value(1)).current;
+  const [pressed, setPressed] = useState(false);
+  function pressIn() {
+    setPressed(true);
+    Animated.timing(scale, { toValue: 0.98, duration: 110, useNativeDriver: true }).start();
+  }
+  function pressOut() {
+    setPressed(false);
+    Animated.timing(scale, { toValue: 1, duration: 140, useNativeDriver: true }).start();
+  }
+  return (
+    <Animated.View style={{ transform: [{ scale }] }}>
+      <TouchableOpacity
+        onPress={onPress}
+        onPressIn={pressIn}
+        onPressOut={pressOut}
+        activeOpacity={0.85}
+        style={[styles.reportButton, { backgroundColor: pressed ? `${brand.criticalDanger}1A` : "transparent" }]}
+        accessibilityRole="button"
+        accessibilityLabel="Report user"
+        accessibilityHint="Opens the user reporting options"
+      >
+        <Ionicons name="flag" size={18} color={brand.criticalDanger} style={{ marginRight: 8 }} />
+        <Text style={[styles.reportButtonText, { color: brand.criticalDanger }]}>Report user</Text>
+      </TouchableOpacity>
+    </Animated.View>
+  );
+}
+
 export default function UserCardSheet({ uid, onClose, colors }: Props) {
   const { user } = useAuth();
   const { getUserCard, sendRequest, acceptRequest, removeFriendship, actionState } = useFriends();
@@ -77,6 +122,9 @@ export default function UserCardSheet({ uid, onClose, colors }: Props) {
   const [removeConfirmVisible, setRemoveConfirmVisible] = useState(false);
   const [avatarPreviewVisible, setAvatarPreviewVisible] = useState(false);
   const [openAchievementId, setOpenAchievementId] = useState<string | null>(null);
+  const [reportSheetVisible, setReportSheetVisible] = useState(false);
+  const [reportTarget, setReportTarget] = useState<PendingUserReport | null>(null);
+  const [reportConfirmVisible, setReportConfirmVisible] = useState(false);
 
   const visible = uid !== null;
   const stats = useProfileActivityStats(uid);
@@ -168,6 +216,31 @@ export default function UserCardSheet({ uid, onClose, colors }: Props) {
     router.push(`/user/${uid}` as any);
   }
 
+  // Closes this preview before opening the report sheet — same fix as
+  // openMemberProfile/requestDeleteMessage elsewhere in this app: stacking
+  // a second native Modal on one still animating closed is the documented
+  // New-Architecture touch-drop failure mode. `result` (and so `profile`)
+  // deliberately isn't cleared on close (see the effect above), but `uid`
+  // itself goes back to the caller's null the instant onClose() runs, so
+  // the reported user's id is captured into local state first.
+  function openReportSheet() {
+    if (!profile) return;
+    setReportTarget({ reportedUserId: profile.uid, source: "profile_preview" });
+    onClose();
+    setTimeout(() => setReportSheetVisible(true), 200);
+  }
+
+  /** Report user now asks for confirmation first — this only opens that confirmation; the actual report sheet opens from handleConfirmReport below. */
+  function openReportConfirm() {
+    if (!profile) return;
+    setReportConfirmVisible(true);
+  }
+
+  function handleConfirmReport() {
+    setReportConfirmVisible(false);
+    openReportSheet();
+  }
+
   const statCells: StatCell[] = [
     { key: "communities", icon: "people-outline", label: "Communities", value: stats.communityCount },
     { key: "workshops", icon: "school-outline", label: "Workshops", value: stats.workshopCount },
@@ -180,7 +253,38 @@ export default function UserCardSheet({ uid, onClose, colors }: Props) {
 
   return (
     <>
-      <BottomSheet visible={visible} onClose={onClose} colors={colors} maxHeight="82%">
+      <BottomSheet
+        visible={visible}
+        onClose={onClose}
+        colors={colors}
+        maxHeight="82%"
+        overlay={
+          <>
+            <ConfirmModal
+              asOverlay
+              visible={removeConfirmVisible}
+              title="Remove Friend?"
+              message={`Remove ${profile?.username || "this user"} from your friends?`}
+              confirmLabel="Remove"
+              cancelLabel="Cancel"
+              dangerous
+              onConfirm={handleConfirmRemove}
+              onCancel={() => setRemoveConfirmVisible(false)}
+            />
+            <ConfirmModal
+              asOverlay
+              visible={reportConfirmVisible}
+              title="Report this user?"
+              message="You can tell us what happened on the next screen. The user will not be notified that you submitted a report."
+              confirmLabel="Continue"
+              cancelLabel="Cancel"
+              dangerous
+              onConfirm={handleConfirmReport}
+              onCancel={() => setReportConfirmVisible(false)}
+            />
+          </>
+        }
+      >
         {loading ? (
           <View style={styles.centerState}>
             <ActivityIndicator size="small" color={colors.secondaryText} />
@@ -196,7 +300,15 @@ export default function UserCardSheet({ uid, onClose, colors }: Props) {
             <Text style={[styles.stateText, { color: colors.secondaryText }]}>This profile is no longer available.</Text>
           </View>
         ) : (
-          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+          <>
+            {/* Fixed, never-scrolling header — sits directly below the drag
+                handle so the avatar can never be scrolled up and clipped
+                under the sheet's rounded top corners (the bug this
+                structure fixes). Only stats/bio/hobbies/achievements/
+                actions/safety scroll, starting below this. Reliability was
+                prioritized over a decorative collapsing-header animation
+                (an equally valid option per the design spec) since it
+                can't be verified on-device this session. */}
             <View style={styles.header}>
               <TouchableOpacity
                 onPress={() => profile.avatarUrl && setAvatarPreviewVisible(true)}
@@ -239,6 +351,7 @@ export default function UserCardSheet({ uid, onClose, colors }: Props) {
               ) : null}
             </View>
 
+            <ScrollView showsVerticalScrollIndicator={false} style={styles.scrollBody} contentContainerStyle={styles.scrollContent}>
             <View style={styles.section}>
               <ProfileStatGrid cells={statCells} colors={colors} />
             </View>
@@ -353,19 +466,30 @@ export default function UserCardSheet({ uid, onClose, colors }: Props) {
                 )}
               </TouchableOpacity>
             )}
-          </ScrollView>
+
+            {/* Safety — never shown on your own profile. A clearly-visible
+                destructive *secondary* action: bigger and unmistakably red,
+                but still lighter-weight than Add Friend/primaryAction above
+                it, and separated from View full profile by this section's
+                own top divider + spacing. */}
+            {!isOwnUid && (
+              <View style={[styles.safetySection, { borderTopColor: colors.border }]}>
+                <Text style={[styles.sectionLabel, { color: colors.secondaryText }]}>Safety</Text>
+                <ReportUserButton onPress={openReportConfirm} />
+              </View>
+            )}
+            </ScrollView>
+          </>
         )}
       </BottomSheet>
 
-      <ConfirmModal
-        visible={removeConfirmVisible}
-        title="Remove Friend?"
-        message={`Remove ${profile?.username || "this user"} from your friends?`}
-        confirmLabel="Remove"
-        cancelLabel="Cancel"
-        dangerous
-        onConfirm={handleConfirmRemove}
-        onCancel={() => setRemoveConfirmVisible(false)}
+      <UserReportSheet
+        visible={reportSheetVisible}
+        pending={reportTarget}
+        reporterUserId={user?.uid ?? null}
+        reportedUsername={profile?.username}
+        colors={colors}
+        onClose={() => setReportSheetVisible(false)}
       />
 
       {/* Full-size photo preview — plain centered image, tap anywhere to
@@ -395,8 +519,11 @@ export default function UserCardSheet({ uid, onClose, colors }: Props) {
 const styles = StyleSheet.create({
   centerState: { alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 40 },
   stateText: { fontSize: 13, textAlign: "center" },
+  // flexShrink so this properly bounds/scrolls now that it sits alongside a
+  // fixed sibling header rather than being BottomSheet's sole child.
+  scrollBody: { flexShrink: 1 },
   scrollContent: { paddingBottom: 8, paddingTop: 4 },
-  header: { alignItems: "center", gap: 4, marginBottom: 14, paddingHorizontal: 8 },
+  header: { alignItems: "center", gap: 4, marginBottom: 14, paddingHorizontal: 8, paddingTop: 4 },
   // No maxWidth/numberOfLines here — the full username must always be
   // visible; it wraps to a second line instead of being clipped.
   name: { fontSize: 20, fontWeight: "800", textAlign: "center", marginTop: 10 },
@@ -436,6 +563,16 @@ const styles = StyleSheet.create({
   viewProfileText: { fontSize: 14, fontWeight: "700" },
   removeAction: { flexDirection: "row", alignItems: "center", justifyContent: "center", paddingVertical: 10, marginTop: 6 },
   removeActionText: { fontSize: 13, fontWeight: "600" },
+  safetySection: { marginTop: 14, paddingTop: 14, borderTopWidth: StyleSheet.hairlineWidth },
+  reportButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 54,
+    borderRadius: 17,
+    paddingHorizontal: 16,
+  },
+  reportButtonText: { fontSize: 15, fontWeight: "700" },
   avatarPreviewBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.9)", alignItems: "center", justifyContent: "center" },
   avatarPreviewImage: { width: "88%", aspectRatio: 1, borderRadius: 16 },
 });

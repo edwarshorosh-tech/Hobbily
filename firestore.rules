@@ -407,6 +407,44 @@ service cloud.firestore {
       allow read, update, delete: if false;
     }
 
+    // userReports/{reportId}: "Report user" (components/user-card/
+    // UserCardSheet.tsx's Safety section). Write-only from the client, same
+    // pattern as moderationEvents above — this app has no moderator/admin
+    // console or role model, so there is no one to grant broader read
+    // access to yet. reportId is deterministic
+    // (reporterUserId_reportedUserId_reason_relatedEntityId-or-"profile" —
+    // see services/userReportService.ts), which is what makes duplicate
+    // protection real: `allow create` but never `allow update` means a
+    // second identical submission targets a path that already has a
+    // document, which Firestore classifies as an update, not a create, and
+    // rejects outright.
+    match /userReports/{reportId} {
+      function isSignedIn() { return request.auth != null; }
+
+      function isValidReport() {
+        let data = request.resource.data;
+        return data.reporterUserId == request.auth.uid
+          && data.reporterUserId != data.reportedUserId
+          && data.reportedUserId is string && data.reportedUserId.size() > 0
+          && data.reason in [
+            'inappropriate_profile', 'harassment_or_bullying', 'hate_speech', 'threats_or_violence',
+            'sexual_content', 'unsafe_contact_request', 'spam_or_scam', 'impersonation',
+            'underage_safety_concern', 'sharing_personal_information', 'inappropriate_behavior', 'other'
+          ]
+          && (data.description == null || (data.description is string && data.description.size() <= 500))
+          && data.source is string && data.source.size() > 0
+          && (data.relatedEntityType == null || data.relatedEntityType in ['message', 'post', 'comment'])
+          && (data.relatedEntityId == null || (data.relatedEntityId is string && data.relatedEntityId.size() > 0))
+          && data.status == 'new'
+          && data.priority in ['normal', 'high', 'critical']
+          && reportId == data.reporterUserId + '_' + data.reportedUserId + '_' + data.reason
+              + '_' + (data.relatedEntityId == null ? 'profile' : data.relatedEntityId);
+      }
+
+      allow create: if isSignedIn() && isValidReport();
+      allow read, update, delete: if false;
+    }
+
     // ── Posts, comments, likes ────────────────────────────────────────────────
     // posts/{postId} holds content only — comments and likes are
     // subcollections (below), never inline arrays, specifically so each
@@ -592,7 +630,21 @@ service cloud.firestore {
     // city, hobbies, ...). Owner-scoped, matching the isOwner() pattern
     // already used by publicProfiles/{uid} above.
     match /users/{uid} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+      // Server-side mirror of MAX_HOBBIES (components/settings/
+      // HobbiesEditor.tsx) — a client-side check alone isn't a real limit
+      // (two concurrent saves, a modified client, or a direct write could
+      // all bypass it). Only checks presence/shape/size when `hobbies` is
+      // actually part of this write — every other profile field save (e.g.
+      // just city/bio) must keep working untouched. Per-item content
+      // validation (moderation, length) stays client-side only, same
+      // documented trust-boundary limitation already noted elsewhere in
+      // this file (no Cloud Functions in this project) — Firestore Rules
+      // has no way to iterate a list and validate each entry.
+      function isValidHobbies() {
+        return !('hobbies' in request.resource.data)
+          || (request.resource.data.hobbies is list && request.resource.data.hobbies.size() <= 20);
+      }
+      allow read, write: if request.auth != null && request.auth.uid == uid && isValidHobbies();
     }
 
     // BASELINE — progress/{uid}: streak/session tracking mirrored into

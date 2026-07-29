@@ -20,12 +20,15 @@ import FriendAvatar from "../../components/friends/FriendAvatar";
 import { useUserProfileSheet } from "../../hooks/useUserProfileSheet";
 import InlinePageDisclaimer from "../../components/disclaimers/InlinePageDisclaimer";
 import UserCardSheet from "../../components/user-card/UserCardSheet";
+import ConfirmModal from "../../components/ConfirmModal";
 import { brand } from "../../constants/colors";
 import { Opportunity, OPPORTUNITIES } from "../../constants/opportunities";
 import { joinWorkshop, fetchFriendWorkshopParticipants, fetchUserWorkshops } from "../../services/workshopService";
 import { useAuthorProfiles } from "../../hooks/useAuthorProfiles";
 import { friendJoinedLabel } from "../../utils/friendActivityLabel";
 import { withTimeout, TimeoutError } from "../../utils/withTimeout";
+import { FEATURE_FLAGS } from "../../constants/featureFlags";
+import { mvpRegistrationNoticeCopy } from "../../utils/mvpNotice";
 
 /** A genuine network hang here (no response at all) must not hold the Submit button's spinner forever — see withTimeout's own doc comment. joinWorkshop's deterministic doc id makes a retry after a timeout safe (never creates a duplicate). */
 const JOIN_TIMEOUT_MS = 20_000;
@@ -267,11 +270,45 @@ function DetailModal({ opp: oppProp, saved, joined, onToggleSave, onRegister, on
   }
   const effectiveSaved = oppProp ? saved : lastSavedRef.current;
   const effectiveJoined = oppProp ? joined : lastJoinedRef.current;
+
+  // MVP notice — real registration (services/workshopService.ts's
+  // joinWorkshop) is fully built and stays completely intact; this is purely
+  // a UI-layer gate in front of it (see constants/featureFlags.ts's own
+  // comment on why). Rendered as this same sheet's `overlay` (one native
+  // Modal, no stacking risk) rather than a second Modal — same fix already
+  // applied to Community's message delete and PostCard's post delete.
+  const [mvpNoticeVisible, setMvpNoticeVisible] = useState(false);
+  function handleRegisterPress() {
+    if (!FEATURE_FLAGS.exploreRegistrationEnabled) {
+      setMvpNoticeVisible(true);
+      return;
+    }
+    onRegister();
+  }
+  const mvpNotice = mvpRegistrationNoticeCopy("register");
+
   if (!opp) return null;
   const openMaps = () => Linking.openURL(`https://maps.google.com/?q=${encodeURIComponent(opp.mapsQuery ?? opp.location)}`);
 
   return (
-    <BottomSheet visible={!!oppProp} onClose={onClose} colors={colors} maxHeight="92%">
+    <BottomSheet
+      visible={!!oppProp}
+      onClose={onClose}
+      colors={colors}
+      maxHeight="92%"
+      overlay={
+        <ConfirmModal
+          asOverlay
+          visible={mvpNoticeVisible}
+          title={mvpNotice.title}
+          message={mvpNotice.message}
+          confirmLabel="Got it"
+          hideCancel
+          onConfirm={() => setMvpNoticeVisible(false)}
+          onCancel={() => setMvpNoticeVisible(false)}
+        />
+      }
+    >
           <ScrollView showsVerticalScrollIndicator={false}>
             <View style={{ flexDirection: "row", alignItems: "flex-start", marginBottom: 12 }}>
               <View style={{ flex: 1 }}>
@@ -336,7 +373,7 @@ function DetailModal({ opp: oppProp, saved, joined, onToggleSave, onRegister, on
           </ScrollView>
 
           <View style={{ flexDirection: "row", gap: 10, paddingTop: 8 }}>
-            <TouchableOpacity onPress={onRegister} style={[styles.actionBtn, { backgroundColor: colors.primary, flex: 2 }]}>
+            <TouchableOpacity onPress={handleRegisterPress} style={[styles.actionBtn, { backgroundColor: colors.primary, flex: 2 }]}>
               <Ionicons name={effectiveJoined ? "checkmark-circle-outline" : "pencil-outline"} size={16} color="#fff" style={{ marginRight: 6 }} />
               <Text style={{ color: "#fff", fontWeight: "700", fontSize: 15 }}>{effectiveJoined ? "You're Registered" : "Register Interest"}</Text>
             </TouchableOpacity>
@@ -441,7 +478,7 @@ export default function OpportunitiesScreen() {
   });
 
   return (
-    <SwipeableTab tabIndex={3} backgroundColor={colors.background} colors={colors}>
+    <SwipeableTab tabIndex={1} backgroundColor={colors.background} colors={colors}>
       {/* Bottom inset excluded — the Tabs navigator's own tab bar already
           reserves it (see hooks/useTabBarHeight.ts). */}
       <SafeAreaView edges={["top", "left", "right"]} style={[styles.container, { backgroundColor: colors.background }]}>

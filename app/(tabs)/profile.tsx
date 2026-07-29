@@ -10,7 +10,7 @@ import {
   Animated,
   AccessibilityInfo,
 } from "react-native";
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -28,6 +28,7 @@ import ConfirmModal from "../../components/ConfirmModal";
 import PostCard from "../../components/PostCard";
 import PostCardSkeleton from "../../components/post/PostCardSkeleton";
 import UserCardSheet from "../../components/user-card/UserCardSheet";
+import { useTourTarget, useRegisterProfilePostsTabSwitch } from "../../context/TourTargetsContext";
 import { useAuthorPosts } from "../../hooks/useAuthorPosts";
 import SwipeableTab from "../../components/SwipeableTab";
 import { TIP_KEYS, useTipsReset } from "../../components/TipBanner";
@@ -383,7 +384,7 @@ export default function ProfileScreen() {
   const { startTour } = useOnboardingTourController();
   const { localAvatarUri, saveFromPickedUri, removeLocalAvatar } = useLocalAvatar();
   const [personalityVisibilitySaving, setPersonalityVisibilitySaving] = useState(false);
-  const { achievements, currentStreak, totalSessions, totalMinutes } = useProgress();
+  const { achievements, currentStreak, totalSessions, totalMinutes, isLoaded: progressIsLoaded } = useProgress();
   const [selectedAchievementId, setSelectedAchievementId] = useState<string | null>(null);
   const { dailyReminderEnabled, setDailyReminderEnabled, resetDailyBanner } = useTime();
   const { signOut, deleteAccount, user } = useAuth();
@@ -411,6 +412,12 @@ export default function ProfileScreen() {
       : "posts";
 
   const [activeTab, setActiveTab] = useState<TabId>(initialTab);
+  // Lets OnboardingTour's Posts step switch this screen to its Posts tab
+  // before spotlighting the create-post button — see TourTargetsContext's
+  // useRegisterProfilePostsTabSwitch doc comment for why this bridge exists.
+  const postsTourRef = useTourTarget("profilePosts");
+  const switchToPostsTab = useCallback(() => setActiveTab("posts"), []);
+  useRegisterProfilePostsTabSwitch(switchToPostsTab);
   const [draft, setDraft] = useState({ ...profile });
   const [saveModalVisible, setSaveModalVisible] = useState(false);
   const [saveFailure, setSaveFailure] = useState<string | null>(null);
@@ -419,7 +426,6 @@ export default function ProfileScreen() {
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
   const [logoutModalVisible, setLogoutModalVisible] = useState(false);
   const [tipsResetDone, setTipsResetDone] = useState(false);
-  const [pageTipsResetDone, setPageTipsResetDone] = useState(false);
   const [hobbiesModalVisible, setHobbiesModalVisible] = useState(false);
   const [autoOpenRequests, setAutoOpenRequests] = useState(params.openRequests === "1");
   const [discardConfirmVisible, setDiscardConfirmVisible] = useState(false);
@@ -688,38 +694,46 @@ export default function ProfileScreen() {
     }
   }
 
-  async function handleResetTips() {
-    await AsyncStorage.multiRemove([
-      ...Object.values(TIP_KEYS),
-      "@hobbily_reminder_shown_date",
-    ]);
-    bumpTips();        // signal all mounted TipBanners to re-read AsyncStorage
-    resetDailyBanner(); // restore the planner daily reminder banner
-    setTipsResetDone(true);
-    setTimeout(() => setTipsResetDone(false), 2000);
+  /**
+   * Restores every dismissed tip and banner: the contextual TipBanners
+   * (AsyncStorage TIP_KEYS), the Planner daily reminder banner, and the
+   * per-page InlinePageDisclaimer dismiss-state (Firestore
+   * dismissedDisclaimers) — previously two separate buttons ("Reset
+   * dismissed tips" and "Show page tips again") that did almost the same
+   * thing under different names. Deliberately never touches onboarding/App
+   * Tour (its own "Replay App Tour" button below), the personality quiz,
+   * notification preferences, streak, or achievements.
+   */
+  async function resetDismissedTips() {
+    try {
+      await Promise.all([
+        AsyncStorage.multiRemove([
+          ...Object.values(TIP_KEYS),
+          "@hobbily_reminder_shown_date",
+        ]),
+        saveProfile({ ...profile, dismissedDisclaimers: {} }),
+      ]);
+      bumpTips();        // signal all mounted TipBanners to re-read AsyncStorage
+      resetDailyBanner(); // restore the planner daily reminder banner
+      setTipsResetDone(true);
+      AccessibilityInfo.announceForAccessibility?.("Tips restored. Dismissed tips and daily banners will be shown again.");
+      setTimeout(() => setTipsResetDone(false), 2000);
+    } catch (e) {
+      if (__DEV__) console.warn("[Profile] reset dismissed tips failed", e);
+    }
   }
 
   /**
    * Replays the post-signup spotlight walkthrough on demand. Clears
    * hasSeenOnboardingTour (so it reads as "not yet seen" again, same field
    * the original post-signup trigger checks) and shows the tour via the
-   * shared OnboardingTourContext — its own step 1 navigates back to Home
-   * itself, so this doesn't need to separately leave Settings.
+   * shared OnboardingTourContext, passing this screen's own route as the
+   * origin — OnboardingTour returns here (not Home) once the user finishes
+   * or skips a manually-launched tour.
    */
   function handleReplayTour() {
     resetOnboardingTour();
-    startTour();
-  }
-
-  /** Resets only the per-page disclaimer dismiss-state (InlinePageDisclaimer, constants/disclaimers.ts) — never touches onboarding or any other setting. */
-  async function handleShowPageTipsAgain() {
-    try {
-      await saveProfile({ ...profile, dismissedDisclaimers: {} });
-      setPageTipsResetDone(true);
-      setTimeout(() => setPageTipsResetDone(false), 2000);
-    } catch (e) {
-      if (__DEV__) console.warn("[Profile] page tips reset failed", e);
-    }
+    startTour("/(tabs)/profile");
   }
 
   const { posts: myPosts, isLoading: myPostsLoading, loadError: myPostsError, hasMore: myPostsHasMore, loadingMore: myPostsLoadingMore, loadMore: loadMoreMyPosts } = useAuthorPosts(user?.uid ?? null);
@@ -745,7 +759,7 @@ export default function ProfileScreen() {
         {/* Header */}
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
           <Text style={[styles.headerTitle, { color: colors.text }]}>Profile</Text>
-          <StreakButton streak={currentStreak ?? 0} colors={colors} onPress={() => setStreakModalVisible(true)} />
+          <StreakButton streak={currentStreak ?? 0} isLoaded={progressIsLoaded} colors={colors} onPress={() => setStreakModalVisible(true)} />
         </View>
 
         <ScrollView
@@ -896,7 +910,13 @@ export default function ProfileScreen() {
             <View style={{ padding: 16, paddingTop: 8 }}>
               <View style={styles.postsSectionRow}>
                 <Text style={[styles.sectionTitle, { color: colors.text }]}>My Posts</Text>
-                <TouchableOpacity onPress={() => router.push("/create-post" as any)}>
+                <TouchableOpacity
+                  ref={postsTourRef}
+                  onPress={() => router.push("/create-post" as any)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Create post"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
                   <Ionicons name="create-outline" size={22} color={colors.primary} />
                 </TouchableOpacity>
               </View>
@@ -1224,8 +1244,10 @@ export default function ProfileScreen() {
               <Text style={[styles.sectionTitle, { color: colors.text, marginTop: 4 }]}>Tips & Hints</Text>
               <TouchableOpacity
                 style={[styles.actionRow, { backgroundColor: colors.card, borderColor: colors.border }]}
-                onPress={handleResetTips}
+                onPress={resetDismissedTips}
                 activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel="Reset dismissed tips"
               >
                 <Ionicons name="refresh-outline" size={18} color={colors.primary} />
                 <View style={{ flex: 1, marginLeft: 10 }}>
@@ -1233,11 +1255,14 @@ export default function ProfileScreen() {
                     Reset dismissed tips
                   </Text>
                   <Text style={[styles.actionRowSub, { color: colors.secondaryText }]}>
-                    Show all tips and daily banners again
+                    Show dismissed page tips and daily banners again
                   </Text>
                 </View>
                 {tipsResetDone && (
-                  <Ionicons name="checkmark-circle" size={18} color="#10B981" />
+                  <View style={styles.tipsRestoredBadge}>
+                    <Ionicons name="checkmark-circle" size={16} color="#10B981" />
+                    <Text style={[styles.tipsRestoredText, { color: "#10B981" }]}>Tips restored</Text>
+                  </View>
                 )}
               </TouchableOpacity>
               <TouchableOpacity
@@ -1252,26 +1277,6 @@ export default function ProfileScreen() {
                     See Bubble's walkthrough of Hobbily's key features again
                   </Text>
                 </View>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.actionRow, { backgroundColor: colors.card, borderColor: colors.border, marginTop: 8 }]}
-                onPress={handleShowPageTipsAgain}
-                activeOpacity={0.7}
-                accessibilityRole="button"
-                accessibilityLabel="Show page tips again"
-              >
-                <Ionicons name="information-circle-outline" size={18} color={colors.primary} />
-                <View style={{ flex: 1, marginLeft: 10 }}>
-                  <Text style={[styles.actionRowLabel, { color: colors.text }]}>
-                    Show page tips again
-                  </Text>
-                  <Text style={[styles.actionRowSub, { color: colors.secondaryText }]}>
-                    Bring back the short intro note on Home, Planner, Community, Explore and Profile
-                  </Text>
-                </View>
-                {pageTipsResetDone && (
-                  <Ionicons name="checkmark-circle" size={18} color="#10B981" />
-                )}
               </TouchableOpacity>
 
               <Text style={[styles.sectionTitle, { color: colors.text, marginTop: 4 }]}>Account</Text>
@@ -1643,6 +1648,8 @@ const styles = StyleSheet.create({
   },
   actionRowLabel: { fontSize: 15, fontWeight: "600" },
   actionRowSub: { fontSize: 12, marginTop: 2 },
+  tipsRestoredBadge: { flexDirection: "row", alignItems: "center", gap: 4 },
+  tipsRestoredText: { fontSize: 12, fontWeight: "700" },
 
   // Log out / Delete
   logoutBtn: {

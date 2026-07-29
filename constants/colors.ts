@@ -189,6 +189,14 @@ export const brand = {
   /** Standard modal/sheet backdrop. */
   overlay: "rgba(0,0,0,0.55)",
   /**
+   * OnboardingTour's backdrop dim — lighter than the standard sheet
+   * `overlay` (0.42 vs 0.55) and tinted toward navy rather than pure black,
+   * so the screen underneath stays recognizable while attention is pulled
+   * to the spotlighted element. No real blur is layered behind it — see
+   * OnboardingTour.tsx's file header for why.
+   */
+  tourOverlay: "rgba(8,10,32,0.42)",
+  /**
    * Stronger, theme-independent red for the most destructive/irreversible
    * action in the app (Delete Account) — deliberately more alarming than
    * the softer per-theme `danger` token used for ordinary errors/cancel

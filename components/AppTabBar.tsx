@@ -26,10 +26,11 @@ import { useTourTarget, TourTargetId } from "../context/TourTargetsContext";
 
 const ANIM_DURATION = 200;
 
-/** The only two tab routes the post-signup OnboardingTour spotlights — see components/OnboardingTour.tsx. Every other route resolves to null (no registration, see useTourTarget's null-is-a-no-op contract). */
+/** The tab routes the OnboardingTour spotlights directly on the bar itself — see components/OnboardingTour.tsx. Every other route resolves to null (no registration, see useTourTarget's null-is-a-no-op contract). */
 const TOUR_TARGET_BY_ROUTE: Partial<Record<string, TourTargetId>> = {
   community: "communityTab",
   opportunities: "exploreTab",
+  profile: "profileTab",
 };
 
 function TabItem({
