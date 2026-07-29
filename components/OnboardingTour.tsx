@@ -82,6 +82,24 @@ type Step = {
   targetShape: TargetShape;
   /** True only for the Posts step — see file header. Handled by name rather than a generic callback field since there's exactly one such case. */
   needsProfilePostsTab?: boolean;
+  /** Manual per-step nudge (px, added to the measured y) — omitted for steps whose measured position is already right. The tab bar steps (communityTab/exploreTab/profileTab) target AppTabBar's Pressable, whose measured bounds are the *whole* flex:1 tab slot (tall enough to cover the full tab bar row), not the small icon+label pill visually centered inside it — this compensates for that gap rather than a coordinate bug. Platform-specific per step since the two platforms haven't needed the same correction. */
+  offsetY?: number;
+  /** Manual per-step nudge (px, added to the measured x) — same idea as offsetY but horizontal; omitted for steps whose measured position is already right. Not platform-specific unless a step actually needs different iOS/Android values. */
+  offsetX?: number;
+  /** Extra padding (px, added on top of the base PAD on all four sides) for this step's cutout only — omitted for steps whose base padding already frames the target. */
+  padBoost?: number;
+  /** Extra px added to the top edge only (on top of PAD + padBoost) — for growing a short/wide cutout (e.g. a tab bar item) toward a squarer look. */
+  topPadBoost?: number;
+  /** Extra px added to the bottom edge only (on top of PAD + padBoost) — independent of topPadBoost so top/bottom growth can be tuned separately instead of forcing a symmetric stretch. */
+  bottomPadBoost?: number;
+};
+
+/** Shared Android/iOS correction for every tab-bar-anchored step (communityTab/exploreTab/profileTab) — see Step.offsetY's own doc comment for why this is needed at all. Hand-tuned against real devices; reuse rather than re-deriving per step, since all three target the exact same AppTabBar.tsx Pressable shape. */
+const TAB_BAR_TARGET_CORRECTION = {
+  offsetY: Platform.OS === "android" ? 56 : 8,
+  padBoost: Platform.OS === "android" ? 10 : 0,
+  topPadBoost: Platform.OS === "android" ? 45 : 0,
+  bottomPadBoost: Platform.OS === "android" ? -78 : -20,
 };
 
 const STEPS: Step[] = [
@@ -105,6 +123,7 @@ const STEPS: Step[] = [
     targetId: "communityTab",
     route: "/(tabs)/community" as any,
     targetShape: "capsule",
+    ...TAB_BAR_TARGET_CORRECTION,
     title: "Community",
     body: "Over here is Community — a group chat connecting people with shared interests to talk and share experiences.",
   },
@@ -112,6 +131,7 @@ const STEPS: Step[] = [
     targetId: "exploreTab",
     route: "/(tabs)/opportunities" as any,
     targetShape: "capsule",
+    ...TAB_BAR_TARGET_CORRECTION,
     title: "Explore",
     body: "And Explore is your gateway to finding local places, venues, and open spots — both free and paid — to practice and develop your hobbies.",
   },
@@ -119,6 +139,12 @@ const STEPS: Step[] = [
     targetId: "profileTab",
     route: "/(tabs)/profile" as any,
     targetShape: "capsule",
+    ...TAB_BAR_TARGET_CORRECTION,
+    // Shifts the highlight right of the measured tab slot's center; needs
+    // more of a nudge on Android than iOS. communityTab/exploreTab don't
+    // need this at all, so it's set here rather than folded into
+    // TAB_BAR_TARGET_CORRECTION.
+    offsetX: Platform.OS === "android" ? 24 : 12,
     title: "Your Profile",
     body: "Manage your information, hobbies, and how other members see you.",
   },
@@ -133,11 +159,11 @@ const STEPS: Step[] = [
 ];
 
 /** Extra breathing room around the real element's measured bounds for the spotlight cutout/ring. */
-const PAD = 8;
+const PAD = 17;
 /** Fixed corner radius used for card/button-shaped targets — circle and capsule targets compute their own radius from the measured rect instead. */
 const ROUNDED_RECT_RADIUS = 18;
 /** Gap between the card and the bottom tab bar it always sits just above. */
-const CARD_BOTTOM_MARGIN = 14;
+const CARD_BOTTOM_MARGIN = 20;
 /** How far the card sits below its resting position while hidden (cardShow.value === 0) — a small dip, not a full off-screen slide, so every step transition (not just the tour's opening) reads as "settling in from below." */
 const CARD_DIP = 18;
 const CARD_HIDE_MS = 140;
@@ -296,7 +322,20 @@ export default function OnboardingTour({ visible, originRoute, onFinish }: Props
 
       // A real screen-state change (Profile's own tab), not a fake target —
       // see file header and TourTargetsContext's useRegisterProfilePostsTabSwitch.
-      if (activeStep.needsProfilePostsTab) switchProfileTabToPosts();
+      // This step shares its route with the previous one (profileTab), so the
+      // navigate+wait above was skipped — but that skip assumes "same route
+      // means already settled," which only held for the previous step
+      // because its target (the bottom tab bar) is always mounted regardless
+      // of screen content. This step's actual target lives inside Profile's
+      // own (heavier — posts/stats/friends/avatar) screen content, which can
+      // still be mid-mount at this point, especially on Android. Grant it
+      // the same settle window a real navigation would have, rather than
+      // relying solely on the measure-retry loop below to cover the gap.
+      if (activeStep.needsProfilePostsTab) {
+        switchProfileTabToPosts();
+        await wait(NAVIGATION_SETTLE_MS);
+        if (cancelled) return;
+      }
 
       for (let attempt = 0; attempt < MAX_MEASURE_ATTEMPTS; attempt++) {
         if (cancelled) return;
@@ -305,12 +344,27 @@ export default function OnboardingTour({ visible, originRoute, onFinish }: Props
           if (cancelled) return;
           rect = await ensureVisible(rect);
           if (cancelled) return;
+          if (activeStep.offsetY || activeStep.offsetX) {
+            rect = { ...rect, y: rect.y + (activeStep.offsetY ?? 0), x: rect.x + (activeStep.offsetX ?? 0) };
+          }
           lastRectRef.current = rect;
 
-          const clampedTop = Math.max(0, rect.y - PAD);
-          const clampedBottom = Math.min(screenHeight, rect.y + rect.height + PAD);
-          const clampedLeft = Math.max(0, rect.x - PAD);
-          const clampedRight = Math.min(screenWidth, rect.x + rect.width + PAD);
+          const pad = PAD + (activeStep.padBoost ?? 0);
+          const clampedTop = Math.max(0, rect.y - pad - (activeStep.topPadBoost ?? 0));
+          const rawBottom = rect.y + rect.height + pad + (activeStep.bottomPadBoost ?? 0);
+          // topPadBoost/bottomPadBoost/offsetY are an explicit "grow past the
+          // target" request — skip the screenHeight clamp when any is set.
+          // The tab bar sits at the very bottom of the screen already, so
+          // offsetY pushing rect.y down further means rect.y + rect.height
+          // can already be at or past screenHeight before any boost is even
+          // added — Math.min(screenHeight, ...) would silently eat the
+          // requested growth here otherwise.
+          const clampedBottom =
+            activeStep.topPadBoost || activeStep.bottomPadBoost || activeStep.offsetY
+              ? rawBottom
+              : Math.min(screenHeight, rawBottom);
+          const clampedLeft = Math.max(0, rect.x - pad);
+          const clampedRight = Math.min(screenWidth, rect.x + rect.width + pad);
 
           const springOrSnap = (target: number, onDone?: (finished?: boolean) => void) =>
             reduceMotion ? withTiming(target, { duration: 0 }, onDone) : withSpring(target, BOX_SPRING, onDone);
@@ -509,11 +563,17 @@ const styles = StyleSheet.create({
     position: "absolute",
     borderWidth: 2.5,
     borderColor: "rgba(255,255,255,0.95)",
+    // iOS-only — shadowColor/Opacity/Radius follow the ring's actual drawn
+    // shape (a hollow rect), but elevation (Android's equivalent) draws its
+    // drop shadow from the *whole view's rectangular bounds* regardless of
+    // the transparent middle, which reads as a faint shadow filling part of
+    // the cutout on Android. No elevation here at all rather than a low
+    // value, since even a small one reproduces the same filled-middle look,
+    // just fainter.
     shadowColor: brand.mascotPurple,
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.5,
     shadowRadius: 10,
-    elevation: 8,
   },
   // Always anchored just above the tab bar (bottom set inline) — never
   // repositions to chase a target; only opacity/translateY animate.
