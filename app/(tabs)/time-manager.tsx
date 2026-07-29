@@ -12,13 +12,15 @@ import {
   TouchableOpacity,
   Animated,
   ActivityIndicator,
+  AccessibilityInfo,
+  AppState,
+  LayoutAnimation,
 } from "react-native";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../../context/ThemeContext";
 import { useTime, TaskSaveResult, isPastDateTime } from "../../context/TimeContext";
-import { brand } from "../../constants/colors";
 import { useProfile } from "../../context/ProfileContext";
 import { useProgress } from "../../context/ProgressContext";
 import SwipeableTab from "../../components/SwipeableTab";
@@ -29,7 +31,7 @@ import ConfirmModal from "../../components/ConfirmModal";
 import { useTourTarget, useTourScrollRoot } from "../../context/TourTargetsContext";
 import { Task } from "../../types/Task";
 import { RecurrenceRule } from "../../types/Recurrence";
-import { addDaysISO, deviceTimeZone, localDateISO, parseLocalISO, startOfWeekISO } from "../../utils/dateUtils";
+import { addDaysISO, deviceTimeZone, isPastPlannerDate, localDateISO, parseLocalISO, startOfWeekISO } from "../../utils/dateUtils";
 import {
   NormalizedTime,
   computeDefaultStart,
@@ -46,6 +48,8 @@ import { getOccurrencesForRange, Occurrence, OccurrenceDeleteScope, OccurrenceEd
 import RepeatSettings, { RepeatPreset } from "../../components/planner/RepeatSettings";
 import OccurrenceScopeSheet from "../../components/planner/OccurrenceScopeSheet";
 import InlinePageDisclaimer from "../../components/disclaimers/InlinePageDisclaimer";
+import AIPlanningSheet from "../../components/planner/AIPlanningSheet";
+import { ParsedActivity } from "../../services/aiAssistantService";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 // All date math below is local-calendar-day based (utils/dateUtils.ts) and
@@ -74,6 +78,18 @@ function formatDate(iso: string): string {
 function formatLongDate(iso: string): string {
   const d = parseLocalISO(iso);
   return d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+}
+
+/** Shifts an ISO date by whole calendar months, clamping the day-of-month to the target month's real last day (e.g. Jan 31 + 1 month -> Feb 28/29, never rolling into March) — used by Month view's sticky prev/next controls. */
+function addMonthsISO(iso: string, months: number): string {
+  const d = parseLocalISO(iso);
+  const targetFirst = new Date(d.getFullYear(), d.getMonth() + months, 1);
+  const daysInTargetMonth = new Date(targetFirst.getFullYear(), targetFirst.getMonth() + 1, 0).getDate();
+  const clampedDay = Math.min(d.getDate(), daysInTargetMonth);
+  const y = targetFirst.getFullYear();
+  const m = String(targetFirst.getMonth() + 1).padStart(2, "0");
+  const dd = String(clampedDay).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
 }
 
 // ── Repeat preset <-> weekday-set mapping ────────────────────────────────────
@@ -229,48 +245,57 @@ type DayTileProps = {
   iso: string;
   isSelected: boolean;
   isToday: boolean;
+  isPast: boolean;
   hasTasks: boolean;
   colors: ReturnType<typeof useTheme>["colors"];
   onPress: () => void;
 };
 
-function DayTile({ iso, isSelected, isToday, hasTasks, colors, onPress }: DayTileProps) {
+function DayTile({ iso, isSelected, isToday, isPast, hasTasks, colors, onPress }: DayTileProps) {
   const d = parseLocalISO(iso);
   // Short, no-bounce selection pulse — purely decorative, never blocks interaction.
   const scale = useRef(new Animated.Value(1)).current;
   const wasSelected = useRef(isSelected);
 
   useEffect(() => {
-    if (isSelected && !wasSelected.current) {
+    if (isSelected && !wasSelected.current && !isPast) {
       scale.setValue(0.94);
       Animated.timing(scale, { toValue: 1, duration: 140, useNativeDriver: true }).start();
     }
     wasSelected.current = isSelected;
-  }, [isSelected, scale]);
+  }, [isSelected, isPast, scale]);
+
+  const dayLabel = d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+  const accessibilityLabel = isPast
+    ? `${dayLabel}. Past date. Unavailable for planning.`
+    : isSelected
+    ? `${dayLabel}. Selected.`
+    : `${dayLabel}. Available.`;
 
   return (
     <Animated.View style={[styles.dayItemWrap, { transform: [{ scale }] }]}>
       <TouchableOpacity
         onPress={onPress}
-        activeOpacity={0.75}
+        activeOpacity={isPast ? 1 : 0.75}
         style={[
           styles.dayItem,
-          isSelected
+          isSelected && !isPast
             ? { backgroundColor: colors.primary }
             : { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 },
-          isToday && !isSelected && { borderColor: colors.primary, borderWidth: 2 },
+          isToday && !isSelected && !isPast && { borderColor: colors.primary, borderWidth: 2 },
+          isPast && styles.dayItemPast,
         ]}
         accessibilityRole="button"
-        accessibilityState={{ selected: isSelected }}
-        accessibilityLabel={d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}
+        accessibilityState={{ selected: isSelected && !isPast, disabled: isPast }}
+        accessibilityLabel={accessibilityLabel}
       >
-        <Text style={[styles.dayName, { color: isSelected ? "#fff" : colors.secondaryText }]} numberOfLines={1}>
+        <Text style={[styles.dayName, { color: isSelected && !isPast ? "#fff" : colors.secondaryText }]} numberOfLines={1}>
           {d.toLocaleDateString(undefined, { weekday: "short" })}
         </Text>
-        <Text style={[styles.dayNum, { color: isSelected ? "#fff" : colors.text }]}>{d.getDate()}</Text>
+        <Text style={[styles.dayNum, { color: isPast ? colors.secondaryText : isSelected ? "#fff" : colors.text }]}>{d.getDate()}</Text>
         <View style={styles.dayDotRow}>
           {hasTasks ? (
-            <View style={[styles.dayDot, { backgroundColor: isSelected ? "#fff" : colors.primary }]} />
+            <View style={[styles.dayDot, { backgroundColor: isPast ? colors.secondaryText : isSelected ? "#fff" : colors.primary }]} />
           ) : (
             <View style={styles.dayDotEmpty} />
           )}
@@ -284,11 +309,20 @@ type DayStripProps = {
   selected: string;
   onSelect: (iso: string) => void;
   onShiftWeek: (deltaDays: number) => void;
+  /**
+   * When true, dates before today are greyed out, unselectable, and tapping
+   * one calls onPastDateTap instead of onSelect. Defaults to false — this
+   * same DayStrip is reused inside TaskModal's own recurrence "until date"
+   * picker below, where a date's validity isn't about "is it before today"
+   * at all, so that call site deliberately doesn't opt in.
+   */
+  blockPastDates?: boolean;
+  onPastDateTap?: () => void;
   colors: ReturnType<typeof useTheme>["colors"];
   taskCounts: Record<string, number>;
 };
 
-function DayStrip({ selected, onSelect, onShiftWeek, colors, taskCounts }: DayStripProps) {
+function DayStrip({ selected, onSelect, onShiftWeek, blockPastDates = false, onPastDateTap, colors, taskCounts }: DayStripProps) {
   const days = buildWeekDays(selected);
   const today = todayISO();
   const monthLabel = parseLocalISO(days[0]).toLocaleDateString(undefined, { month: "long", year: "numeric" });
@@ -309,6 +343,8 @@ function DayStrip({ selected, onSelect, onShiftWeek, colors, taskCounts }: DaySt
           onPress={() => onShiftWeek(-7)}
           style={[styles.weekNavBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          accessibilityRole="button"
+          accessibilityLabel="Previous week"
         >
           <Ionicons name="chevron-back" size={22} color={colors.text} />
         </TouchableOpacity>
@@ -317,6 +353,8 @@ function DayStrip({ selected, onSelect, onShiftWeek, colors, taskCounts }: DaySt
           onPress={() => onShiftWeek(7)}
           style={[styles.weekNavBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          accessibilityRole="button"
+          accessibilityLabel="Next week"
         >
           <Ionicons name="chevron-forward" size={22} color={colors.text} />
         </TouchableOpacity>
@@ -324,17 +362,21 @@ function DayStrip({ selected, onSelect, onShiftWeek, colors, taskCounts }: DaySt
 
       {/* Day tiles — non-scrolling 7-column grid, equal width */}
       <View style={styles.dayStripGrid}>
-        {days.map((iso) => (
-          <DayTile
-            key={iso}
-            iso={iso}
-            isSelected={iso === selected}
-            isToday={iso === today}
-            hasTasks={(taskCounts[iso] ?? 0) > 0}
-            colors={colors}
-            onPress={() => onSelect(iso)}
-          />
-        ))}
+        {days.map((iso) => {
+          const isPast = blockPastDates && isPastPlannerDate({ selectedDate: iso });
+          return (
+            <DayTile
+              key={iso}
+              iso={iso}
+              isSelected={iso === selected}
+              isToday={iso === today}
+              isPast={isPast}
+              hasTasks={(taskCounts[iso] ?? 0) > 0}
+              colors={colors}
+              onPress={() => (isPast ? onPastDateTap?.() : onSelect(iso))}
+            />
+          );
+        })}
       </View>
     </View>
   );
@@ -346,14 +388,17 @@ type WeekOverviewProps = {
   occurrences: Occurrence[];
   selected: string;
   onSelect: (iso: string) => void;
+  onPastDateTap: () => void;
+  /** Lifted up rather than local state — the parent screen needs to know whether Month view is open to decide whether the sticky header can ever show (see StickyMonthHeader below). */
+  zoomedOut: boolean;
+  onToggleZoom: () => void;
   colors: ReturnType<typeof useTheme>["colors"];
 };
 
-function WeekOverview({ occurrences, selected, onSelect, colors }: WeekOverviewProps) {
+function WeekOverview({ occurrences, selected, onSelect, onPastDateTap, zoomedOut, onToggleZoom, colors }: WeekOverviewProps) {
   // "Zoomed out" toggles the glance list from the current week to the whole
   // calendar month containing the selected date — same row layout, just more
   // of them; the page's own ScrollView handles the extra length.
-  const [zoomedOut, setZoomedOut] = useState(false);
   const days = zoomedOut ? buildMonthDays(selected) : buildWeekDays(selected);
   const today = todayISO();
   const monthLabel = parseLocalISO(selected).toLocaleDateString(undefined, { month: "long", year: "numeric" });
@@ -365,7 +410,7 @@ function WeekOverview({ occurrences, selected, onSelect, colors }: WeekOverviewP
           {zoomedOut ? `${monthLabel} at a Glance` : "Week at a Glance"}
         </Text>
         <TouchableOpacity
-          onPress={() => setZoomedOut((v) => !v)}
+          onPress={onToggleZoom}
           style={styles.weekOverviewZoomBtn}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           accessibilityRole="button"
@@ -384,24 +429,35 @@ function WeekOverview({ occurrences, selected, onSelect, colors }: WeekOverviewP
         const d = parseLocalISO(iso);
         const isSelected = iso === selected;
         const isToday = iso === today;
+        const isPast = isPastPlannerDate({ selectedDate: iso });
+        const dayLabel = d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
 
         return (
           <TouchableOpacity
             key={iso}
-            onPress={() => onSelect(iso)}
+            onPress={() => (isPast ? onPastDateTap() : onSelect(iso))}
+            activeOpacity={isPast ? 1 : 0.7}
             style={[
               styles.weekOverviewRow,
               i > 0 && { borderTopWidth: 1, borderTopColor: colors.border },
-              isSelected && { backgroundColor: colors.primary + "14" },
+              isSelected && !isPast && { backgroundColor: colors.primary + "14" },
+              isPast && styles.weekOverviewRowPast,
             ]}
             accessibilityRole="button"
-            accessibilityLabel={`Select ${d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}`}
+            accessibilityState={{ selected: isSelected && !isPast, disabled: isPast }}
+            accessibilityLabel={
+              isPast
+                ? `${dayLabel}. Past date. Unavailable for planning.`
+                : isSelected
+                ? `${dayLabel}. Selected.`
+                : `Select ${dayLabel}`
+            }
           >
             <View style={styles.weekOverviewDate}>
-              <Text style={[styles.weekOverviewDay, { color: isToday ? colors.primary : colors.secondaryText }]}>
+              <Text style={[styles.weekOverviewDay, { color: isPast ? colors.secondaryText : isToday ? colors.primary : colors.secondaryText }]}>
                 {d.toLocaleDateString(undefined, { weekday: "short" })}
               </Text>
-              <Text style={[styles.weekOverviewNum, { color: isToday ? colors.primary : colors.text }]}>
+              <Text style={[styles.weekOverviewNum, { color: isPast ? colors.secondaryText : isToday ? colors.primary : colors.text }]}>
                 {d.getDate()}
               </Text>
             </View>
@@ -418,13 +474,200 @@ function WeekOverview({ occurrences, selected, onSelect, colors }: WeekOverviewP
             </View>
 
             {dayTasks.length > 0 && (
-              <View style={[styles.weekOverviewCount, { backgroundColor: colors.primary }]}>
+              <View style={[styles.weekOverviewCount, { backgroundColor: isPast ? colors.secondaryText : colors.primary }]}>
                 <Text style={styles.weekOverviewCountText}>{dayTasks.length}</Text>
               </View>
             )}
           </TouchableOpacity>
         );
       })}
+    </View>
+  );
+}
+
+// ── Sticky Month header ───────────────────────────────────────────────────────
+// Only ever rendered while Week Overview is in Month mode AND the user has
+// scrolled its card's top edge past the top of the screen — see
+// TimeManagerScreen's monthSticky state. A plain fade (opacity), not a slide —
+// this sits right below the fixed "My Schedule" header and must never cover
+// it, so there's no vertical travel to animate.
+
+type StickyMonthHeaderProps = {
+  visible: boolean;
+  monthLabel: string;
+  selectedDateLabel: string;
+  onPrevMonth: () => void;
+  onNextMonth: () => void;
+  onPlanPress: () => void;
+  colors: ReturnType<typeof useTheme>["colors"];
+};
+
+function StickyMonthHeader({ visible, monthLabel, selectedDateLabel, onPrevMonth, onNextMonth, onPlanPress, colors }: StickyMonthHeaderProps) {
+  const opacity = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(opacity, { toValue: visible ? 1 : 0, duration: 160, useNativeDriver: true }).start();
+  }, [visible, opacity]);
+
+  return (
+    <Animated.View
+      pointerEvents={visible ? "auto" : "none"}
+      style={[styles.stickyMonthHeader, { backgroundColor: colors.card, borderBottomColor: colors.border, opacity }]}
+    >
+      <View style={styles.stickyMonthRow}>
+        <TouchableOpacity onPress={onPrevMonth} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} accessibilityRole="button" accessibilityLabel="Previous month">
+          <Ionicons name="chevron-back" size={20} color={colors.text} />
+        </TouchableOpacity>
+        <Text style={[styles.stickyMonthTitle, { color: colors.text }]} numberOfLines={1}>{monthLabel}</Text>
+        <TouchableOpacity onPress={onNextMonth} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} accessibilityRole="button" accessibilityLabel="Next month">
+          <Ionicons name="chevron-forward" size={20} color={colors.text} />
+        </TouchableOpacity>
+      </View>
+      <View style={styles.stickyMonthRow}>
+        <Text style={[styles.stickyMonthSelected, { color: colors.secondaryText }]} numberOfLines={1}>{selectedDateLabel}</Text>
+        <TouchableOpacity
+          onPress={onPlanPress}
+          style={[styles.stickyPlanBtn, { backgroundColor: colors.primary }]}
+          accessibilityRole="button"
+          accessibilityLabel="Plan an activity"
+        >
+          <Ionicons name="add" size={14} color="#fff" />
+          <Text style={styles.stickyPlanBtnText}>Plan</Text>
+        </TouchableOpacity>
+      </View>
+    </Animated.View>
+  );
+}
+
+// ── Past-date toast ───────────────────────────────────────────────────────────
+// A single shared instance (see TimeManagerScreen) rather than one per
+// calendar tile — tapping a past date from the day strip and from Week
+// Overview both funnel into the same visible/reset trigger, so rapid taps
+// from either place restart the same toast instead of stacking a second one.
+
+function PastDateToast({
+  visible,
+  belowStickyHeader,
+  colors,
+}: {
+  visible: boolean;
+  /** True while StickyMonthHeader is also showing — the toast drops below it instead of overlapping it. */
+  belowStickyHeader: boolean;
+  colors: ReturnType<typeof useTheme>["colors"];
+}) {
+  const opacity = useRef(new Animated.Value(0)).current;
+  const translateY = useRef(new Animated.Value(-6)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(opacity, { toValue: visible ? 1 : 0, duration: 160, useNativeDriver: true }),
+      Animated.timing(translateY, { toValue: visible ? 0 : -6, duration: 160, useNativeDriver: true }),
+    ]).start();
+  }, [visible, opacity, translateY]);
+
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[
+        styles.pastDateToast,
+        belowStickyHeader && styles.pastDateToastBelowSticky,
+        { backgroundColor: colors.text, opacity, transform: [{ translateY }] },
+      ]}
+    >
+      <Ionicons name="information-circle" size={16} color={colors.background} />
+      <Text style={[styles.pastDateToastText, { color: colors.background }]}>
+        This date has already passed. Choose today or a future date.
+      </Text>
+    </Animated.View>
+  );
+}
+
+// ── Plan an activity ─────────────────────────────────────────────────────────
+// The single primary entry point for adding something — a collapsed card
+// that expands into two options (manual / Bubble). Height/appear-disappear
+// of the options row is handled by LayoutAnimation (core React Native, not a
+// new dependency) rather than manually animating height from an unmeasured
+// "auto" — LayoutAnimation smoothly animates every sibling's layout change in
+// one call, which is also what keeps the surrounding ScrollView content from
+// visibly jumping. The chevron rotation is a small separate Animated.Value
+// since LayoutAnimation only covers layout (position/size/opacity), not
+// arbitrary transforms.
+
+type PlanActivitySelectorProps = {
+  expanded: boolean;
+  onToggle: () => void;
+  onManual: () => void;
+  onAI: () => void;
+  reduceMotion: boolean;
+  colors: ReturnType<typeof useTheme>["colors"];
+  /** Registers the collapsed card's header as the "plannerAddActivity" tour target — see TimeManagerScreen's tourRef. */
+  tourTargetRef?: (node: any) => void;
+};
+
+function PlanActivitySelector({ expanded, onToggle, onManual, onAI, reduceMotion, colors, tourTargetRef }: PlanActivitySelectorProps) {
+  const chevronRotate = useRef(new Animated.Value(expanded ? 1 : 0)).current;
+
+  useEffect(() => {
+    Animated.timing(chevronRotate, { toValue: expanded ? 1 : 0, duration: reduceMotion ? 0 : 220, useNativeDriver: true }).start();
+  }, [expanded, reduceMotion, chevronRotate]);
+
+  return (
+    <View style={[styles.planCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+      <TouchableOpacity
+        ref={tourTargetRef}
+        onPress={onToggle}
+        style={styles.planCardHeader}
+        accessibilityRole="button"
+        accessibilityLabel="Plan an activity"
+        accessibilityHint={expanded ? "Collapses the planning options" : "Shows options to plan an activity"}
+        accessibilityState={{ expanded }}
+      >
+        <View style={[styles.planCardIcon, { backgroundColor: colors.primary + "18" }]}>
+          <Ionicons name="add-circle-outline" size={22} color={colors.primary} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.planCardTitle, { color: colors.text }]}>Plan an activity</Text>
+          <Text style={[styles.planCardSubtitle, { color: colors.secondaryText }]}>Choose how you want to add it</Text>
+        </View>
+        <Animated.View
+          style={{
+            transform: [{ rotate: chevronRotate.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "90deg"] }) }],
+          }}
+        >
+          <Ionicons name="chevron-forward" size={20} color={colors.secondaryText} />
+        </Animated.View>
+      </TouchableOpacity>
+
+      {expanded && (
+        <View style={styles.planOptionsRow}>
+          <TouchableOpacity
+            onPress={onManual}
+            style={[styles.planOption, { backgroundColor: colors.background, borderColor: colors.border }]}
+            accessibilityRole="button"
+            accessibilityLabel="Plan manually"
+            accessibilityHint="Choose the activity, date and time yourself"
+          >
+            <Ionicons name="calendar-outline" size={20} color={colors.primary} />
+            <Text style={[styles.planOptionTitle, { color: colors.text }]}>Plan manually</Text>
+            <Text style={[styles.planOptionSubtitle, { color: colors.secondaryText }]}>
+              Choose the activity, date and time yourself.
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={onAI}
+            style={[styles.planOption, { backgroundColor: colors.background, borderColor: colors.border }]}
+            accessibilityRole="button"
+            accessibilityLabel="Plan with Bubble"
+            accessibilityHint="Describe your plan and let AI help organize it"
+          >
+            <Ionicons name="sparkles-outline" size={20} color={colors.primary} />
+            <Text style={[styles.planOptionTitle, { color: colors.text }]}>Plan with Bubble</Text>
+            <Text style={[styles.planOptionSubtitle, { color: colors.secondaryText }]}>
+              Describe your plan and let AI help organize it.
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 }
@@ -463,6 +706,15 @@ type TaskModalProps = {
   hobbies: string[];
   /** Pass to open in edit mode, undefined/null for add mode. */
   editing?: EditingContext | null;
+  /**
+   * Pre-fills a brand-new (not yet saved) activity — e.g. from Bubble's
+   * "Edit details" action (see AIPlanningSheet). Distinct from `editing`:
+   * this is still a CREATE, not an update to an existing Task, so it goes
+   * through the normal add path once saved. Ignored whenever `editing` is
+   * also set. Shares ParsedActivity's exact shape so a Bubble reply can be
+   * passed straight through with no extra mapping.
+   */
+  draft?: ParsedActivity | null;
   /** For the inline date picker's "has tasks" dots — same map the Planner's own day strip uses. */
   taskCounts: Record<string, number>;
   /** Called with the saved task's date right after a successful save, so the Planner view behind the sheet jumps to show it — the whole point of picking a different date in here is to see the task land there. */
@@ -514,7 +766,13 @@ function snapshotFromTask(task: Task): TaskFormSnapshot {
   return { title: task.title, type: task.type, date: task.date, time, endTime: deriveEndTime(time, task.duration) };
 }
 
-function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, editing, taskCounts, onDateCommitted }: TaskModalProps) {
+/** Same idea as snapshotFromTask, but for a not-yet-saved AI-suggested activity (see TaskModalProps.draft) — a malformed/unparseable time still falls back sanely rather than blocking the sheet from opening at all. */
+function snapshotFromDraft(draft: ParsedActivity): TaskFormSnapshot {
+  const time = parseTimeString(draft.time) ?? { hour: 9, minute: 0 };
+  return { title: draft.title, type: draft.type, date: draft.date, time, endTime: deriveEndTime(time, draft.duration) };
+}
+
+function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, editing, draft, taskCounts, onDateCommitted }: TaskModalProps) {
   const isEdit = !!editing;
   // A single occurrence's own calendar date is fixed — "this"/"following"
   // pin down which date is being split off, and "all" edits the series'
@@ -610,6 +868,8 @@ function TaskModal({ visible, onClose, onSave, defaultDate, colors, hobbies, edi
       if (editing.scope !== "this") seedRule = editing.task.recurrence ?? null;
     } else if (editing?.task) {
       snapshot = snapshotFromTask(editing.task);
+    } else if (draft) {
+      snapshot = snapshotFromDraft(draft);
     } else {
       snapshot = buildDefaultSnapshot(defaultDate);
     }
@@ -1066,8 +1326,7 @@ export default function TimeManagerScreen() {
     showDailyBanner, dismissDailyBanner,
   } = useTime();
   const { profile } = useProfile();
-  const { currentStreak, totalSessions, recordSession } = useProgress();
-
+  const { recordSession } = useProgress();
   const [selectedDate, setSelectedDate] = useState(todayISO());
   const [modalVisible, setModalVisible] = useState(false);
   const [editingContext, setEditingContext] = useState<EditingContext | null>(null);
@@ -1076,6 +1335,110 @@ export default function TimeManagerScreen() {
   const [timerTask, setTimerTask] = useState<{ title: string; duration: number } | null>(null);
   const tourRef = useTourTarget("plannerAddActivity");
   const plannerScrollRoot = useTourScrollRoot("planner");
+  const scrollViewRef = useRef<ScrollView>(null);
+
+  const [reduceMotion, setReduceMotion] = useState(false);
+  useEffect(() => {
+    AccessibilityInfo.isReduceMotionEnabled?.().then(setReduceMotion).catch(() => undefined);
+    const sub = AccessibilityInfo.addEventListener("reduceMotionChanged", setReduceMotion);
+    return () => sub.remove();
+  }, []);
+
+  // Re-checks "today" when the app returns to foreground, and periodically
+  // while it stays foregrounded, so a stale past/today/future classification
+  // never lingers past an actual midnight rollover just because nothing else
+  // happened to re-render this screen.
+  const [, forceDateTick] = useState(0);
+  const lastKnownTodayRef = useRef(todayISO());
+  useEffect(() => {
+    function checkDateRollover() {
+      const now = todayISO();
+      if (now !== lastKnownTodayRef.current) {
+        lastKnownTodayRef.current = now;
+        forceDateTick((n) => n + 1);
+      }
+    }
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") checkDateRollover();
+    });
+    const interval = setInterval(checkDateRollover, 5 * 60 * 1000);
+    return () => {
+      sub.remove();
+      clearInterval(interval);
+    };
+  }, []);
+
+  // Month view + its sticky header (see StickyMonthHeader) — lifted here
+  // rather than living inside WeekOverview, since the parent needs to know
+  // the mode to decide whether the sticky overlay can ever show at all.
+  const [zoomedOut, setZoomedOut] = useState(false);
+  const [monthSticky, setMonthSticky] = useState(false);
+  const weekOverviewOffsetRef = useRef<number | null>(null);
+
+  // "Plan an activity" — collapsed by default; LayoutAnimation (not a new
+  // dependency) smoothly animates the options row's height/opacity in and
+  // out, and every sibling below it, so the ScrollView content never jumps.
+  const [planSectionExpanded, setPlanSectionExpanded] = useState(false);
+  const planSectionOffsetRef = useRef<number | null>(null);
+
+  function setPlanSectionExpandedAnimated(next: boolean) {
+    if (!reduceMotion) {
+      LayoutAnimation.configureNext(LayoutAnimation.create(240, LayoutAnimation.Types.easeInEaseOut, LayoutAnimation.Properties.opacity));
+    }
+    setPlanSectionExpanded(next);
+  }
+
+  function togglePlanSection() {
+    setPlanSectionExpandedAnimated(!planSectionExpanded);
+  }
+
+  /** Used by the empty-state CTA and the sticky Month header's "Plan" button — both just need the section open and on screen, not a specific option pre-chosen. */
+  function expandAndScrollToPlanSection() {
+    setPlanSectionExpandedAnimated(true);
+    const y = planSectionOffsetRef.current;
+    if (y !== null) {
+      scrollViewRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true });
+    }
+  }
+
+  function setScrollRefs(node: ScrollView | null) {
+    scrollViewRef.current = node;
+    plannerScrollRoot.ref(node);
+  }
+
+  function handlePlannerScroll(e: { nativeEvent: { contentOffset: { y: number } } }) {
+    plannerScrollRoot.onScroll(e);
+    const y = e.nativeEvent.contentOffset.y;
+    const weekOverviewTop = weekOverviewOffsetRef.current;
+    const shouldStick = zoomedOut && weekOverviewTop !== null && y >= weekOverviewTop;
+    setMonthSticky((prev) => (prev === shouldStick ? prev : shouldStick));
+  }
+
+  /** Shifts the selected date by whole calendar months — Month view's sticky prev/next controls. Browsing a past month is allowed (viewing history); only *selecting a past day within it* is blocked, same as everywhere else. */
+  function handleShiftMonth(delta: 1 | -1) {
+    setSelectedDate((d) => addMonthsISO(d, delta));
+  }
+
+  // Past-date tap notice — one shared toast (see PastDateToast) for both the
+  // day strip and Week Overview's rows, so rapid taps from either restart the
+  // same timer instead of stacking multiple notices.
+  const [pastDateToastVisible, setPastDateToastVisible] = useState(false);
+  const pastDateToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function notifyPastDateBlocked() {
+    setPastDateToastVisible(true);
+    if (pastDateToastTimerRef.current) clearTimeout(pastDateToastTimerRef.current);
+    pastDateToastTimerRef.current = setTimeout(() => setPastDateToastVisible(false), 3000);
+  }
+  useEffect(() => {
+    return () => {
+      if (pastDateToastTimerRef.current) clearTimeout(pastDateToastTimerRef.current);
+    };
+  }, []);
+
+  // Plan with Bubble — same TaskModal, just seeded with Bubble's suggestion
+  // via `draft` (see TaskModalProps) instead of an empty/default snapshot.
+  const [aiSheetVisible, setAiSheetVisible] = useState(false);
+  const [pendingDraft, setPendingDraft] = useState<ParsedActivity | null>(null);
 
   // A generous but bounded window around the selected date — comfortably
   // covers everything the day list, day-strip dots, and Week/Month at a
@@ -1101,8 +1464,46 @@ export default function TimeManagerScreen() {
   const completedToday = dayTasks.filter((o) => o.completed).length;
   const totalToday = dayTasks.length;
 
+  // Whole-day check ("has this entire day already gone by"), not the
+  // finer same-day time-of-day check TaskModal's own isPastSelection
+  // already does — that one still applies once the sheet is open, for
+  // whatever date/time is actually configured in it.
+  const isSelectedDatePast = isPastPlannerDate({ selectedDate });
+  const [pastDateNoticeVisible, setPastDateNoticeVisible] = useState(false);
+
+  // Add Activity stays visible and in the same place for a past day (the
+  // user can still browse history there) — it just shows a short
+  // explanation instead of opening the full add-activity sheet, rather than
+  // opening a heavy form only to block Save once the user has already
+  // filled it out.
   function openAdd() {
+    if (isSelectedDatePast) {
+      setPastDateNoticeVisible(true);
+      return;
+    }
     setEditingContext(null);
+    setPendingDraft(null);
+    setModalVisible(true);
+  }
+
+  /** "Plan manually" from the new Plan an activity section — same guarded open as the existing Add Activity buttons. */
+  function openManualPlan() {
+    openAdd();
+  }
+
+  function openAIPlan() {
+    setAiSheetVisible(true);
+  }
+
+  /** Bubble's "Confirm and add" already saved the activity — this just jumps Planner to show where it landed, same as TaskModal's own onDateCommitted. */
+  function handleAIActivityAdded(dateISO: string) {
+    setSelectedDate(dateISO);
+  }
+
+  /** Bubble's "Edit details" — opens the exact same manual form, pre-filled, so the user can review/change anything before it's actually saved. */
+  function handleAIEditDetails(activity: ParsedActivity) {
+    setEditingContext(null);
+    setPendingDraft(activity);
     setModalVisible(true);
   }
 
@@ -1215,7 +1616,7 @@ export default function TimeManagerScreen() {
   }
 
   return (
-    <SwipeableTab tabIndex={1} backgroundColor={colors.background} colors={colors}>
+    <SwipeableTab tabIndex={3} backgroundColor={colors.background} colors={colors}>
       {/* Bottom inset excluded — the Tabs navigator's own tab bar already
           reserves it (see hooks/useTabBarHeight.ts); reserving it again here
           would just add an empty gap above the tab bar. */}
@@ -1234,9 +1635,10 @@ export default function TimeManagerScreen() {
           </Text>
         </View>
 
+        <View style={{ flex: 1 }}>
         <ScrollView
-          ref={plannerScrollRoot.ref}
-          onScroll={plannerScrollRoot.onScroll}
+          ref={setScrollRefs}
+          onScroll={handlePlannerScroll}
           scrollEventThrottle={16}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={{ paddingBottom: 40 }}
@@ -1257,24 +1659,31 @@ export default function TimeManagerScreen() {
             </View>
           )}
 
-          {/* Streak mini */}
-          {currentStreak > 0 && (
-            <View style={[styles.streakMini, { backgroundColor: colors.primary + "12", borderColor: colors.primary + "30" }]}>
-              <Ionicons name="flame" size={18} color={brand.streakFlame} />
-              <Text style={[styles.streakMiniText, { color: colors.primary }]}>
-                {currentStreak}-day streak · {totalSessions} sessions total
-              </Text>
-            </View>
-          )}
-
-          {/* Day Strip */}
+          {/* Day Strip — week navigation + day row come first, so the user
+              picks a date before being offered ways to plan on it. */}
           <View style={styles.sectionPad}>
             <DayStrip
               selected={selectedDate}
               onSelect={setSelectedDate}
               onShiftWeek={handleShiftWeek}
+              blockPastDates
+              onPastDateTap={notifyPastDateBlocked}
               colors={colors}
               taskCounts={taskCounts}
+            />
+          </View>
+
+          {/* Plan an activity — the single entry point for adding something,
+              right after date selection and before that day's content. */}
+          <View style={styles.sectionPad} onLayout={(e) => { planSectionOffsetRef.current = e.nativeEvent.layout.y; }}>
+            <PlanActivitySelector
+              expanded={planSectionExpanded}
+              onToggle={togglePlanSection}
+              onManual={openManualPlan}
+              onAI={openAIPlan}
+              reduceMotion={reduceMotion}
+              colors={colors}
+              tourTargetRef={tourRef}
             />
           </View>
 
@@ -1307,18 +1716,19 @@ export default function TimeManagerScreen() {
                 <Ionicons name="calendar-outline" size={30} color={colors.secondaryText} />
                 <Text style={[styles.emptyTitle, { color: colors.text }]}>Nothing scheduled</Text>
                 <Text style={[styles.emptyBody, { color: colors.secondaryText }]}>
-                  Add an activity for {formatLongDate(selectedDate)}.
+                  {isSelectedDatePast
+                    ? `No activities were scheduled for ${formatLongDate(selectedDate)}.`
+                    : `Add an activity for ${formatLongDate(selectedDate)}.`}
                 </Text>
-                <TouchableOpacity
-                  ref={tourRef}
-                  onPress={openAdd}
-                  style={[styles.emptyAddBtn, { backgroundColor: colors.primary }]}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Add activity for ${formatLongDate(selectedDate)}`}
-                >
-                  <Ionicons name="add" size={16} color="#fff" style={{ marginRight: 4 }} />
-                  <Text style={{ color: "#fff", fontWeight: "600" }}>Add Activity</Text>
-                </TouchableOpacity>
+                {/* No button here — Plan an activity above is the only entry
+                    point for creating something, so this can't duplicate it.
+                    Plain, non-tappable text, deliberately not styled like a
+                    link/button. */}
+                {!isSelectedDatePast && (
+                  <Text style={[styles.emptyHint, { color: colors.secondaryText }]}>
+                    Use the planner above to add an activity.
+                  </Text>
+                )}
               </View>
             ) : (
               dayTasks.map((occurrence) => (
@@ -1334,16 +1744,31 @@ export default function TimeManagerScreen() {
             )}
           </View>
 
-          {/* Week overview */}
-          <View style={styles.sectionPad}>
+          {/* Week / Month overview */}
+          <View style={styles.sectionPad} onLayout={(e) => { weekOverviewOffsetRef.current = e.nativeEvent.layout.y; }}>
             <WeekOverview
               occurrences={occurrences}
               selected={selectedDate}
               onSelect={setSelectedDate}
+              onPastDateTap={notifyPastDateBlocked}
+              zoomedOut={zoomedOut}
+              onToggleZoom={() => setZoomedOut((v) => !v)}
               colors={colors}
             />
           </View>
         </ScrollView>
+
+        <StickyMonthHeader
+          visible={monthSticky}
+          monthLabel={parseLocalISO(selectedDate).toLocaleDateString(undefined, { month: "long", year: "numeric" })}
+          selectedDateLabel={`${formatDate(selectedDate)}${totalToday > 0 ? ` · ${totalToday} scheduled` : ""}`}
+          onPrevMonth={() => handleShiftMonth(-1)}
+          onNextMonth={() => handleShiftMonth(1)}
+          onPlanPress={expandAndScrollToPlanSection}
+          colors={colors}
+        />
+        <PastDateToast visible={pastDateToastVisible} belowStickyHeader={monthSticky} colors={colors} />
+        </View>
 
         {/* Floating action row — Add Activity stays available even once the day
             already has tasks scheduled; Practice Now only makes sense once
@@ -1351,11 +1776,14 @@ export default function TimeManagerScreen() {
         {dayTasks.length > 0 && (
           <View style={styles.floatingRow}>
             <TouchableOpacity
-              ref={tourRef}
               onPress={openAdd}
-              style={[styles.floatBtn, styles.addFloatBtn, { backgroundColor: colors.card, borderColor: colors.primary }]}
+              style={[styles.floatBtn, styles.addFloatBtn, { backgroundColor: colors.card, borderColor: colors.primary }, isSelectedDatePast && { opacity: 0.45 }]}
               accessibilityRole="button"
-              accessibilityLabel={`Add activity for ${formatLongDate(selectedDate)}`}
+              accessibilityLabel={
+                isSelectedDatePast
+                  ? `Add activity for ${formatLongDate(selectedDate)} — this date has already passed`
+                  : `Add activity for ${formatLongDate(selectedDate)}`
+              }
             >
               <Ionicons name="add" size={20} color={colors.primary} style={{ marginRight: 6 }} />
               <Text style={{ color: colors.primary, fontWeight: "700", fontSize: 14 }}>Add Activity</Text>
@@ -1376,14 +1804,27 @@ export default function TimeManagerScreen() {
 
         <TaskModal
           visible={modalVisible}
-          onClose={() => setModalVisible(false)}
+          onClose={() => { setModalVisible(false); setPendingDraft(null); }}
           onSave={handleModalSave}
           defaultDate={selectedDate}
           colors={colors}
           hobbies={profile.hobbies}
           editing={editingContext}
+          draft={pendingDraft}
           taskCounts={taskCounts}
           onDateCommitted={setSelectedDate}
+        />
+
+        <AIPlanningSheet
+          visible={aiSheetVisible}
+          onClose={() => setAiSheetVisible(false)}
+          colors={colors}
+          tasks={tasks}
+          addTask={addTask}
+          deleteTask={deleteTask}
+          onActivityAdded={handleAIActivityAdded}
+          onEditDetails={handleAIEditDetails}
+          onPlanManually={openManualPlan}
         />
 
         <OccurrenceScopeSheet
@@ -1401,6 +1842,16 @@ export default function TimeManagerScreen() {
           defaultTitle={timerTask?.title}
           defaultMinutes={timerTask?.duration ?? 15}
           colors={colors}
+        />
+
+        <ConfirmModal
+          visible={pastDateNoticeVisible}
+          title="Past date"
+          message="You cannot add a new activity to a date that has already passed. You can still view your previous activities and progress."
+          confirmLabel="Got it"
+          hideCancel
+          onConfirm={() => setPastDateNoticeVisible(false)}
+          onCancel={() => setPastDateNoticeVisible(false)}
         />
       </SafeAreaView>
     </SwipeableTab>
@@ -1434,8 +1885,6 @@ const styles = StyleSheet.create({
   weekNav: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 4 },
   weekNavBtn: { paddingHorizontal: 8, paddingVertical: 6, borderRadius: 8, borderWidth: 1 },
   weekLabel: { fontSize: 13, fontWeight: "700" },
-  streakMini: { flexDirection: "row", alignItems: "center", gap: 6, marginHorizontal: 16, marginTop: 12, padding: 10, borderRadius: 10, borderWidth: 1 },
-  streakMiniText: { fontSize: 13, fontWeight: "600" },
   floatingRow: { flexDirection: "row", gap: 10, marginHorizontal: 16, marginTop: 8, marginBottom: 16 },
   floatBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", padding: 14, borderRadius: 14 },
   addFloatBtn: { borderWidth: 1.5 },
@@ -1447,6 +1896,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  dayItemPast: { opacity: 0.5 },
   dayName: { fontSize: 10, fontWeight: "600", marginBottom: 2, textTransform: "uppercase", letterSpacing: 0.3 },
   dayNum: { fontSize: 22, fontWeight: "800" },
   dayDotRow: { height: 8, justifyContent: "center", alignItems: "center", marginTop: 2 },
@@ -1492,14 +1942,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   emptyTitle: { fontSize: 16, fontWeight: "700", marginTop: 8, marginBottom: 4 },
-  emptyBody: { textAlign: "center", fontSize: 13, lineHeight: 18, marginBottom: 14 },
-  emptyAddBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 10,
-  },
+  emptyBody: { textAlign: "center", fontSize: 13, lineHeight: 18 },
+  emptyHint: { textAlign: "center", fontSize: 12, lineHeight: 16, marginTop: 10 },
   // Week overview
   weekOverviewCard: {
     borderRadius: 16,
@@ -1526,6 +1970,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     gap: 10,
   },
+  weekOverviewRowPast: { opacity: 0.5 },
   weekOverviewDate: { width: 34, alignItems: "center" },
   weekOverviewDay: { fontSize: 10, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.3 },
   weekOverviewNum: { fontSize: 16, fontWeight: "800" },
@@ -1540,6 +1985,57 @@ const styles = StyleSheet.create({
     paddingHorizontal: 5,
   },
   weekOverviewCountText: { color: "#fff", fontSize: 11, fontWeight: "700" },
+  // Sticky month header — absolutely positioned within the wrapper View that
+  // holds the ScrollView (see TimeManagerScreen), so `top: 0` sits directly
+  // below the screen's fixed "My Schedule" header, never over it.
+  stickyMonthHeader: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    borderBottomWidth: 1,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    paddingBottom: 10,
+    gap: 8,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  stickyMonthRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  stickyMonthTitle: { fontSize: 15, fontWeight: "700", flex: 1, textAlign: "center" },
+  stickyMonthSelected: { fontSize: 13, fontWeight: "600", flex: 1 },
+  stickyPlanBtn: { flexDirection: "row", alignItems: "center", gap: 3, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 12, minHeight: 32 },
+  stickyPlanBtnText: { color: "#fff", fontSize: 13, fontWeight: "700" },
+  // Past-date toast
+  pastDateToast: {
+    position: "absolute",
+    top: 8,
+    left: 20,
+    right: 20,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  pastDateToastText: { flex: 1, fontSize: 13, fontWeight: "600", lineHeight: 18 },
+  // Approximate StickyMonthHeader height (two rows + padding) — good enough
+  // to keep the toast from overlapping it without measuring it exactly.
+  pastDateToastBelowSticky: { top: 100 },
+  // Plan an activity
+  planCard: { borderRadius: 20, borderWidth: 1, padding: 4 },
+  planCardHeader: { flexDirection: "row", alignItems: "center", gap: 12, padding: 12, minHeight: 44 },
+  planCardIcon: { width: 40, height: 40, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+  planCardTitle: { fontSize: 16, fontWeight: "700" },
+  planCardSubtitle: { fontSize: 13, marginTop: 1 },
+  planOptionsRow: { flexDirection: "row", gap: 10, padding: 10, paddingTop: 0 },
+  planOption: { flex: 1, borderWidth: 1, borderRadius: 16, padding: 14, gap: 6, minHeight: 44 },
+  planOptionTitle: { fontSize: 14, fontWeight: "700" },
+  planOptionSubtitle: { fontSize: 12, lineHeight: 16 },
   // Modal
   modalHeader: {
     flexDirection: "row",

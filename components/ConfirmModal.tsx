@@ -48,6 +48,15 @@ type Props = {
    * dialog open — it's a brief guard, not a hang risk.
    */
   loading?: boolean;
+  /**
+   * Hides the Cancel button, leaving a single full-width action — for a
+   * plain informational notice ("Got it") rather than a real confirm/cancel
+   * choice. `onCancel` is still called by the backdrop tap and Android
+   * back/Escape (there's no separate "dismiss" callback to wire), so a
+   * caller in this mode should point both onConfirm and onCancel at the
+   * same close handler.
+   */
+  hideCancel?: boolean;
 };
 
 export default function ConfirmModal({
@@ -61,6 +70,7 @@ export default function ConfirmModal({
   onCancel,
   asOverlay = false,
   loading = false,
+  hideCancel = false,
 }: Props) {
   const { colors } = useTheme();
 
@@ -83,13 +93,15 @@ export default function ConfirmModal({
 
         <View style={styles.buttons}>
           {/* Cancel — neutral colour */}
-          <Pressable
-            style={[styles.btn, { backgroundColor: colors.border }, loading && { opacity: 0.5 }]}
-            onPress={handleCancel}
-            disabled={loading}
-          >
-            <Text style={[styles.btnText, { color: colors.text }]}>{cancelLabel}</Text>
-          </Pressable>
+          {!hideCancel && (
+            <Pressable
+              style={[styles.btn, { backgroundColor: colors.border }, loading && { opacity: 0.5 }]}
+              onPress={handleCancel}
+              disabled={loading}
+            >
+              <Text style={[styles.btnText, { color: colors.text }]}>{cancelLabel}</Text>
+            </Pressable>
+          )}
 
           {/* Confirm — red for destructive actions, primary otherwise */}
           <Pressable

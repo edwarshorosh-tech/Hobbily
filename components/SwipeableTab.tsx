@@ -38,9 +38,9 @@ import EdgeSwipeIndicator from "./navigation/EdgeSwipeIndicator";
 
 const TABS = [
   "/(tabs)",
-  "/(tabs)/time-manager",
-  "/(tabs)/community",
   "/(tabs)/opportunities",
+  "/(tabs)/community",
+  "/(tabs)/time-manager",
   "/(tabs)/profile",
 ] as const;
 

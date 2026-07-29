@@ -50,6 +50,22 @@ export type ModerationCheckResult =
 const ZERO_WIDTH_RE = /[\u200B\u200C\u200D\u2060\uFEFF]/g;
 // Kept in sync by hand with utils/moderation/normalize.ts's EMOJI_RE.
 const EMOJI_RE = /[\u{1F1E6}-\u{1F1FF}\u{1F300}-\u{1FAFF}\u{2190}-\u{21FF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE00}-\u{FE0F}]/gu;
+// Kept in sync by hand with utils/moderation/normalize.ts \u2014 see that
+// file's own comments for what each of these covers.
+const HEBREW_DIACRITICS_RE = /[\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7]/g;
+const HEBREW_FINAL_FORMS_MAP: Record<string, string> = { "\u05DA": "\u05DB", "\u05DD": "\u05DE", "\u05DF": "\u05E0", "\u05E3": "\u05E4", "\u05E5": "\u05E6" };
+const ARABIC_DIACRITICS_RE = /[\u064B-\u0655\u0670]/g;
+const ARABIC_TATWEEL_RE = /\u0640/g;
+const ARABIC_LETTER_FORMS_MAP: Record<string, string> = {
+  "\u0622": "\u0627", "\u0623": "\u0627", "\u0625": "\u0627", "\u0671": "\u0627", "\u0629": "\u0647", "\u0649": "\u064A", "\u0624": "\u0648", "\u0626": "\u064A",
+};
+const ARABIC_INDIC_DIGITS_RE = /[\u0660-\u0669\u06F0-\u06F9]/g;
+function foldArabicDigit(ch: string): string {
+  const code = ch.codePointAt(0)!;
+  if (code >= 0x0660 && code <= 0x0669) return String(code - 0x0660);
+  if (code >= 0x06f0 && code <= 0x06f9) return String(code - 0x06f0);
+  return ch;
+}
 const WORD_SPLIT_RE = /[ .\-_,]+/;
 const SINGLE_CHAR_WORD_RE = /^[\p{L}\p{N}]$/u;
 
@@ -88,27 +104,48 @@ const HOMOGLYPH_MAP: Record<string, string> = {
   ѕ: "s", і: "i", ј: "j", α: "a", β: "b", ε: "e", κ: "k", ο: "o", ρ: "p", τ: "t", υ: "y", χ: "x",
 };
 
+// Inverse direction of HOMOGLYPH_MAP's Cyrillic entries — Latin lookalikes
+// folded back to Cyrillic, so a Russian term matches "cука" (Latin c).
+const LATIN_TO_CYRILLIC_MAP: Record<string, string> = { a: "а", e: "е", o: "о", p: "р", c: "с", y: "у", x: "х" };
+
+// Arabic chat alphabet ("Arabizi") digit substitutions folded back to Arabic.
+const ARABIZI_MAP: Record<string, string> = { "2": "ع", "3": "ع", "5": "خ", "6": "ط", "7": "ح", "8": "ق" };
+
 function applyCharMap(input: string, map: Record<string, string>): string {
   let out = "";
   for (const ch of input) out += map[ch] ?? ch;
   return out;
 }
 
-function normalizeForModeration(rawInput: string): { collapsed: string; latinFold: string } {
+function normalizeForModeration(rawInput: string): { collapsed: string; latinFold: string; cyrillicFold: string; arabicFold: string } {
   const nfkc = rawInput.normalize("NFKC");
-  const stripped = nfkc.replace(ZERO_WIDTH_RE, "").replace(EMOJI_RE, "");
-  const spaced = stripped.replace(/\s+/g, " ").trim();
+  const stripped = nfkc
+    .replace(ZERO_WIDTH_RE, "")
+    .replace(EMOJI_RE, "")
+    .replace(HEBREW_DIACRITICS_RE, "")
+    .replace(ARABIC_DIACRITICS_RE, "")
+    .replace(ARABIC_TATWEEL_RE, "")
+    .replace(ARABIC_INDIC_DIGITS_RE, foldArabicDigit);
+  const scriptFolded = applyCharMap(applyCharMap(stripped, HEBREW_FINAL_FORMS_MAP), ARABIC_LETTER_FORMS_MAP);
+  const spaced = scriptFolded.replace(/\s+/g, " ").trim();
   const lower = spaced.toLowerCase();
   const despaced = collapseLetterSpacing(lower);
   const collapsed = collapseRepeats(despaced).replace(/ {2,}/g, " ").trim();
   const latinFold = applyCharMap(applyCharMap(collapsed, LEET_MAP), HOMOGLYPH_MAP);
-  return { collapsed, latinFold };
+  const cyrillicFold = applyCharMap(collapsed, LATIN_TO_CYRILLIC_MAP);
+  const arabicFold = applyCharMap(collapsed, ARABIZI_MAP);
+  return { collapsed, latinFold, cyrillicFold, arabicFold };
 }
 
 // ── Dictionary (ported subset of constants/moderationTerms.ts — see that
 // file's own header for sourcing/scope notes; not repeated here) ──────────
 
-function t(language: string, normalizedTerm: string, category: ModerationCategory, severity: ModerationSeverity, matchMode: MatchMode = "exact_token"): Term {
+function t(language: string, rawTerm: string, category: ModerationCategory, severity: ModerationSeverity, matchMode: MatchMode = "exact_token"): Term {
+  // Mirrors constants/moderationTerms.ts's term() — regex-mode terms are
+  // literal patterns, never folded; everything else is stored pre-folded to
+  // `collapsed` so it matches whatever the input pipeline folds real text to
+  // (Hebrew final-forms, Arabic letter-form variants, diacritics stripped, ...).
+  const normalizedTerm = matchMode === "regex" ? rawTerm : normalizeForModeration(rawTerm).collapsed;
   return { language, normalizedTerm, category, severity, matchMode };
 }
 
@@ -162,6 +199,8 @@ const TERMS: Term[] = [
 ];
 
 const LATIN_SCRIPT_LANGS = new Set(["en", "es", "fr", "de"]);
+const CYRILLIC_SCRIPT_LANGS = new Set(["ru"]);
+const ARABIC_SCRIPT_LANGS = new Set(["ar"]);
 const MIN_TERM_LENGTH = 3;
 const SEVERITY_RANK: Record<ModerationSeverity, number> = { low: 0, medium: 1, high: 2, critical: 3 };
 
@@ -184,12 +223,20 @@ export function checkModerationText(rawText: string): ModerationCheckResult {
   const trimmed = rawText.trim();
   if (!trimmed) return { allowed: true };
 
-  const { collapsed, latinFold } = normalizeForModeration(trimmed);
+  const { collapsed, latinFold, cyrillicFold, arabicFold } = normalizeForModeration(trimmed);
   const rawLower = trimmed.toLowerCase().replace(/\s+/g, " ");
-  const collapsedPadded = ` ${collapsed} `;
-  const latinPadded = ` ${latinFold} `;
-  const collapsedTokens = tokenize(collapsed);
-  const latinTokens = tokenize(latinFold);
+  const variants: Record<string, { padded: string; tokens: string[] }> = {
+    collapsed: { padded: ` ${collapsed} `, tokens: tokenize(collapsed) },
+    latinFold: { padded: ` ${latinFold} `, tokens: tokenize(latinFold) },
+    cyrillicFold: { padded: ` ${cyrillicFold} `, tokens: tokenize(cyrillicFold) },
+    arabicFold: { padded: ` ${arabicFold} `, tokens: tokenize(arabicFold) },
+  };
+  function variantFor(language: string) {
+    if (LATIN_SCRIPT_LANGS.has(language)) return variants.latinFold;
+    if (CYRILLIC_SCRIPT_LANGS.has(language)) return variants.cyrillicFold;
+    if (ARABIC_SCRIPT_LANGS.has(language)) return variants.arabicFold;
+    return variants.collapsed;
+  }
 
   let worst: Term | null = null;
   for (const term of TERMS) {
@@ -202,8 +249,8 @@ export function checkModerationText(rawText: string): ModerationCheckResult {
         hit = false;
       }
     } else {
-      const isLatin = LATIN_SCRIPT_LANGS.has(term.language);
-      hit = matchesNonRegexTerm(isLatin ? latinPadded : collapsedPadded, isLatin ? latinTokens : collapsedTokens, term);
+      const { padded, tokens } = variantFor(term.language);
+      hit = matchesNonRegexTerm(padded, tokens, term);
     }
     if (hit && (!worst || SEVERITY_RANK[term.severity] > SEVERITY_RANK[worst.severity])) worst = term;
   }

@@ -19,8 +19,14 @@
  *    without verification. Wire a real provider's list into this same
  *    ModerationTerm shape when one is selected; the matching engine already
  *    supports both categories.
- *  - Every entry here is normalized (lowercase) at authoring time — the
- *    matcher never re-normalizes term text, only the input being checked.
+ *  - Every entry here is written as natural, readable text (correct casing/
+ *    grammar, e.g. Hebrew final letter forms where grammar requires them) —
+ *    the `term()` builder below runs it through normalizeForModeration()'s
+ *    `collapsed` output before storing it, so the stored value already
+ *    matches whatever the input pipeline folds real user text to (lowercase,
+ *    diacritics stripped, Hebrew final-forms and Arabic letter-form variants
+ *    folded, ...). Don't hand-pre-fold entries yourselves — write them
+ *    naturally and let the builder normalize them, exactly once, consistently.
  *  - v3 adds Hebrew ("he") and Arabic ("ar") coverage, plus expands Russian.
  *    Same sourcing rule applies: ordinary, unambiguous profanity/threat/
  *    self-harm/drug phrases built from ordinary vocabulary, never slurs —
@@ -36,29 +42,37 @@
  *  - Tokenization/matching already Just Works for Hebrew and Arabic with no
  *    engine changes: `\p{L}` (used by tokenize() and the letter-spacing
  *    collapse in utils/moderation/normalize.ts) covers Hebrew and Arabic
- *    script, and neither "he" nor "ar" is in LATIN_SCRIPT_LANGS
- *    (services/moderationService.ts), so both are matched against
- *    `collapsed` (script-preserving), never leet/homoglyph-folded — the same
- *    path Russian already uses, for the same reason (folding would corrupt
- *    real Hebrew/Arabic text). Hebrew/Arabic have no upper/lower case, so
- *    `.toLowerCase()` is a harmless no-op for them. No homoglyph table was
- *    added for either script — unlike Cyrillic, Hebrew/Arabic letterforms
- *    aren't visually confusable with Latin letters, so it isn't a realistic
- *    evasion vector.
+ *    script. Hebrew have no upper/lower case, so `.toLowerCase()` is a
+ *    harmless no-op for it.
+ *  - v4 (services/moderationService.ts): each language now matches against
+ *    the fold variant that mirrors its own real evasion convention — English
+ *    (+es/fr/de) against `latinFold` (leetspeak + Cyrillic/Greek homoglyphs
+ *    folded to Latin), Russian against `cyrillicFold` (the inverse: a Latin
+ *    lookalike swapped into a Cyrillic word, folded back), Arabic against
+ *    `arabicFold` (Arabizi digit substitution folded back to Arabic script),
+ *    Hebrew still against the plain `collapsed` text — Hebrew has no
+ *    comparably common "respell it another way" slang convention to fold
+ *    against, and no homoglyph table was added for it either: unlike
+ *    Cyrillic, Hebrew/Arabic letterforms aren't visually confusable with
+ *    Latin letters, so that isn't a realistic evasion vector for either.
  */
 import { ModerationTerm } from "../types/Moderation";
+import { normalizeForModeration } from "../utils/moderation/normalize";
 
 /** Bump whenever this array changes — mirrored in MODERATION_RULESET_VERSION (types/Moderation.ts) and worker/src/moderation.ts, which must be kept in sync by hand (see that file's own comment on why it can't literally import this one). */
-export const TERMS_VERSION = 3;
+export const TERMS_VERSION = 4;
 
 function term(
   id: string,
   language: string,
-  normalizedTerm: string,
+  rawTerm: string,
   category: ModerationTerm["category"],
   severity: ModerationTerm["severity"],
   matchMode: ModerationTerm["matchMode"] = "exact_token"
 ): ModerationTerm {
+  // regex-mode terms are literal patterns, not text to fold — normalizing
+  // one would corrupt its syntax (e.g. escaped digits/symbols).
+  const normalizedTerm = matchMode === "regex" ? rawTerm : normalizeForModeration(rawTerm).collapsed;
   return { id, language, normalizedTerm, category, severity, matchMode, enabled: true, version: TERMS_VERSION };
 }
 

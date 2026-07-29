@@ -3,7 +3,7 @@
  * Greeting, streak indicator, today's tasks, suggested opportunities, quick actions.
  */
 import {
-  View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator, TextInput, Image,
+  View, Text, ScrollView, StyleSheet, TouchableOpacity, Animated, Image,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -11,24 +11,15 @@ import { router } from "expo-router";
 import { useTheme } from "../../context/ThemeContext";
 import InlinePageDisclaimer from "../../components/disclaimers/InlinePageDisclaimer";
 import { useProfile } from "../../context/ProfileContext";
-import { useTime, TaskSaveResult } from "../../context/TimeContext";
+import { useTime } from "../../context/TimeContext";
 import SwipeableTab from "../../components/SwipeableTab";
 import TipBanner, { TIP_KEYS } from "../../components/TipBanner";
 import FriendsLeaderboard from "../../components/home/FriendsLeaderboard";
 import NotificationBell from "../../components/notifications/NotificationBell";
-import { useTourTarget, useTourScrollRoot } from "../../context/TourTargetsContext";
-import MascotAvatar, { MascotNameBadge } from "../../components/MascotAvatar";
-import { useRef, useState } from "react";
-import { localDateISO, parseLocalISO } from "../../utils/dateUtils";
+import { useTourScrollRoot } from "../../context/TourTargetsContext";
+import { useRef } from "react";
+import { localDateISO } from "../../utils/dateUtils";
 import { formatTime12h, formatTimeLabel, minutesToNormalizedTime, timeStringToMinutes } from "../../utils/time";
-import { Task } from "../../types/Task";
-import {
-  ChatMessage,
-  friendlyAiAssistantMessage,
-  getAiWorkerDiagnostics,
-  isAiAssistantConfigured,
-  sendChatMessage,
-} from "../../services/aiAssistantService";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -40,194 +31,89 @@ function greeting(name: string): string {
   return `Good ${part}, ${name || "there"}!`;
 }
 
-/** "Jul 22" — short enough for an inline confirmation bubble. */
-function formatShortDate(dateISO: string): string {
-  return parseLocalISO(dateISO).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+// ── Quick Actions ────────────────────────────────────────────────────────────
+// A small config-driven list instead of two hand-written JSX branches, so
+// the Personality Quiz slot can be swapped for Plan Activity once the quiz
+// is completed without Home itself remounting or the other slots (Post,
+// Feed) shifting identity. Stable `id`s (not array index) are used as the
+// TouchableOpacity key so React never confuses the Quiz slot for the Plan
+// Activity slot that replaces it.
+
+type QuickAction = {
+  id: string;
+  label: string;
+  icon: string; // Ionicons name
+  color: string;
+  onPress: () => void;
+  accessibilityLabel: string;
+};
+
+function buildQuickActions({
+  quizLoaded,
+  quizCompleted,
+  colors,
+  onPost,
+  onFeed,
+  onQuiz,
+  onPlanActivity,
+}: {
+  quizLoaded: boolean;
+  quizCompleted: boolean;
+  colors: { primary: string };
+  onPost: () => void;
+  onFeed: () => void;
+  onQuiz: () => void;
+  onPlanActivity: () => void;
+}): QuickAction[] {
+  const actions: QuickAction[] = [
+    { id: "post", label: "Post", icon: "add-circle-outline", color: colors.primary, onPress: onPost, accessibilityLabel: "Create a post" },
+    { id: "feed", label: "Feed", icon: "newspaper-outline", color: "#F59E0B", onPress: onFeed, accessibilityLabel: "Open feed" },
+  ];
+  // While the completion state is still loading, keep the pre-existing Quiz
+  // slot rather than flashing Plan Activity in and possibly back to Quiz a
+  // moment later once the real value arrives.
+  if (!quizLoaded || !quizCompleted) {
+    actions.push({ id: "quiz", label: "Quiz", icon: "help-circle-outline", color: "#8B5CF6", onPress: onQuiz, accessibilityLabel: "Take personality quiz" });
+  } else {
+    actions.push({
+      id: "plan-activity",
+      label: "Plan activity",
+      icon: "calendar-outline",
+      color: "#0EA5E9",
+      onPress: onPlanActivity,
+      accessibilityLabel: "Plan a new activity. Schedule a task or hobby.",
+    });
+  }
+  return actions;
 }
 
-// ── AI Assistant ─────────────────────────────────────────────────────────────
-// A real back-and-forth conversation with server-side memory: every turn
-// resends the transcript to the Worker (worker/ -> Gemini API free tier),
-// which can either just reply, or call its one tool to schedule something —
-// see services/aiAssistantService.ts. Whenever it does, the returned
-// activity is created through the exact same addTask() used by the manual
-// Add Activity flow; no second activity model, no direct Firestore write here.
+/** A quick-action tile with a small press-in/press-out scale (core Animated API, matching this file's existing convention — no Reanimated import needed just for a one-shot press feedback). */
+function AnimatedQuickAction({ action, colors }: { action: QuickAction; colors: any }) {
+  const scale = useRef(new Animated.Value(1)).current;
 
-/** One bubble in the on-screen thread. `isError` bubbles are shown but never resent to Gemini as conversation history — they're a local failure notice, not something the assistant said. */
-type DisplayMessage = { id: number; role: ChatRole; text: string; isError?: boolean };
-type ChatRole = "user" | "assistant";
-
-function AIAssistantCard({
-  colors,
-  tasks,
-  addTask,
-  deleteTask,
-}: {
-  colors: any;
-  tasks: Task[];
-  addTask: (task: Omit<Task, "id" | "createdAt">) => Promise<TaskSaveResult>;
-  deleteTask: (id: string) => Promise<void>;
-}) {
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [messages, setMessages] = useState<DisplayMessage[]>([]);
-  const nextId = useRef(0);
-  const scrollRef = useRef<ScrollView>(null);
-  const tourRef = useTourTarget("aiAssistant");
-
-  function pushMessage(role: ChatRole, text: string, isError = false) {
-    nextId.current += 1;
-    setMessages((prev) => [...prev, { id: nextId.current, role, text, isError }]);
+  function pressIn() {
+    Animated.timing(scale, { toValue: 0.97, duration: 100, useNativeDriver: true }).start();
   }
-
-  async function handleSend() {
-    const text = input.trim();
-    if (!text || loading) return;
-    setInput("");
-    setLoading(true);
-    pushMessage("user", text);
-
-    // Only real conversational turns count as memory — a local error bubble
-    // was never something the assistant actually said, so it's excluded here
-    // even though it's still visible in the thread above.
-    const history: ChatMessage[] = [
-      ...messages.filter((m) => !m.isError).map(({ role, text: t }) => ({ role, text: t })),
-      { role: "user", text },
-    ];
-
-    try {
-      const reply = await sendChatMessage(history, tasks);
-
-      if (reply.kind === "message") {
-        pushMessage("assistant", reply.text);
-        return;
-      }
-
-      if (reply.kind === "delete_task") {
-        // The Worker already validated taskId against the schedule snapshot
-        // this same request sent — but that snapshot could be a turn stale
-        // (e.g. deleted manually elsewhere meanwhile), so re-check against
-        // the live list before reporting success.
-        const target = tasks.find((t) => t.id === reply.taskId);
-        const outcome = target
-          ? `Removed "${target.title}" from your schedule.`
-          : "That's already gone from your schedule.";
-        if (target) await deleteTask(reply.taskId);
-        pushMessage("assistant", reply.text ? `${reply.text} ${outcome}` : outcome);
-        return;
-      }
-
-      // A confirmed add — actually write it through the same addTask()
-      // path the manual Add Activity sheet uses, then report the real
-      // outcome (which might differ from what Gemini assumed, e.g. a
-      // conflict it couldn't have known about) so the transcript — and the
-      // assistant's memory of what happened — stays honest.
-      const { activity } = reply;
-      const result = await addTask({
-        title: activity.title,
-        type: activity.type,
-        date: activity.date,
-        time: activity.time,
-        duration: activity.duration,
-        completed: false,
-      });
-
-      const timeLabel = formatTimeLabel(activity.time).label;
-      const outcome = result.ok
-        ? `Added "${activity.title}" — ${formatShortDate(activity.date)} at ${timeLabel}.`
-        : result.reason === "conflict"
-        ? `That overlaps with "${result.conflict.title}" at ${formatTimeLabel(result.conflict.time).label} — try a different time.`
-        : "That's in the past — try a current or future date/time.";
-
-      pushMessage("assistant", reply.text ? `${reply.text} ${outcome}` : outcome);
-    } catch (e) {
-      // Sanitized (see getAiWorkerDiagnostics/utils/aiAssistantConfig.ts —
-      // hostname only, never the full URL, never a token) so this is safe to
-      // paste when comparing "why does this work on my teammate's machine
-      // but not mine" — the answer is almost always `configured: false`,
-      // meaning this machine's .env is missing EXPO_PUBLIC_AI_WORKER_URL.
-      if (__DEV__) console.warn("[AIAssistantCard] sendChatMessage failed", e, getAiWorkerDiagnostics());
-      pushMessage("assistant", friendlyAiAssistantMessage(e), true);
-    } finally {
-      setLoading(false);
-    }
+  function pressOut() {
+    Animated.timing(scale, { toValue: 1, duration: 140, useNativeDriver: true }).start();
   }
 
   return (
-    <View ref={tourRef} collapsable={false} style={[styles.aiCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-      <View style={styles.aiHeaderRow}>
-        <MascotAvatar size={32} />
-        <View style={{ marginLeft: 8 }}>
-          <MascotNameBadge />
-          <Text style={[styles.aiSubtitleSmall, { color: colors.secondaryText }]}>Your AI Guide</Text>
+    <Animated.View style={{ flex: 1, transform: [{ scale }] }}>
+      <TouchableOpacity
+        onPress={action.onPress}
+        onPressIn={pressIn}
+        onPressOut={pressOut}
+        style={[styles.quickAction, { backgroundColor: colors.card, borderColor: colors.border }]}
+        accessibilityRole="button"
+        accessibilityLabel={action.accessibilityLabel}
+      >
+        <View style={[styles.quickActionIcon, { backgroundColor: action.color + "18" }]}>
+          <Ionicons name={action.icon as any} size={22} color={action.color} />
         </View>
-      </View>
-      <Text style={[styles.aiSubtitle, { color: colors.secondaryText }]}>
-        Chat naturally with Bubble — ask a question, talk through your plans, say "add it" to schedule
-        something, or "cancel it" to remove something from your calendar.
-      </Text>
-      {!isAiAssistantConfigured && (
-        <View style={[styles.aiNotConfiguredBanner, { backgroundColor: colors.background, borderColor: colors.border }]}>
-          <Ionicons name="information-circle-outline" size={14} color={colors.secondaryText} />
-          <Text style={[styles.aiNotConfiguredText, { color: colors.secondaryText }]}>
-            Bubble isn't set up yet — add activities manually for now.
-          </Text>
-        </View>
-      )}
-      {messages.length > 0 && (
-        <ScrollView
-          ref={scrollRef}
-          style={styles.aiThread}
-          contentContainerStyle={{ paddingVertical: 4 }}
-          onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
-        >
-          {messages.map((m) => (
-            <View
-              key={m.id}
-              style={[
-                styles.aiBubble,
-                m.role === "user" ? styles.aiBubbleUser : styles.aiBubbleAssistant,
-                m.role === "user"
-                  ? { backgroundColor: colors.primary }
-                  : {
-                      backgroundColor: m.isError ? colors.danger + "18" : colors.background,
-                      borderWidth: 1,
-                      borderColor: m.isError ? colors.danger : colors.border,
-                    },
-              ]}
-            >
-              <Text style={{ color: m.role === "user" ? "#fff" : m.isError ? colors.danger : colors.text, fontSize: 13 }}>
-                {m.text}
-              </Text>
-            </View>
-          ))}
-          {loading && (
-            <View style={[styles.aiBubble, styles.aiBubbleAssistant, { backgroundColor: colors.background, borderWidth: 1, borderColor: colors.border }]}>
-              <ActivityIndicator size="small" color={colors.secondaryText} />
-            </View>
-          )}
-        </ScrollView>
-      )}
-      <View style={styles.aiInputRow}>
-        <TextInput
-          value={input}
-          onChangeText={setInput}
-          placeholder='e.g. "Is football a good idea for tomorrow?"'
-          placeholderTextColor={colors.secondaryText}
-          style={[styles.aiInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }]}
-          editable={!loading}
-          multiline
-          onSubmitEditing={handleSend}
-        />
-        <TouchableOpacity
-          onPress={handleSend}
-          disabled={loading || !input.trim()}
-          style={[styles.aiSendBtn, { backgroundColor: colors.primary, opacity: loading || !input.trim() ? 0.6 : 1 }]}
-        >
-          {loading ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="send" size={18} color="#fff" />}
-        </TouchableOpacity>
-      </View>
-    </View>
+        <Text style={[styles.quickActionLabel, { color: colors.text }]}>{action.label}</Text>
+      </TouchableOpacity>
+    </Animated.View>
   );
 }
 
@@ -268,9 +154,16 @@ function TodayTaskRow({ id, title, time, duration, completed, type, colors }: { 
 
 export default function HomeScreen() {
   const { colors } = useTheme();
-  const { profile } = useProfile();
-  const { tasks, addTask, deleteTask } = useTime();
+  const { profile, isLoaded: profileIsLoaded } = useProfile();
+  const { tasks } = useTime();
   const homeScrollRoot = useTourScrollRoot("home");
+
+  // Source of truth for "has this user completed the quiz" is the saved
+  // result on their own profile document (profile.quizCompletedAt, written
+  // by ProfileContext.saveQuizResult) — never a local boolean/AsyncStorage
+  // flag, so a fresh install or a different account never shows a stale
+  // "completed" state.
+  const quizCompleted = profileIsLoaded && profile.quizCompletedAt != null;
 
   const today = todayISO();
   const todayTasks = tasks
@@ -322,15 +215,12 @@ export default function HomeScreen() {
 
           <TipBanner
             storageKey={TIP_KEYS.homeGettingStarted}
-            text="Chat with Bubble to add your first activity, or explore communities near you."
+            text="Plan your first activity, or explore communities near you."
             icon="sparkles-outline"
             colors={colors}
           />
 
           <View style={styles.content}>
-            {/* AI Assistant */}
-            <AIAssistantCard colors={colors} tasks={tasks} addTask={addTask} deleteTask={deleteTask} />
-
             {/* Today's schedule */}
             <View style={styles.section}>
               <View style={styles.sectionRow}>
@@ -375,17 +265,19 @@ export default function HomeScreen() {
             <View style={styles.section}>
               <Text style={[styles.sectionTitle, { color: colors.text }]}>Quick Actions</Text>
               <View style={styles.quickActions}>
-                {[
-                  { icon: "add-circle-outline" as const, label: "Post", action: () => router.push("/create-post" as any), color: colors.primary },
-                  { icon: "newspaper-outline" as const, label: "Feed", action: () => router.push("/feed" as any), color: "#F59E0B" },
-                  { icon: "help-circle-outline" as const, label: "Quiz", action: () => router.push("/quiz" as any), color: "#8B5CF6" },
-                ].map((a) => (
-                  <TouchableOpacity key={a.label} onPress={a.action} style={[styles.quickAction, { backgroundColor: colors.card, borderColor: colors.border }]}>
-                    <View style={[styles.quickActionIcon, { backgroundColor: a.color + "18" }]}>
-                      <Ionicons name={a.icon} size={22} color={a.color} />
-                    </View>
-                    <Text style={[styles.quickActionLabel, { color: colors.text }]}>{a.label}</Text>
-                  </TouchableOpacity>
+                {buildQuickActions({
+                  quizLoaded: profileIsLoaded,
+                  quizCompleted,
+                  colors,
+                  onPost: () => router.push("/create-post" as any),
+                  onFeed: () => router.push("/feed" as any),
+                  onQuiz: () => router.push("/quiz" as any),
+                  // Just navigates — no auto-opened form, no auto-picked date,
+                  // no AI launch. Planner's own "Plan an activity" section is
+                  // where the user actually chooses how to add something.
+                  onPlanActivity: () => router.push("/(tabs)/time-manager"),
+                }).map((a) => (
+                  <AnimatedQuickAction key={a.id} action={a} colors={colors} />
                 ))}
               </View>
             </View>
@@ -435,44 +327,4 @@ const styles = StyleSheet.create({
   quickAction: { flex: 1, alignItems: "center", padding: 12, borderRadius: 14, borderWidth: 1, gap: 6 },
   quickActionIcon: { width: 44, height: 44, borderRadius: 12, alignItems: "center", justifyContent: "center" },
   quickActionLabel: { fontSize: 11, fontWeight: "600", textAlign: "center" },
-  // AI Assistant
-  aiCard: {
-    borderRadius: 16,
-    borderWidth: 1,
-    padding: 14,
-  },
-  aiHeaderRow: { flexDirection: "row", alignItems: "center" },
-  aiSubtitleSmall: { fontSize: 11, fontWeight: "600", marginTop: 2 },
-  aiSubtitle: { fontSize: 12, marginTop: 8, marginBottom: 10 },
-  aiNotConfiguredBanner: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 6,
-    borderWidth: 1,
-    borderRadius: 10,
-    padding: 8,
-    marginBottom: 10,
-  },
-  aiNotConfiguredText: { fontSize: 11, flex: 1, lineHeight: 15 },
-  aiThread: { maxHeight: 220, marginBottom: 10 },
-  aiBubble: { maxWidth: "85%", borderRadius: 14, paddingHorizontal: 12, paddingVertical: 8, marginBottom: 6 },
-  aiBubbleUser: { alignSelf: "flex-end", borderBottomRightRadius: 4 },
-  aiBubbleAssistant: { alignSelf: "flex-start", borderBottomLeftRadius: 4 },
-  aiInputRow: { flexDirection: "row", alignItems: "flex-end", gap: 8 },
-  aiInput: {
-    flex: 1,
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    maxHeight: 90,
-  },
-  aiSendBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-  },
 });

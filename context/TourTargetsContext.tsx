@@ -25,14 +25,15 @@
  * any screen can register once and any tour step can ask to be scrolled
  * into view.
  */
-import { createContext, useCallback, useContext, useRef } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef } from "react";
 
 export type TourTargetId =
-  | "aiAssistant"
   | "addFriends"
   | "plannerAddActivity"
   | "communityTab"
-  | "exploreTab";
+  | "exploreTab"
+  | "profileTab"
+  | "profilePosts";
 
 /** A screen's own scrollable root, keyed by which screen it belongs to — distinct from TourTargetId since it's a container, not a spotlight-able element itself. */
 export type TourScrollRootId = "home" | "planner";
@@ -57,6 +58,20 @@ type TourTargetsContextType = {
   measureScrollRoot: (id: TourScrollRootId) => Promise<TourTargetRect | null>;
   /** Scrolls the registered root by a delta computed against its own last-known offset; no-ops if unregistered. */
   scrollRootBy: (id: TourScrollRootId, deltaY: number) => void;
+  /**
+   * Profile screen registers a callback here that switches its own local
+   * `activeTab` state to "posts" — its own screen-local state that nothing
+   * outside profile.tsx can otherwise reach. OnboardingTour's Posts step
+   * calls switchProfileTabToPosts() right after navigating to Profile and
+   * before it starts measuring the "profilePosts" target, so the create-post
+   * button has actually mounted by the time measurement is attempted (the
+   * existing measure-retry loop comfortably covers the one extra render this
+   * causes). A real mechanism, not a fake target — Posts genuinely is
+   * created from inside Profile's own Posts tab (app/create-post.tsx via a
+   * button there), so this is what's needed to spotlight it truthfully.
+   */
+  registerProfilePostsTabSwitch: (fn: (() => void) | null) => void;
+  switchProfileTabToPosts: () => void;
 };
 
 const TourTargetsContext = createContext<TourTargetsContextType | undefined>(undefined);
@@ -64,6 +79,7 @@ const TourTargetsContext = createContext<TourTargetsContextType | undefined>(und
 export function TourTargetsProvider({ children }: { children: React.ReactNode }) {
   const nodes = useRef<Partial<Record<TourTargetId, Measurable>>>({});
   const scrollRoots = useRef<Partial<Record<TourScrollRootId, ScrollRootHandle>>>({});
+  const profilePostsTabSwitch = useRef<(() => void) | null>(null);
 
   const registerTarget = useCallback((id: TourTargetId, node: Measurable | null) => {
     if (node) nodes.current[id] = node;
@@ -116,9 +132,25 @@ export function TourTargetsProvider({ children }: { children: React.ReactNode })
     root.node.scrollTo({ y: nextOffset, animated: false });
   }, []);
 
+  const registerProfilePostsTabSwitch = useCallback((fn: (() => void) | null) => {
+    profilePostsTabSwitch.current = fn;
+  }, []);
+
+  const switchProfileTabToPosts = useCallback(() => {
+    profilePostsTabSwitch.current?.();
+  }, []);
+
   return (
     <TourTargetsContext.Provider
-      value={{ registerTarget, measureTarget, registerScrollRoot, measureScrollRoot, scrollRootBy }}
+      value={{
+        registerTarget,
+        measureTarget,
+        registerScrollRoot,
+        measureScrollRoot,
+        scrollRootBy,
+        registerProfilePostsTabSwitch,
+        switchProfileTabToPosts,
+      }}
     >
       {children}
     </TourTargetsContext.Provider>
@@ -148,6 +180,20 @@ export function useTourTarget(id: TourTargetId | null) {
     },
     [registerTarget, id]
   );
+}
+
+/**
+ * Registers `onSwitchToPosts` as the function OnboardingTour's Posts step
+ * calls to switch Profile to its Posts tab before spotlighting it. Call
+ * unconditionally from app/(tabs)/profile.tsx — unregisters itself on
+ * unmount so the tour can never call a stale/unmounted screen's setter.
+ */
+export function useRegisterProfilePostsTabSwitch(onSwitchToPosts: () => void) {
+  const { registerProfilePostsTabSwitch } = useTourTargets();
+  useEffect(() => {
+    registerProfilePostsTabSwitch(onSwitchToPosts);
+    return () => registerProfilePostsTabSwitch(null);
+  }, [registerProfilePostsTabSwitch, onSwitchToPosts]);
 }
 
 /**

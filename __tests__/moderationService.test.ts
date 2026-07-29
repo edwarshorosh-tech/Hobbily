@@ -70,6 +70,41 @@ describe("checkText", () => {
     expect(checkText("أنا أحب الرسم والسفر").allowed).toBe(true);
   });
 
+  it("blocks Hebrew profanity fully vocalized with niqqud", () => {
+    // חרא (0x05D7 0x05E8 0x05D0) with sheva (0x05B0) and qamats (0x05B8) inserted
+    const vocalized = String.fromCodePoint(0x05d7, 0x05b0, 0x05e8, 0x05b8, 0x05d0);
+    expect(checkText(vocalized).allowed).toBe(false);
+  });
+
+  it("blocks a Hebrew threat phrase ending in a final letter form", () => {
+    // Regression check: normalizeForModeration's Hebrew final-forms fold must
+    // also be applied to the stored dictionary term (constants/
+    // moderationTerms.ts's term() builder), or the input (folded) and the
+    // term (unfolded) silently stop matching each other.
+    const r = checkText("אני אהרוג אותך מחר");
+    expect(r.allowed).toBe(false);
+    if (!r.allowed) expect(r.category).toBe("threat");
+  });
+
+  it("blocks Arabic profanity fully vocalized with harakat", () => {
+    // غبي with fatha/kasra inserted
+    const vocalized = String.fromCodePoint(0x063a, 0x064e, 0x0628, 0x0650, 0x064a);
+    expect(checkText(vocalized).allowed).toBe(false);
+  });
+
+  it("blocks Arabic profanity obfuscated with Arabizi chat-alphabet digits", () => {
+    // خرا ("crap") written as "5را" — Arabizi conventionally uses 5 for خ
+    expect(checkText("5را").allowed).toBe(false);
+  });
+
+  it("blocks Russian profanity obfuscated with a Cyrillic/Latin homoglyph", () => {
+    // сука with the Cyrillic с swapped for a visually identical Latin c
+    const mixed = "c" + String.fromCodePoint(0x0443, 0x043a, 0x0430);
+    const r = checkText(mixed);
+    expect(r.allowed).toBe(false);
+    if (!r.allowed) expect(r.category).toBe("profanity");
+  });
+
   it("blocks leetspeak-obfuscated profanity", () => {
     expect(checkText("you are an a55hole").allowed).toBe(false);
   });
