@@ -70,7 +70,7 @@
  * off the same spring-completion callback that fades the bubble back in.
  */
 import { useEffect, useRef, useState } from "react";
-import { View, Text, TouchableOpacity, StyleSheet, useWindowDimensions, LayoutChangeEvent } from "react-native";
+import { View, Text, TouchableOpacity, StyleSheet, useWindowDimensions, LayoutChangeEvent, Platform } from "react-native";
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, withSpring } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
@@ -88,6 +88,14 @@ type Step = {
   route?: any;
   /** The screen's registered scroll container this target can be scrolled within — omitted for steps whose target (the tab bar) is never inside a scrollable region. */
   scrollRootId?: TourScrollRootId;
+  /** Manual per-step nudge (px, added to the measured y) — omitted for steps whose measured position is already right. The tab bar steps (communityTab/exploreTab) target AppTabBar's Pressable, whose measured bounds are the *whole* flex:1 tab slot (tall enough to cover the full tab bar row), not the small icon+label pill visually centered inside it — this compensates for that gap rather than a coordinate bug. Platform-specific per step since the two platforms haven't needed the same correction. */
+  offsetY?: number;
+  /** Extra padding (px, added on top of the base PAD on all four sides) for this step's cutout only — omitted for steps whose base padding already frames the target. */
+  padBoost?: number;
+  /** Extra px added to the top edge only (on top of PAD + padBoost) — for growing a short/wide cutout (e.g. a tab bar item) toward a squarer look. */
+  topPadBoost?: number;
+  /** Extra px added to the bottom edge only (on top of PAD + padBoost) — independent of topPadBoost so top/bottom growth can be tuned separately instead of forcing a symmetric stretch. */
+  bottomPadBoost?: number;
   title: string;
   body: string;
 };
@@ -116,11 +124,19 @@ const STEPS: Step[] = [
   },
   {
     targetId: "communityTab",
+    offsetY: Platform.OS === "android" ? 56 : 8,
+    padBoost: Platform.OS === "android" ? 10 : 0,
+    topPadBoost: Platform.OS === "android" ? 50 : 0,
+    bottomPadBoost: Platform.OS === "android" ? -70 : -20,
     title: "Community",
     body: "Over here is Community — a group chat connecting people with shared interests to talk and share experiences.",
   },
   {
     targetId: "exploreTab",
+    offsetY: Platform.OS === "android" ? 56 : 8,
+    padBoost: Platform.OS === "android" ? 10 : 0,
+    topPadBoost: Platform.OS === "android" ? 50 : 0,
+    bottomPadBoost: Platform.OS === "android" ? -70 : -20,
     title: "Explore",
     body: "And last but not least, Explore is your gateway to finding local places, venues, and open spots — both free and paid — to practice and develop your hobbies. Have fun!",
   },
@@ -129,7 +145,7 @@ const STEPS: Step[] = [
 /** Extra breathing room around the real element's measured bounds for the spotlight cutout/ring. */
 const PAD = 8;
 /** Gap between the spotlight cutout and the speech bubble's near edge. */
-const BUBBLE_GAP = 14;
+const BUBBLE_GAP = 30;
 /** Minimum clearance to keep between the bubble and the top/bottom safe-area edges — the final safety clamp on bubbleTopV, independent of which side it was placed on. */
 const BUBBLE_EDGE_MARGIN = 16;
 /** Best-guess bubble height used only until the very first onLayout reports the real one — close enough for the "place above" math to land in the right neighborhood before the follow-up spring corrects it exactly. */
@@ -148,10 +164,8 @@ const TOOLTIP_FADE_IN_MS = 150;
 const COLLAPSE_MS = 260;
 /** Minimum clearance to leave between the target and the screen/safe-area edge when deciding whether it's already comfortably in view. */
 const SCROLL_MARGIN = 24;
-/** How often to re-measure while confirming an (instant, non-animated — see TourTargetsContext's scrollRootBy) auto-scroll has actually landed. */
-const SCROLL_POLL_MS = 60;
-/** Bounded polling budget — generous even though the scroll itself is instant, purely to cover the layout/measure round-trip. */
-const MAX_SCROLL_SETTLE_ATTEMPTS = 6;
+/** How long to let the (animated — see TourTargetsContext's scrollRootBy) auto-scroll actually finish before re-measuring and starting the spotlight's glide — RN's scrollTo({animated:true}) gives no completion callback, so this is a fixed approximation of that animation's real duration rather than a poll-for-stability loop. */
+const SCROLL_SETTLE_MS = 380;
 
 function wait(ms: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -179,6 +193,14 @@ export default function OnboardingTour({ visible, onFinish }: Props) {
   const bubbleHeightRef = useRef(DEFAULT_BUBBLE_HEIGHT);
   /** Route the tour last actually navigated to — lets locateTarget skip the navigate+settle wait when consecutive steps share a route (e.g. Step 1→2, both on Home), instead of paying a fixed 450ms of dead time for a "navigation" that never really happens. */
   const previousRouteRef = useRef<any>(null);
+  /**
+   * A plain View mounted at the overlay's own absolute-fill root, whose only
+   * job is to be the second point every measureTarget/measureScrollRoot call
+   * measures against (both are measureInWindow-ed and diffed) — see
+   * TourTargetsContext's file header for why that eliminates Android's
+   * status-bar/safe-area offset entirely instead of correcting for it.
+   */
+  const overlayAnchorRef = useRef<View>(null);
 
   // The one shared "truth" for the spotlight box — every dim panel and the
   // ring below reads these same four values, so they can never disagree
@@ -249,20 +271,20 @@ export default function OnboardingTour({ visible, onFinish }: Props) {
      * synchronous "current scroll offset" getter, only the running tally each
      * screen's own onScroll keeps (see useTourScrollRoot).
      *
-     * The scroll itself (scrollRootBy) is non-animated — instant, not a
-     * multi-frame slide — specifically so the box below can glide (withSpring,
-     * in locateTarget) in one continuous motion straight from the *previous*
-     * step's position to this one's real, final, already-settled position,
-     * the same smooth swipe-like feel every other transition has. An
-     * *animated* scroll here would fight that: it has no fixed duration (it
-     * scales with distance) and no completion callback, so the box could end
-     * up gliding toward a target that was still itself mid-scroll — sized
-     * against a transitional position rather than where it actually lands.
-     * An instant jump removes that window entirely.
+     * The scroll itself (scrollRootBy) is animated — the user sees the page
+     * itself glide the next target into view — while the box below stays put
+     * at the *previous* step's position for the duration of that scroll, only
+     * starting its own glide (withSpring, in locateTarget) once this function
+     * resolves with the target's real, settled post-scroll position. RN's
+     * scrollTo({animated:true}) has no completion callback, so "settled" is
+     * approximated with a fixed wait (SCROLL_SETTLE_MS) long enough to cover
+     * the scroll animation's real duration rather than polling for the
+     * measured position to stop changing — the two motions (page scroll, then
+     * box glide) read as one continuous handoff instead of racing each other.
      */
     async function ensureVisible(rect: TourTargetRect): Promise<TourTargetRect> {
       if (!step.scrollRootId) return rect;
-      const containerRect = await measureScrollRoot(step.scrollRootId);
+      const containerRect = await measureScrollRoot(step.scrollRootId, overlayAnchorRef.current);
       if (!containerRect) return rect;
 
       const viewTop = containerRect.y + SCROLL_MARGIN;
@@ -271,17 +293,10 @@ export default function OnboardingTour({ visible, onFinish }: Props) {
       if (isVisible(rect)) return rect;
 
       scrollRootBy(step.scrollRootId, rect.y - viewTop);
-
-      let previous: TourTargetRect | null = null;
-      for (let attempt = 0; attempt < MAX_SCROLL_SETTLE_ATTEMPTS; attempt++) {
-        await wait(SCROLL_POLL_MS);
-        if (cancelled) return previous ?? rect;
-        const measured = await measureTarget(step.targetId);
-        if (!measured) break;
-        if (previous && Math.abs(measured.y - previous.y) < 1) return measured;
-        previous = measured;
-      }
-      return previous ?? rect;
+      await wait(SCROLL_SETTLE_MS);
+      if (cancelled) return rect;
+      const settled = await measureTarget(step.targetId, overlayAnchorRef.current);
+      return settled ?? rect;
     }
 
     async function locateTarget() {
@@ -300,17 +315,32 @@ export default function OnboardingTour({ visible, onFinish }: Props) {
       if (step.route) previousRouteRef.current = step.route;
       for (let attempt = 0; attempt < MAX_MEASURE_ATTEMPTS; attempt++) {
         if (cancelled) return;
-        let rect = await measureTarget(step.targetId);
+        let rect = await measureTarget(step.targetId, overlayAnchorRef.current);
         if (rect) {
           if (cancelled) return;
           rect = await ensureVisible(rect);
           if (cancelled) return;
+          if (step.offsetY) {
+            rect = { ...rect, y: rect.y + step.offsetY };
+          }
           lastRectRef.current = rect;
 
-          const clampedTop = Math.max(0, rect.y - PAD);
-          const clampedBottom = Math.min(screenHeight, rect.y + rect.height + PAD);
-          const clampedLeft = Math.max(0, rect.x - PAD);
-          const clampedRight = Math.min(screenWidth, rect.x + rect.width + PAD);
+          const pad = PAD + (step.padBoost ?? 0);
+          const clampedTop = Math.max(0, rect.y - pad - (step.topPadBoost ?? 0));
+          const rawBottom = rect.y + rect.height + pad + (step.bottomPadBoost ?? 0);
+          // topPadBoost/bottomPadBoost/offsetY are an explicit "grow past the
+          // target" request — skip the screenHeight clamp when any is set.
+          // The tab bar sits at the very bottom of the screen already, so
+          // offsetY pushing rect.y down further means rect.y + rect.height
+          // can already be at or past screenHeight before any boost is even
+          // added — Math.min(screenHeight, ...) was silently eating the
+          // requested growth here otherwise, same as the earlier no-op bug.
+          // An unclamped value just gets clipped harmlessly at the device's
+          // real physical bottom.
+          const clampedBottom =
+            step.topPadBoost || step.bottomPadBoost || step.offsetY ? rawBottom : Math.min(screenHeight, rawBottom);
+          const clampedLeft = Math.max(0, rect.x - pad);
+          const clampedRight = Math.min(screenWidth, rect.x + rect.width + pad);
 
           const { below, top: bubbleTop } = computeBubbleTop(rect, bubbleHeightRef.current);
           placedBelowRef.current = below;
@@ -405,7 +435,23 @@ export default function OnboardingTour({ visible, onFinish }: Props) {
   const nextLabel = isLastStep ? "Got it" : "Next";
 
   return (
-    <Animated.View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+    <Animated.View
+      style={StyleSheet.absoluteFill}
+      pointerEvents="box-none"
+      // Every frame of the spotlight glide (below) drives layout properties
+      // (top/left/width/height) rather than transforms, which forces a real
+      // native layout pass each frame — this flag keeps that repeated
+      // layout+redraw composited into an offscreen hardware texture instead
+      // of re-rasterizing the whole overlay tree, which is what was reading
+      // as dropped frames/stutter on Android specifically (no-op on iOS).
+      renderToHardwareTextureAndroid={Platform.OS === "android"}
+    >
+      <View
+        ref={overlayAnchorRef}
+        style={StyleSheet.absoluteFill}
+        pointerEvents="none"
+        collapsable={false}
+      />
       <Animated.View style={[styles.dim, styles.dimTop, topStyle]} pointerEvents="auto" />
       <Animated.View style={[styles.dim, styles.dimBottom, bottomStyle]} pointerEvents="auto" />
       <Animated.View style={[styles.dim, styles.dimLeft, leftStyle]} pointerEvents="auto" />
@@ -521,10 +567,15 @@ const styles = StyleSheet.create({
     position: "absolute",
     borderWidth: 3,
     borderRadius: 16,
+    // iOS-only — shadowColor/Opacity/Radius follow the ring's actual drawn
+    // shape (a hollow rect), but elevation (Android's equivalent) draws its
+    // drop shadow from the *whole view's rectangular bounds* regardless of
+    // the transparent middle, which read as a shadow filling the cutout on
+    // Android. No elevation here at all rather than a low value, since even
+    // a small one reproduces the same filled-middle look, just fainter.
     shadowColor: "#000",
     shadowOpacity: 0.3,
     shadowRadius: 6,
-    elevation: 6,
   },
   // Full-width, transparent positioning wrapper — its own `top` is the one
   // animated coordinate (bubblePositionStyle); the actual card inside is
